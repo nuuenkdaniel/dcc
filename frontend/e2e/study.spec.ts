@@ -1,0 +1,25 @@
+import {test,expect} from '@playwright/test'
+test('exam preparation requires review and start date and stays attached to its event',async({page})=>{
+ const event={id:'exam1',calendarId:'c',uid:'exam-uid',recurrenceId:null,title:'Midterm',start:'2030-10-12',end:'2030-10-13',allDay:true,description:'',location:''}
+ let preparations:any[]=[]
+ await page.route('**/api/v1/auth/session',r=>r.fulfill({json:{configured:true,authenticated:true}}))
+ await page.route('**/api/v1/calendar/snapshot',r=>r.fulfill({json:{calendars:[{id:'c',name:'School'}],events:[event],lastSuccess:new Date().toISOString()}}))
+ await page.route('**/api/v1/planner/snapshot',r=>r.fulfill({json:{projects:[],actions:[],preparations,status:{}}}))
+ await page.route('**/api/v1/planner/entity',r=>{const body=r.request().postDataJSON();preparations=[{kind:body.kind,data:body.data,version:1}];return r.fulfill({json:{code:200}})})
+ await page.clock.install({time:new Date('2030-10-12T12:00:00')})
+ await page.goto('http://127.0.0.1:5173')
+ await page.getByText('Midterm',{exact:true}).click()
+ await page.getByRole('button',{name:'Prepare for this event'}).click()
+ await expect(page.getByRole('button',{name:'Save preparation'})).toBeDisabled()
+ await page.getByLabel('Start studying').fill('2030-10-01')
+ await page.getByRole('button',{name:'Add topic manually'}).click()
+ await page.getByLabel('Topic',{exact:true}).fill('Classification recall')
+ await page.getByLabel('References and definition of done').fill('Explain the six steps without notes.')
+ await page.getByLabel('I reviewed the topics, estimates and progress.').check()
+ await page.getByRole('button',{name:'Save preparation'}).click()
+ await expect.poll(()=>preparations.length).toBe(1)
+ expect(preparations[0].data.event.uid).toBe('exam-uid')
+ await page.setViewportSize({width:375,height:1000})
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy()
+ await page.screenshot({path:'test-results/preparation-mobile.png',fullPage:true})
+})

@@ -1,0 +1,20 @@
+import {test,expect} from '@playwright/test'
+test('existing session skips login and reuses calendar access after reload',async({page})=>{
+ await page.route('**/api/v1/auth/session',r=>r.fulfill({json:{authenticated:true,configured:true}}))
+ await page.route('**/api/v1/calendar/snapshot',r=>r.fulfill({json:{calendars:[],events:[],lastSuccess:new Date().toISOString()}}))
+ await page.goto('http://127.0.0.1:5173/login')
+ await expect(page).toHaveURL('http://127.0.0.1:5173/')
+ await page.reload()
+ await expect(page.getByRole('button',{name:'Sign out',exact:true})).toBeVisible()
+ await expect(page.getByText('Sign in for calendars')).toHaveCount(0)
+ await page.getByRole('button',{name:'Focus',exact:true}).click()
+ await page.getByRole('button',{name:'Home',exact:true}).click()
+ await expect(page.getByRole('button',{name:'Sign out',exact:true})).toBeVisible()
+})
+test('expired session links to the single login screen',async({page})=>{
+ await page.route('**/api/v1/auth/session',r=>r.fulfill({json:{authenticated:false,configured:true}}))
+ await page.goto('http://127.0.0.1:5173/')
+ await page.getByRole('link',{name:'Sign in',exact:true}).click()
+ await expect(page).toHaveURL(/\/login$/)
+ await expect(page.getByLabel('Username',{exact:true})).toBeEnabled()
+})

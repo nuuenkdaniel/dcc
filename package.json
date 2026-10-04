@@ -1,0 +1,15 @@
+{
+  "name": "daymark",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix frontend run dev --",
+    "check": "npm --prefix frontend run check",
+    "test:e2e": "npm --prefix frontend run test:e2e",
+    "build": "npm --prefix frontend run build",
+    "test": "npm --prefix frontend test",
+    "dev:backend": "npm --prefix backend run dev",
+    "check:backend": "npm --prefix backend run check",
+    "build:backend": "npm --prefix backend run build",
+    "start:backend": "npm --prefix backend start"
+  }
+}

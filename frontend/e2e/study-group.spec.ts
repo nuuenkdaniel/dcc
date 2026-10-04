@@ -1,0 +1,18 @@
+import {test,expect} from '@playwright/test'
+test('study subtasks collapse into one card with total and individual estimates',async({page})=>{
+ await page.clock.install({time:new Date('2026-10-03T12:00:00')})
+ const actions=[30,45].map((minutes,i)=>({kind:'action',version:1,data:{id:String(i),preparationId:'prep',projectId:'p'+i,title:'Study step '+i,notes:'Read and practice',minutes,date:'2026-10-03',completed:false,dismissed:false}}))
+ await page.route('**/api/v1/planner/snapshot',r=>r.fulfill({json:{projects:[],actions,preparations:[{data:{id:'prep',title:'CSE354 M1'}}],status:{}}}))
+ await page.goto('http://127.0.0.1:5173')
+ const card=page.locator('.task-card').filter({hasText:'Study for CSE354 M1'})
+ await expect(card).toHaveCount(1)
+ await expect(card.getByText('75 min',{exact:true})).toBeVisible()
+ await expect(page.getByText('Study step 0',{exact:true})).not.toBeVisible()
+ await card.getByRole('button',{name:'Study for CSE354 M1'}).click()
+ await expect(card.getByText('Study step 0',{exact:true})).toBeVisible()
+ await expect(card.getByText('30 min',{exact:true})).toBeVisible()
+ await expect(page.locator('.task-count')).toHaveText('1')
+ await page.setViewportSize({width:375,height:1000})
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy()
+ await card.screenshot({path:'test-results/study-group.png'})
+})

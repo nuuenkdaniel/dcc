@@ -1,0 +1,11 @@
+import {test} from 'node:test'
+import assert from 'node:assert/strict'
+import {Pool} from 'pg'
+import {randomUUID} from 'node:crypto'
+import {rollover} from '../src/rollover.js'
+process.loadEnvFile('.env')
+test('morning rollover preserves edits, completion and future dates; flags impossible work and is idempotent',async()=>{
+ const root=new Pool({connectionString:process.env.DATABASE_URL}),schema='roll_'+randomUUID().replaceAll('-','');await root.query(`CREATE SCHEMA ${schema}`);const p=new Pool({connectionString:process.env.DATABASE_URL,options:`-c search_path=${schema}`})
+ try{await p.query('CREATE TABLE planner_entities(id uuid,kind text,data jsonb,version int DEFAULT 1);CREATE TABLE calendar_sync_state(id int,snapshot jsonb,last_success timestamptz)');await p.query('INSERT INTO calendar_sync_state VALUES(1,$1,$2)',[{events:[]},'2026-10-05T10:00:00Z']);const project=randomUUID();await p.query('INSERT INTO planner_entities(id,kind,data) VALUES($1,$2,$3)',[project,'project',{status:'active',deadline:'2026-10-10'}]);const add=async(patch:object)=>{const id=randomUUID();await p.query('INSERT INTO planner_entities(id,kind,data) VALUES($1,$2,$3)',[id,'action',{id,projectId:project,assignmentStep:true,date:'2026-10-04',minutes:30,title:'My edited wording',notes:'keep',completed:false,dismissed:false,...patch}]);return id};const edit=await add({edited:true}),done=await add({completed:true}),future=await add({date:'2026-10-08'}),large=await add({minutes:99999});assert.equal((await rollover(p,new Date('2026-10-05T09:00:00Z'))).status,'not-due');const result=await rollover(p,new Date('2026-10-05T10:00:00Z'));assert.equal(result.moved,1);assert.equal(result.unplaced,1);const rows=(await p.query('SELECT id,data FROM planner_entities')).rows;assert.equal(rows.find(r=>r.id===edit).data.date,'2026-10-05');assert.equal(rows.find(r=>r.id===edit).data.title,'My edited wording');assert.equal(rows.find(r=>r.id===done).data.date,'2026-10-04');assert.equal(rows.find(r=>r.id===future).data.date,'2026-10-08');assert.equal(rows.find(r=>r.id===large).data.needsRescheduling,true);assert.equal((await rollover(p,new Date('2026-10-05T12:00:00Z'))).status,'already-run')
+ }finally{await p.end();await root.query(`DROP SCHEMA ${schema} CASCADE`);await root.end()}
+})

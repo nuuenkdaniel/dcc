@@ -1,0 +1,21 @@
+import {test,expect} from '@playwright/test'
+test('assignment saves text and extracted file context for planning',async({page})=>{
+ let projects:any[]=[]
+ await page.route('**/api/v1/planner/snapshot',r=>r.fulfill({json:{projects,actions:[],preparations:[],status:{}}}))
+ await page.route('**/api/v1/planner/material',r=>r.fulfill({json:{name:'rubric.txt',text:'Implement a parser and write a report.'}}))
+ await page.route('**/api/v1/planner/entity',r=>{const b=r.request().postDataJSON();projects=[{data:b.data,version:1}];return r.fulfill({json:{code:200}})})
+ await page.goto('http://127.0.0.1:5173/projects')
+ await page.getByRole('button',{name:'Add assignment',exact:true}).click()
+ await page.getByLabel('Assignment title',{exact:true}).fill('Parser homework')
+ await page.getByLabel('Instructions',{exact:true}).fill('I finished the tokenizer already.')
+ await page.getByLabel('Due date (optional)').fill('2026-10-12')
+ await page.getByLabel('Attach instructions').setInputFiles({name:'rubric.txt',mimeType:'text/plain',buffer:Buffer.from('Implement a parser and write a report.')})
+ await expect(page.getByText('rubric.txt',{exact:true})).toBeVisible()
+ await page.getByRole('button',{name:'Save assignment',exact:true}).click()
+ await expect.poll(()=>projects.length).toBe(1)
+ expect(projects[0].data.resources[0].text).toContain('parser')
+ expect(projects[0].data.description).toContain('tokenizer')
+ expect(projects[0].data.kind).toBe('assignment')
+ await page.reload()
+ await expect(page.getByRole('heading',{name:'Parser homework'})).toBeVisible()
+})
