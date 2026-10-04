@@ -23,6 +23,7 @@ test('local task editing, priority, search, delete and undo survive refresh', as
 })
 
 test('disconnected inbox and account remain honest and navigable', async ({ page }) => {
+  await page.route('**/api/v1/mail/snapshot', route => route.fulfill({status:401,json:{error:'Sign in required'}}))
   await page.goto('http://127.0.0.1:5173/')
   await page.getByRole('link', { name: 'Open inbox' }).click()
   await expect(page).toHaveURL(/\/inbox$/)
