@@ -33,14 +33,14 @@ fun projectFieldError(title:String,deadline:String,minutes:String):String? = whe
 fun newProjectDraft()=JSONObject().put("id",UUID.randomUUID().toString()).put("title","").put("kind","project").put("category","school").put("description","").put("deadline","").put("importance",2).put("remainingMinutes",60).put("progress","").put("status","active").put("resources",JSONArray())
 
 @Composable fun ProjectPage(state:WorkspaceState,model:WorkspaceModel?,refresh:()->Unit,complete:(JSONObject,Boolean)->Unit) {
- val planner=state.snapshots["planner"]?.let{JSONObject(it)}?:JSONObject()
+ val planner=workspaceSnapshot(state,"planner")
  var filter by rememberSaveable {mutableStateOf("active")}
  var draft by rememberSaveable {mutableStateOf<String?>(null)}
  var version by rememberSaveable {mutableIntStateOf(0)}
  var working by remember {mutableStateOf(false)}
  var message by rememberSaveable {mutableStateOf("")}
  val scope=rememberCoroutineScope()
- val enabled=state.signedIn && !state.busy && !working && model!=null
+ val enabled=(state.signedIn||state.restorePending) && !state.busy && !working && model!=null
  val projects=planner.optJSONArray("projects").objects().filter{filter=="all"||it.getJSONObject("data").optString("status")==filter}.sortedBy{it.getJSONObject("data").optString("deadline").ifBlank{"9999"}}
  Column(Modifier.fillMaxSize()) {
   Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -84,7 +84,7 @@ fun newProjectDraft()=JSONObject().put("id",UUID.randomUUID().toString()).put("t
    TextButton(onClick={working=true;scope.launch {try{model!!.requestPlanning();message="Planning requested."}catch(e:Exception){message=e.message?:"Could not request planning."}finally{working=false}}},enabled=enabled&&!queued){Text(if(queued)"Planning queued" else "Request planning")}
   }
  }
- draft?.let {raw->ProjectEditor(raw,version,enabled,model,{draft=null},{draft=it},{message="Saved. Planning updates automatically.";draft=null})}
+ draft?.let {raw->ProjectEditor(raw,version,enabled,model,{draft=null},{draft=it},{message="Saved or queued on this phone. Check Pending edits for sync status.";draft=null})}
 }
 
 @Composable private fun ProjectEditor(raw:String,version:Int,enabled:Boolean,model:WorkspaceModel?,dismiss:()->Unit,update:(String)->Unit,saved:()->Unit) {

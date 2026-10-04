@@ -20,6 +20,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 import org.json.JSONArray
@@ -32,7 +33,12 @@ enum class Destination(val label:String,val description:String) {
 }
 fun JSONArray?.objects():List<JSONObject> = if(this==null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
 @Composable fun DccTheme(content:@Composable ()->Unit) {
- MaterialTheme(colorScheme=darkColorScheme(primary=Color(0xFFB4A5F5),background=Color(0xFF10111D),surface=Color(0xFF191A2A),onSurface=Color(0xFFE7E8F1)),content=content)
+ val context=androidx.compose.ui.platform.LocalContext.current
+ val prefs=remember{context.getSharedPreferences("dcc-preferences",0)}
+ var preference by remember{mutableStateOf(prefs.getString("theme","dark")?:"dark")}
+ DisposableEffect(prefs){val listener=android.content.SharedPreferences.OnSharedPreferenceChangeListener{_,key->if(key=="theme")preference=prefs.getString("theme","dark")?:"dark"};prefs.registerOnSharedPreferenceChangeListener(listener);onDispose{prefs.unregisterOnSharedPreferenceChangeListener(listener)}}
+ val dark=preference=="dark"||(preference=="system"&&androidx.compose.foundation.isSystemInDarkTheme())
+ MaterialTheme(colorScheme=if(dark)darkColorScheme(primary=Color(0xFFB4A5F5),background=Color(0xFF10111D),surface=Color(0xFF191A2A),onSurface=Color(0xFFE7E8F1)) else lightColorScheme(primary=Color(0xFF6750A4)),content=content)
 }
 @Composable fun DccApp(model:WorkspaceModel=viewModel()) {
  val state by model.state.collectAsStateWithLifecycle()
@@ -52,26 +58,37 @@ fun JSONArray?.objects():List<JSONObject> = if(this==null) emptyList() else (0 u
   Column(Modifier.fillMaxSize().padding(padding).padding(horizontal=20.dp)) {
    Row(Modifier.fillMaxWidth().padding(vertical=8.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
     Text(destination.label,style=MaterialTheme.typography.headlineSmall,modifier=Modifier.weight(1f))
-    IconButton(onClick=onRefresh,enabled=state.signedIn&&!state.busy){Icon(Icons.Default.Refresh,"Refresh")}
+    IconButton(onClick=onRefresh,enabled=(state.signedIn||state.restorePending)&&!state.busy){Icon(Icons.Default.Refresh,"Refresh")}
     IconButton(onClick={settings=true}){Icon(Icons.Default.Settings,"Settings")}
    }
+   if(!androidx.compose.ui.platform.LocalInspectionMode.current)UpdateControl(compact=true)
    if(state.notice!="Workspace refreshed" && state.notice!="Signed in") Text(state.notice,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
    if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical=8.dp))
-   if(!state.signedIn&&!local&&destination!=Destination.Focus) {
+   if(state.restoring) {
+    Text("Checking saved sign-in…")
+   } else if(state.restorePending&&!local&&!state.signedIn) {
+    Button(onClick=onRefresh,enabled=!state.busy){Text("Retry connection")}
+    TextButton(onClick=onLogout,enabled=!state.busy){Text("Forget saved sign-in")}
+    TextButton(onClick={local=true}){Text("Continue locally")}
+   } else if(!state.signedIn&&!local&&destination!=Destination.Focus) {
     LoginForm(state.busy,onLogin);TextButton(onClick={local=true}) { Text("Continue locally") }
    } else when(destination) {
     Destination.Focus->FocusScreen()
-    Destination.Today->TodayScreen(state,onComplete)
-    Destination.Inbox->InboxScreen(state,onFeedback)
+    Destination.Today->TodayScreen(state,onComplete,projectModel)
+    Destination.Inbox->InboxScreen(state,onFeedback,projectModel)
     Destination.Projects->ProjectPage(state,projectModel,onRefresh,onComplete)
-    Destination.Prices->PricesScreen(state)
+    Destination.Prices->PricesScreen(state,projectModel)
    }
   }
  }
  if(settings) AlertDialog(onDismissRequest={settings=false},title={Text("Settings")},text={Column {
   Text("Server: dcc.home.captnuu.online")
-  Text("Session is memory-only in this development build. Passwords are not saved. Offline disk caching is not implemented yet.")
- }},confirmButton={TextButton(onClick={settings=false}){Text("Done")}},dismissButton={TextButton(onClick={if(state.signedIn)onLogout();local=false;settings=false}){Text(if(state.signedIn)"Sign out" else "Sign in")}})
+  Text("Session and cached workspace data are encrypted on this phone. Session expiry is set by the server; the next backend release supports 30 days. Passwords are never saved.")
+  AppearanceControl()
+  TaskBackup()
+  UpdateControl()
+  PendingEdits(state,projectModel)
+ }},confirmButton={TextButton(onClick={settings=false}){Text("Done")}},dismissButton={TextButton(onClick={if(state.signedIn||state.restorePending)onLogout();local=false;settings=false}){Text(if(state.signedIn)"Sign out" else "Sign in")}})
 }
 @Composable private fun LoginForm(busy:Boolean,onLogin:(String,String)->Unit) {
  var username by rememberSaveable { mutableStateOf("") };var password by remember { mutableStateOf("") }
@@ -81,11 +98,11 @@ fun JSONArray?.objects():List<JSONObject> = if(this==null) emptyList() else (0 u
   Button(onClick={onLogin(username,password);password=""},enabled=!busy&&username.isNotBlank()&&password.isNotEmpty(),modifier=Modifier.fillMaxWidth()){Text("Sign in")}
  }
 }
-private fun snapshot(state:WorkspaceState,name:String)=state.snapshots[name]?.let { JSONObject(it) }?:JSONObject()
+private fun snapshot(state:WorkspaceState,name:String)=workspaceSnapshot(state,name)
 @Composable private fun InfoCard(title:String,body:String,extra:@Composable ColumnScope.()->Unit={}) {
  OutlinedCard(Modifier.fillMaxWidth().padding(vertical=6.dp)) { Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) { Text(title,style=MaterialTheme.typography.titleMedium);if(body.isNotBlank())Text(body);extra() } }
 }
-@Composable private fun TodayScreen(state:WorkspaceState,onComplete:(JSONObject,Boolean)->Unit) {
+@Composable private fun TodayScreen(state:WorkspaceState,onComplete:(JSONObject,Boolean)->Unit,model:WorkspaceModel?) {
  var date by rememberSaveable { mutableStateOf(LocalDate.now().toString()) }
  var tasksVisible by rememberSaveable { mutableStateOf(false) }
  var month by rememberSaveable { mutableStateOf(java.time.YearMonth.now().toString()) }
@@ -99,6 +116,7 @@ private fun snapshot(state:WorkspaceState,name:String)=state.snapshots[name]?.le
   }
   key(tasksVisible) {
  LazyColumn(modifier=Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(10.dp),contentPadding=PaddingValues(bottom=20.dp)) {
+  if(!tasksVisible) item { CalendarControls(state,date,model) }
   if(!tasksVisible) item { MonthCalendar(date,month,{date=it},{month=it}) }
   item { Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
    IconButton(onClick={date=LocalDate.parse(date).minusDays(1).toString()}){Icon(Icons.Default.KeyboardArrowLeft,"Previous day")}
@@ -109,7 +127,7 @@ private fun snapshot(state:WorkspaceState,name:String)=state.snapshots[name]?.le
   item { Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
    Text("Tasks",style=MaterialTheme.typography.titleMedium)
   } }
-  item { ManualTasks(date) }
+  item { ManualTasks(date,model) }
   if(actions.isEmpty())item { Text("No actions for this day",style=MaterialTheme.typography.bodyMedium,modifier=Modifier.padding(vertical=24.dp)) }
   items(groups.entries.toList(),key={it.key}) { group ->
    val first=group.value.first().getJSONObject("data")
@@ -132,14 +150,14 @@ private fun snapshot(state:WorkspaceState,name:String)=state.snapshots[name]?.le
       val d=entry.getJSONObject("data")
       var details by rememberSaveable(d.getString("id")){mutableStateOf(false)}
       Row(verticalAlignment=androidx.compose.ui.Alignment.Top) {
-       Checkbox(d.optBoolean("completed"),{onComplete(entry,it)},enabled=state.signedIn&&!state.busy)
+       Checkbox(d.optBoolean("completed"),{onComplete(entry,it)},enabled=(state.signedIn||state.restorePending)&&!state.busy&&!entry.optBoolean("pending"))
        Column(Modifier.weight(1f).padding(top=10.dp)) {
         Text(d.optString("title"),style=MaterialTheme.typography.bodyMedium)
         Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
          Text("${d.optInt("minutes")} min",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
          TextButton(onClick={details=!details}){Text(if(details)"Hide details" else "Details",style=MaterialTheme.typography.labelMedium)}
         }
-        if(details)Text(d.optString("notes"),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(bottom=12.dp))
+        if(details){Text(d.optString("notes"),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(bottom=12.dp));ActionControls(entry,model)}
        }
       }
      }
@@ -150,7 +168,7 @@ private fun snapshot(state:WorkspaceState,name:String)=state.snapshots[name]?.le
   item { Text("Schedule",style=MaterialTheme.typography.titleMedium,modifier=Modifier.padding(top=12.dp)) }
   val events=snapshot(state,"calendar").optJSONArray("events").objects().filter { eventOnDay(it.optString("start"),it.optString("end"),it.optBoolean("allDay"),LocalDate.parse(date),java.time.ZoneId.systemDefault()) }.sortedBy{it.optString("start")}
   if(events.isEmpty())item { Text("No events loaded for this day",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
-  items(events) { event -> InfoCard(event.optString("title",event.optString("summary")),eventTimeLabel(event)) }
+  items(events) { event -> InfoCard(event.optString("title",event.optString("summary")),eventTimeLabel(event)){EventActions(state,event,model)} }
 
  }
 }
@@ -158,7 +176,7 @@ private fun snapshot(state:WorkspaceState,name:String)=state.snapshots[name]?.le
  }
  }
 
-@Composable private fun InboxScreen(state:WorkspaceState,onFeedback:(String,Boolean)->Unit) {
+@Composable private fun InboxScreen(state:WorkspaceState,onFeedback:(String,Boolean)->Unit,model:WorkspaceModel?) {
  var search by rememberSaveable { mutableStateOf("") };var account by rememberSaveable { mutableStateOf("all") };var important by rememberSaveable { mutableStateOf(false) }
  Column {
   OutlinedTextField(search,{search=it},label={Text("Search email")},modifier=Modifier.fillMaxWidth())
@@ -171,7 +189,7 @@ private fun snapshot(state:WorkspaceState,name:String)=state.snapshots[name]?.le
      contentPadding=PaddingValues(horizontal=4.dp,vertical=8.dp),
      colors=ButtonDefaults.textButtonColors(
       containerColor=if(a==account)MaterialTheme.colorScheme.primary else Color.Transparent,
-      contentColor=if(a==account)Color(0xFF211A38) else MaterialTheme.colorScheme.primary
+      contentColor=if(a==account)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary
      )
     ){Text(a)}
    }
@@ -185,33 +203,38 @@ private fun snapshot(state:WorkspaceState,name:String)=state.snapshots[name]?.le
    Checkbox(checked=important,onCheckedChange=null,modifier=Modifier.size(48.dp))
    Text("Important only",modifier=Modifier.weight(1f))
   }
+  Row{TextButton(onClick={model?.loadMoreMail(search,account,important)},enabled=state.signedIn&&!state.busy){Text("Search all mail")};TextButton(onClick={search="";account="all";important=false;model?.loadMoreMail("","all",false)},enabled=state.signedIn&&!state.busy){Text("Reset")}}
+  MailControls(state,model)
   val messages=snapshot(state,"mail").optJSONArray("messages").objects().filter { m -> val d=m.getJSONObject("data");(account=="all"||d.optString("account")==account)&&(d.optString("subject")+d.optString("sender")).contains(search,true)&&(!important||if(!m.isNull("override"))m.optBoolean("override") else m.optJSONObject("analysis")?.optBoolean("important")==true) }
   LazyColumn {
   item { Text("Daily brief",style=MaterialTheme.typography.titleMedium,modifier=Modifier.padding(top=16.dp));Text("Important email received today · Eastern time",style=MaterialTheme.typography.bodySmall) }
-  val brief=snapshot(state,"mail").optJSONArray("messages").objects().filter { m -> receivedEasternToday(m.getJSONObject("data").optString("receivedAt")) && (if(!m.isNull("override"))m.optBoolean("override") else m.optJSONObject("analysis")?.optBoolean("important")==true) }
+  val brief=(snapshot(state,"mail").optJSONArray("briefing")?:snapshot(state,"mail").optJSONArray("messages")).objects().filter { m -> receivedEasternToday(m.getJSONObject("data").optString("receivedAt")) && (if(!m.isNull("override"))m.optBoolean("override") else m.optJSONObject("analysis")?.optBoolean("important")==true) }
   if(brief.isEmpty())item { Text("No important email loaded for today.",style=MaterialTheme.typography.bodySmall) }
   items(brief,key={"brief-"+it.getJSONObject("data").getString("id")}) { m ->val d=m.getJSONObject("data");InfoCard(d.optString("subject"),d.optString("account")) { Text(m.optJSONObject("analysis")?.optString("summary")?.takeIf{it.isNotBlank()}?:"Marked important. Open Inbox to read the message.",style=MaterialTheme.typography.bodyMedium) } }
    item { Text("All emails",style=MaterialTheme.typography.titleMedium,modifier=Modifier.padding(top=16.dp)) }
-   if(messages.isEmpty())item { Text("No matching cached messages.") }
+   item{Text("${snapshot(state,"mail").optJSONArray("messages")?.length()?:0} cached of ${snapshot(state,"mail").optInt("total")} messages · filters above search cached metadata",style=MaterialTheme.typography.bodySmall)}
+   if(messages.isEmpty())item { Text("No matching cached messages. Use Search all mail when online.") }
+   if(!snapshot(state,"mail").isNull("nextCursor"))item{TextButton(onClick={model?.loadMoreMail()},enabled=state.signedIn&&!state.busy){Text("Load older messages")}}
    items(messages,key={it.getJSONObject("data").getString("id")}) { m -> val d=m.getJSONObject("data");var open by rememberSaveable(d.getString("id")) { mutableStateOf(false) }
     InfoCard(d.optString("subject"),d.optString("account")+" · "+d.optString("sender")) {
      TextButton(onClick={open=!open}){Text(if(open)"Close" else "Read message")}
-     if(open) { var original by rememberSaveable(d.getString("id")){mutableStateOf(false)}; TextButton(onClick={original=!original}){Text(if(original)"Readable spacing" else "Original text")}; Text(if(original)d.optString("body") else readableMail(d.optString("body")),style=MaterialTheme.typography.bodyMedium);Row { TextButton(onClick={onFeedback(d.getString("id"),true)},enabled=!state.busy){Text("Important")};TextButton(onClick={onFeedback(d.getString("id"),false)},enabled=!state.busy){Text("Not important")} };if((d.optJSONArray("attachments")?.length()?:0)>0)Text("Attachment downloads are not available in this build.") }
+     if(open) { MailBody(d,model);Row { TextButton(onClick={onFeedback(d.getString("id"),true)},enabled=!state.busy){Text("Important")};TextButton(onClick={onFeedback(d.getString("id"),false)},enabled=!state.busy){Text("Not important")} };if((d.optJSONArray("attachments")?.length()?:0)>0)MailAttachments(d,model) }
     }
    }
   }
  }
 }
-@Composable private fun PricesScreen(state:WorkspaceState) {
+@Composable private fun PricesScreen(state:WorkspaceState,model:WorkspaceModel?) {
  var used by rememberSaveable {mutableStateOf(false)}
  val data=snapshot(state,"prices")
  LazyColumn {
   item { Row { FilterChip(!used,{used=false},label={Text("New")});Spacer(Modifier.width(8.dp));FilterChip(used,{used=true},label={Text("Open-box")}) } }
   items(data.optJSONArray("items").objects()) { item ->
    InfoCard(item.optString("title"),"Target below "+String.format(Locale.US,"$%.2f",item.optInt("target_cents")/100.0)) {
+    PriceControls(item,data,model,state.signedIn&&!state.busy)
     data.optJSONArray("sources").objects().filter{it.optString("item_id")==item.optString("id")}.forEach { source ->
      Text(source.optString("store")+" · "+source.optString("status"))
-     source.optJSONObject("last_good")?.let { good ->Text("Observed "+good.optString("observedAt"));good.optJSONArray("offers").objects().filter { (it.optString("condition")!="new")==used }.forEach { offer ->Text(String.format(Locale.US,"$%.2f",offer.optInt("cents")/100.0));Text(offer.optString("availability")) } }
+     source.optJSONObject("last_good")?.let { good ->Text("Observed "+good.optString("observedAt"));good.optJSONArray("offers").objects().filter { (it.optString("condition")!="new")==used }.forEach { offer ->Text(String.format(Locale.US,"$%.2f",offer.optInt("cents")/100.0));Text(offer.optString("availability"));RetailerLink(offer.optString("url")) } }
      var details by rememberSaveable(source.optString("item_id"),source.optString("store")){mutableStateOf(false)}
      TextButton(onClick={details=!details}){Text(if(details)"Hide verification" else "Verification details")}
      if(details)Text(source.optString("detail"),style=MaterialTheme.typography.bodySmall)
@@ -223,6 +246,8 @@ private fun snapshot(state:WorkspaceState,name:String)=state.snapshots[name]?.le
 }
 @Composable private fun FocusScreen(model:TimerModel?=if(androidx.compose.ui.platform.LocalInspectionMode.current)null else viewModel()) {
  val timer = model?.state?.collectAsStateWithLifecycle()?.value ?: TimerState()
+ val timerLifecycle=androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+ LaunchedEffect(model,timerLifecycle){timerLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED){if(model!=null)while(true){model.refreshDisplay();delay(1000)}}}
  var setup by rememberSaveable {mutableStateOf(false)}
  Column(Modifier.fillMaxWidth().padding(vertical=24.dp),horizontalAlignment=androidx.compose.ui.Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(20.dp)) {
   Text(timer.label,style=MaterialTheme.typography.titleLarge)
@@ -234,7 +259,7 @@ private fun snapshot(state:WorkspaceState,name:String)=state.snapshots[name]?.le
   }
   TextButton(onClick={if(timer.running)model?.toggle();setup=true}){Text("Timer settings")}
   if(timer.steps.isNotEmpty())LazyColumn {items(timer.steps.withIndex().toList()){(i,step)->ListItem(headlineContent={Text(step.name)},supportingContent={Text("${step.minutes} min")},trailingContent={Text(if(!timer.onBreak&&i==timer.index)"Current" else if(timer.onBreak||i<timer.index)"Done" else "")})}}
-  Text("No background alerts yet. Closing the app may reset the timer.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+  TimerPermissions()
  }
  if(setup)TimerSetup(timer,{setup=false},{f,b,steps->model?.configure(f,b,steps);setup=false})
 }

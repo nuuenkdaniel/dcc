@@ -1,3 +1,4 @@
+import {ManualTaskSync} from './ManualTaskSync'
 import {Prices} from './Prices'
 import {useMail} from './useMail'
 import {EmailSummary} from './EmailSummary'
@@ -396,7 +397,7 @@ export default function App() {
                   <div className="calendar-grid">{days.map(({ date, day, current }) => <button key={date} className={`calendar-day ${current ? '' : 'outside'} ${date === selectedDate ? 'selected' : ''}`} onClick={() => setSelectedDate(date)} aria-pressed={date === selectedDate} aria-current={date === today() ? 'date' : undefined} aria-label={formatDay(date)}><span>{day}</span></button>)}</div>
                   <Schedule planner={planner} date={selectedDate} />
                 </section>
-                <section className="card tasks-card" aria-labelledby="tasks-heading">
+                <section className="card tasks-card" aria-labelledby="tasks-heading"><ManualTaskSync tasks={tasks} onApply={updateTasks}/>
                   <div className="section-heading"><div><p className="eyebrow">{formatDay(selectedDate)}</p><h2 id="tasks-heading">Daily plan</h2></div><span className="task-count">{selectedTasks.length+curatedCount}</span></div>
                   <form className="task-form" onSubmit={(event) => { event.preventDefault(); addTask() }}><label htmlFor="task-title">Task title</label><div className="form-row"><input id="task-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Add a daily action…" /><button type="submit" disabled={readError}>Add task</button></div></form>
                   <div className="task-filters"><div className="filter-tabs">{['All', 'Open', 'Important', 'Completed'].map(filter => <button key={filter} aria-pressed={taskFilter === filter} onClick={() => setTaskFilter(filter)}>{filter}</button>)}</div><input aria-label="Search tasks" placeholder="Search tasks" value={taskSearch} onChange={event => setTaskSearch(event.target.value)} /></div>
