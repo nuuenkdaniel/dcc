@@ -24,7 +24,7 @@ export function Schedule({date,planner}:{date:string;planner:Planner}){
   try{
    const auth=await fetch('/api/v1/auth/session',{signal:AbortSignal.timeout(8000)});if(!auth.ok)throw Error()
    const identity=await auth.json();if(current!==generation.current&&!force)return;setSession(identity.authenticated)
-   if(!identity.authenticated){setStatus(identity.configured?'Sign in to Daymark to reconnect. Cached events remain on this device.':'Calendar connection is not configured.');return}
+   if(!identity.authenticated){setStatus(identity.configured?'Sign in to dcc to reconnect. Cached events remain on this device.':'Calendar connection is not configured.');return}
    let syncNotice=''
    if(force){setSyncing(true);setStatus('Syncing with Nextcloud…');try{const response=await fetch('/api/v1/calendar/refresh',{method:'POST',signal:AbortSignal.timeout(90000)});if(!response.ok)syncNotice='Nextcloud refresh failed · showing cached schedule';else{const result=await response.json();if(result.status==='busy')syncNotice='Calendar sync already running; cached events shown until it finishes';if(result.status==='waiting')syncNotice='Recently requested sync · showing latest cache'}}catch{syncNotice='Nextcloud refresh unavailable · showing cached schedule'}finally{setSyncing(false)}}
    const r=await fetch('/api/v1/calendar/snapshot',{signal:AbortSignal.timeout(15000)});if(!r.ok)throw Error()

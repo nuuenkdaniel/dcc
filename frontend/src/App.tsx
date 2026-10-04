@@ -257,7 +257,7 @@ function PomodoroView() {
 
   return (
     <section className="content focus-view" id="pomodoro">
-      <header className="topbar focus-header"><div><p className="eyebrow">Deep work</p><h1>Focus session</h1><p className="subtitle">One calm timer for focused work and intentional breaks.</p></div></header>
+      <header className="topbar focus-header"><div><p className="eyebrow">Deep work</p><h1>Focus session</h1></div></header>
       <section className={`card focus-panel ${phase === 'break' ? 'break-phase' : ''}`} aria-labelledby="focus-clock-heading">
         <div className="focus-panel-top">
           <div><p className="eyebrow">Current phase</p><h2 id="focus-clock-heading">{phaseLabel}</h2></div>
@@ -359,10 +359,6 @@ export default function App() {
 
   const sidebar = (
     <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
-      <div className="sidebar-heading">
-        <div className="brand"><span className="brand-mark">P</span><span className="brand-name">Daymark</span></div>
-        <button className="sidebar-toggle" type="button" aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!sidebarCollapsed} onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}>{sidebarCollapsed ? '›' : '‹'}</button>
-      </div>
       <nav aria-label="Main navigation">
         <button type="button" aria-label="Home" title={sidebarCollapsed ? 'Home' : undefined} className={`nav-item ${previewView === 'home' ? 'active' : ''}`} onClick={() => navigate('home')}><span className="nav-icon">⌂</span><span className="nav-label">Home</span></button>
         <button type="button" aria-label="Inbox" title={sidebarCollapsed ? 'Inbox' : undefined} className={`nav-item ${previewView === 'inbox' ? 'active' : ''}`} onClick={() => navigate('inbox')}><span className="nav-icon">▣</span><span className="nav-label">Inbox</span></button>
@@ -370,7 +366,10 @@ export default function App() {
         <button type="button" aria-label="Projects" title="Projects" className={`nav-item ${previewView === 'projects' ? 'active' : ''}`} onClick={()=>navigate('projects')}><span className="nav-icon">◫</span><span className="nav-label">Projects</span></button>
         <button type="button" aria-label="Price tracker" title="Price tracker" className={`nav-item ${previewView === 'prices' ? 'active' : ''}`} onClick={()=>navigate('prices')}><span className="nav-icon">◇</span><span className="nav-label">Prices</span></button>
       </nav>
-      <button type="button" className={`nav-item settings-nav ${previewView === 'projects' ? <Projects planner={planner}/> : previewView === 'settings' ? 'active' : ''}`} aria-label="Settings" title="Settings" onClick={() => navigate('settings')}><svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 3-1 2 3 3-1 1-3 3-1 1-3-2-2 1-3-3-2-3 1-2-3Z"/><circle cx="12" cy="11" r="3"/></svg><span className="nav-label">Settings</span></button>
+      <div className="sidebar-utilities">
+      <button type="button" className={`nav-item settings-nav ${previewView === 'settings' ? 'active' : ''}`} aria-label="Settings" title="Settings" onClick={() => navigate('settings')}><svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 3-1 2 3 3-1 1-3 3-1 1-3-2-2 1-3-3-2-3 1-2-3Z"/><circle cx="12" cy="11" r="3"/></svg><span className="nav-label">Settings</span></button>
+      <button className="sidebar-toggle" type="button" aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!sidebarCollapsed} onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}>{sidebarCollapsed ? '›' : '‹'}</button>
+      </div>
       <div className="sidebar-foot"><span className="status-dot" /> Local workspace<br /><small>Calendar status in Schedule</small></div>
     </aside>
   )
@@ -389,7 +388,7 @@ export default function App() {
             <PomodoroView />
           ) : (
             <section className="content" id="home">
-              <header className="topbar"><div><p className="eyebrow">Personal workspace</p><h1>{preferencesState.preferences.name.trim() ? `${preferencesState.preferences.name.trim()}’s day` : 'Your day, at a glance.'}</h1><p className="subtitle">What to work on today, one clear action at a time.</p></div><div className="date-chip">{formatDay(selectedDate)}</div></header>
+              <header className="topbar"><div><p className="eyebrow">Personal workspace</p><h1>{preferencesState.preferences.name.trim() ? `${preferencesState.preferences.name.trim()}’s day` : 'Your day, at a glance.'}</h1></div><div className="date-chip">{formatDay(selectedDate)}</div></header>
               <div className="layout-grid">
                 <section className="card calendar-card" aria-labelledby="calendar-heading">
                   <div className="section-heading"><div><p className="eyebrow">Planning</p><h2 id="calendar-heading">{formatMonth(month)}</h2></div><div className="calendar-actions"><button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} aria-label="Previous month">←</button><button className="today-button" onClick={() => { const now = new Date(); now.setDate(1); setMonth(now); setSelectedDate(today()) }}>Today</button><button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} aria-label="Next month">→</button></div></div>
