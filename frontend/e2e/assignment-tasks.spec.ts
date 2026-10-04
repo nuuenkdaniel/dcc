@@ -5,7 +5,7 @@ test('assignment exposes linked tasks and honest empty state',async({page})=>{
  await page.route('**/api/v1/planner/snapshot',r=>r.fulfill({json:{projects:[{data:project,version:1}],actions,status:{summary:'Deferred behind nearer deadlines.'}}}))
  await page.goto('http://127.0.0.1:5173/projects')
  await page.getByText('Generated tasks (0)',{exact:true}).click()
- await expect(page.getByText(/No tasks have been created from this assignment yet/)).toBeVisible()
+ await expect(page.getByText(/No tasks have been created for this project yet/)).toBeVisible()
  actions=[{version:1,data:{id:'a',projectId:'p',title:'Draft the report',date:'2026-10-08',minutes:45,completed:false,dismissed:false,notes:'Outline the required sections.'}}]
  await page.getByRole('button',{name:'Sync now',exact:true}).click()
  await expect(page.getByText('Generated tasks (1)',{exact:true})).toBeVisible()

@@ -12,5 +12,5 @@ test('planning separates historical explanation from sync and keeps controls sty
  await expect(page.getByRole('button',{name:'Replan today',exact:true})).toHaveCSS('border-radius','6px')
  await page.getByRole('button',{name:'Replan today',exact:true}).click();await expect(page.getByRole('button',{name:'Planning queued…'})).toBeDisabled()
  await page.setViewportSize({width:375,height:950});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
- await page.locator('.planner-details').screenshot({path:'test-results/planning-status-mobile.png'})
+ await page.locator('.planner-details').filter({hasText:'Daily planning'}).screenshot({path:'test-results/planning-status-mobile.png'})
 })
