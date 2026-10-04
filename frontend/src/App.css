@@ -8,7 +8,8 @@ body { margin: 0; min-width: 320px; background: var(--bg); }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.app-shell { min-height: calc(100vh - 45px); display: flex; }
+.app-shell { --toolbar-offset: 0px; min-height: calc(100dvh - var(--toolbar-offset)); display: flex; }
+.dev-toolbar + .app-shell { --toolbar-offset: 45px; }
 .dev-toolbar { position: sticky; top: 0; z-index: 20; min-height: 45px; padding: 6px clamp(12px, 3vw, 28px); color: #c7c9dc; background: #191a2b; border-bottom: 1px solid #373955; box-shadow: 0 7px 22px rgba(4, 5, 14, .2); }
 .dev-toolbar-inner { max-width: 1680px; min-height: 32px; margin: 0 auto; display: flex; align-items: center; gap: 18px; }
 .dev-toolbar strong { display: inline-flex; align-items: center; gap: 7px; color: #d8d9e8; font-size: .72rem; letter-spacing: .04em; white-space: nowrap; }
@@ -98,7 +99,8 @@ button { cursor: pointer; }
 .inbox-empty { min-height: 360px; padding: 48px 24px; display: grid; place-items: center; align-content: center; text-align: center; }
 .inbox-empty h2 { margin: 12px 0 5px; }
 .inbox-empty p { max-width: 440px; margin: 0; color: var(--muted); }
-.login-preview { min-height: calc(100vh - 45px); padding: 40px 20px; display: grid; place-items: center; }
+.dev-toolbar + .login-preview { min-height: calc(100dvh - 45px); }
+.login-preview { min-height: 100dvh; padding: 40px 20px; display: grid; place-items: center; }
 .login-card { width: min(420px, 100%); padding: 38px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; }
 .login-brand { padding: 0 0 34px; }
 .login-card h1 { margin: 0; font-size: 2rem; }
@@ -111,7 +113,7 @@ button { cursor: pointer; }
 .login-card .local-continue { margin-top: 12px; font-weight: 500; }
 .login-card .local-continue:hover { background: var(--accent-soft); }
 .preview-disclosure { margin: 18px 0 0; color: var(--subtle); text-align: center; font-size: .68rem; }
-.sidebar { width: 232px; flex: 0 0 232px; padding: 28px 16px 20px; background: var(--sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; transition: width .18s ease, flex-basis .18s ease, padding .18s ease; }
+.sidebar { position: sticky; top: var(--toolbar-offset, 0px); height: calc(100dvh - var(--toolbar-offset, 0px)); align-self: flex-start; overflow-y: auto; width: 232px; flex: 0 0 232px; padding: 28px 16px 20px; background: var(--sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; transition: width .18s ease, flex-basis .18s ease, padding .18s ease; }
 .sidebar-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; margin-bottom: 42px; }
 .brand { min-width: 0; display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 1.06rem; font-weight: 700; letter-spacing: -.02em; }
 .brand-mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; background: var(--accent); color: #151427; font-size: .9rem; font-weight: 800; }
@@ -140,7 +142,7 @@ nav { display: grid; gap: 5px; }
 @media (max-width: 620px) { .dev-toolbar { padding-inline: 8px; }.dev-toolbar-inner { width: 100%; justify-content: center; gap: 8px; }.dev-toolbar strong, .dev-note { display: none; }.dev-view-switcher button { padding-inline: 8px; } }
 @media (max-width: 480px) {
   .app-shell { display: block; }
-  .sidebar, .sidebar.collapsed { width: 100%; padding: 12px 16px; flex-basis: auto; flex-direction: row; justify-content: space-between; align-items: center; border-right: 0; border-bottom: 1px solid var(--border); }
+  .sidebar, .sidebar.collapsed { position: static; height: auto; overflow-y: visible; width: 100%; padding: 12px 16px; flex-basis: auto; flex-direction: row; justify-content: space-between; align-items: center; border-right: 0; border-bottom: 1px solid var(--border); }
   .sidebar-heading, .sidebar.collapsed .sidebar-heading { margin: 0; }
   .brand, .sidebar.collapsed .brand { display: flex; padding: 0; }
   .brand-name { display: inline; font-size: 1rem; }
