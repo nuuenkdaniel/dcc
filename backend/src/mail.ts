@@ -2,6 +2,7 @@ import type {Pool} from 'pg'
 import type {FastifyInstance} from 'fastify'
 import {callCurator} from './planner.js'
 import {easternDay} from './planner-policy.js'
+import {mailPageRoutes} from './mail-paging.js'
 export async function migrateMail(pool:Pool){await pool.query(`CREATE TABLE IF NOT EXISTS mail_messages(id text PRIMARY KEY,account text NOT NULL,data jsonb NOT NULL,analysis jsonb,override boolean,feedback_at timestamptz);CREATE TABLE IF NOT EXISTS mail_state(account text PRIMARY KEY,last_success timestamptz,error text,next_run timestamptz NOT NULL DEFAULT now());INSERT INTO mail_state(account) VALUES('personal'),('school'),('work') ON CONFLICT DO NOTHING;CREATE TABLE IF NOT EXISTS mail_preferences(id int PRIMARY KEY CHECK(id=1),rules text NOT NULL DEFAULT '');INSERT INTO mail_preferences(id) VALUES(1) ON CONFLICT DO NOTHING;`)}
 export async function syncMail(pool:Pool){const c=await pool.connect();let locked=false
  try{locked=(await c.query('SELECT pg_try_advisory_lock(817350) ok')).rows[0].ok;if(!locked)return
@@ -34,6 +35,7 @@ export async function classifyMail(pool:Pool){
  for(const m of result.messages)await c.query('UPDATE mail_messages SET analysis=$2 WHERE id=$1',[m.id,m])
  }finally{if(locked)await c.query('SELECT pg_advisory_unlock(817351)');c.release()}}
 export function mailRoutes(app:FastifyInstance,pool:Pool){
+ mailPageRoutes(app,pool)
  app.get('/api/v1/mail/snapshot',async()=>({messages:(await pool.query('SELECT data,analysis,override FROM mail_messages ORDER BY data->>\'receivedAt\' DESC')).rows,accounts:(await pool.query('SELECT account,last_success,error FROM mail_state ORDER BY account')).rows,today:easternDay(new Date())}))
  app.post('/api/v1/mail/refresh',async()=>{await pool.query("UPDATE mail_state SET next_run=now() WHERE last_success IS NULL OR last_success<now()-interval '30 seconds'");return {queued:true}})
  app.get('/api/v1/mail/preferences',async()=>(await pool.query('SELECT rules FROM mail_preferences WHERE id=1')).rows[0])

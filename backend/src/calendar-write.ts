@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto'
 import type {Pool} from 'pg'
 import type {CalendarConfig} from './caldav.js'
 import {sourceHash,type Snapshot} from './sync.js'
-export type EventChange={id:string;calendarId?:string;eventId?:string;etag?:string;recurrenceId?:string|null;uid?:string;title:string;start:string;end:string;allDay:boolean;description:string;location:string}
+export type EventChange={operation?:'delete';id:string;calendarId?:string;eventId?:string;etag?:string;recurrenceId?:string|null;uid?:string;title:string;start:string;end:string;allDay:boolean;description:string;location:string}
 export function buildEventResource(change:EventChange,original?:string) {
  const root=original?new ICAL.Component(ICAL.parse(original)):new ICAL.Component('vcalendar')
  if(!original){root.addPropertyWithValue('version','2.0');root.addPropertyWithValue('prodid','-//Daymark//Calendar//EN')}
@@ -20,6 +20,7 @@ export function buildEventResource(change:EventChange,original?:string) {
  event.updatePropertyWithValue('dtstart',time(change.start));event.updatePropertyWithValue('dtend',time(change.end))
  event.removeAllProperties('duration')
  for(const [key,value] of Object.entries({summary:change.title,description:change.description,location:change.location,'x-daymark-mutation':change.id}))event.updatePropertyWithValue(key,value)
+ if(change.operation==='delete')event.updatePropertyWithValue('status','CANCELLED')
  event.updatePropertyWithValue('dtstamp',ICAL.Time.fromJSDate(new Date(),true))
  event.updatePropertyWithValue('sequence',Number(event.getFirstPropertyValue('sequence')??0)+1)
  return root.toString()

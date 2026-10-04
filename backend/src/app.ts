@@ -1,3 +1,4 @@
+import {manualTaskRoutes} from './manual-tasks.js'
 import {priceRoutes} from './prices.js'
 import {mailRoutes} from './mail.js'
 import {extractMaterial} from './study-material.js'
@@ -18,7 +19,7 @@ export function buildApp(options: { calendarRefresh?:()=>Promise<string>; planne
   }))
   app.register(async scope => {
     await registerAuth(scope, options.auth)
-    if(options.plannerPool){mailRoutes(scope,options.plannerPool);priceRoutes(scope,options.plannerPool)}
+    if(options.plannerPool){manualTaskRoutes(scope,options.plannerPool);mailRoutes(scope,options.plannerPool);priceRoutes(scope,options.plannerPool)}
     scope.get('/api/v1/planner/snapshot',async(_request,reply)=>options.plannerPool?plannerSnapshot(options.plannerPool):reply.code(503).send({error:'Planner unavailable'}))
     scope.post<{Body:{kind:string;version:number;data:Entity}}>('/api/v1/planner/entity',{schema:{body:{type:'object',required:['kind','version','data'],additionalProperties:false,properties:{kind:{enum:['project','action','preparation']},version:{type:'integer',minimum:0},data:{type:'object',required:['id','title'],properties:{id:{type:'string',format:'uuid'},title:{type:'string',minLength:1,maxLength:240}}}}}}},async(request,reply)=>{
       if(!options.plannerPool)return reply.code(503).send({error:'Planner unavailable'})
@@ -29,9 +30,9 @@ export function buildApp(options: { calendarRefresh?:()=>Promise<string>; planne
     scope.post<{Body:{text:string;title:string}}>('/api/v1/planner/extract',async(request,reply)=>{const b=request.body;if(typeof b?.text!=='string'||!b.text.trim()||b.text.length>100000||typeof b.title!=='string'||b.title.length>240)return reply.code(400).send({error:'Provide up to 100,000 characters of study context'});try{return validateOutline(await callCurator({mode:'extract',text:b.text,title:b.title}))}catch{return reply.code(502).send({error:'Could not extract a valid outline; your materials are retained in the panel'})}})
     scope.post('/api/v1/planner/refresh',async(_request,reply)=>{if(!options.plannerPool)return reply.code(503).send({error:'Planner unavailable'});await requestPlan(options.plannerPool);return reply.code(202).send({queued:true})})
 
-    scope.post<{Body:EventChange}>('/api/v1/calendar/changes',{schema:{body:{type:'object',required:['id','calendarId','title','start','end','allDay','description','location'],additionalProperties:false,properties:{id:{type:'string',format:'uuid'},calendarId:{type:'string',maxLength:64},eventId:{type:'string',maxLength:64},etag:{type:'string',maxLength:512},title:{type:'string',minLength:1,maxLength:500},description:{type:'string',maxLength:20000},location:{type:'string',maxLength:1000},start:{type:'string',maxLength:40},end:{type:'string',maxLength:40},allDay:{type:'boolean'}}}}},async(request,reply)=>{
+    scope.post<{Body:EventChange}>('/api/v1/calendar/changes',{schema:{body:{type:'object',required:['id','calendarId','title','start','end','allDay','description','location'],additionalProperties:false,properties:{operation:{enum:['delete']},id:{type:'string',format:'uuid'},calendarId:{type:'string',maxLength:64},eventId:{type:'string',maxLength:64},etag:{type:'string',maxLength:512},title:{type:'string',minLength:1,maxLength:500},description:{type:'string',maxLength:20000},location:{type:'string',maxLength:1000},start:{type:'string',maxLength:40},end:{type:'string',maxLength:40},allDay:{type:'boolean'}}}}},async(request,reply)=>{
      if(!options.calendarChange)return reply.code(503).send({error:'Calendar writes are not configured'})
-     const c=request.body;const pattern=c.allDay?/^\d{4}-\d{2}-\d{2}$/:/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/
+     const c=request.body;if(c.operation==='delete'&&!c.eventId)return reply.code(400).send({error:'Deletion requires an existing event'});const pattern=c.allDay?/^\d{4}-\d{2}-\d{2}$/:/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/
      if(!pattern.test(c.start)||!pattern.test(c.end)||!Number.isFinite(Date.parse(c.start))||!Number.isFinite(Date.parse(c.end))||Date.parse(c.end)<=Date.parse(c.start))return reply.code(400).send({error:'Invalid event dates'})
      try{const result=await options.calendarChange(c);return reply.code(result.code).send(result)}catch{return reply.code(502).send({error:'Calendar save failed; retry safely'})}
     })

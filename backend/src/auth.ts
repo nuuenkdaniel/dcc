@@ -9,6 +9,7 @@ export interface SessionStore {
  remove(id:string):Promise<void>
 }
 export type AuthConfig={username:string;password:string;origin:string;store:SessionStore}
+export const SESSION_SECONDS=30*24*60*60
 const digest=(text:string)=>createHash('sha256').update(text).digest('hex')
 const derive=promisify(scrypt)
 export async function registerAuth(app:FastifyInstance, config?:AuthConfig) {
@@ -40,8 +41,8 @@ export async function registerAuth(app:FastifyInstance, config?:AuthConfig) {
   const old=request.cookies.daymark_session
   if(old) await config.store.remove(digest(old))
   const token=randomBytes(32).toString('hex')
-  await config.store.put(digest(token),identity,Date.now()+86400000)
-  reply.setCookie('daymark_session',token,{path:'/',httpOnly:true,sameSite:'strict',secure:config.origin.startsWith('https:'),maxAge:86400})
+  await config.store.put(digest(token),identity,Date.now()+SESSION_SECONDS*1000)
+  reply.setCookie('daymark_session',token,{path:'/',httpOnly:true,sameSite:'strict',secure:config.origin.startsWith('https:'),maxAge:SESSION_SECONDS})
   return {authenticated:true}
  })
  app.post('/api/v1/auth/logout',async(request,reply)=>{
