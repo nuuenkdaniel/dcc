@@ -17,7 +17,7 @@ async function syntheticApi(route:Route,state:SyntheticState){
   return route.fulfill({json:{}})
  }
  if(path==='/api/v1/auth/login')return route.fulfill({status:401,json:{error:'Synthetic login not configured for this test'}})
- if(path==='/api/v1/auth/logout')return route.fulfill({json:{signedOut:true}})
+  if(path==='/api/v1/auth/logout')return route.fulfill({json:{authenticated:false}})
  if(path==='/api/v1/calendar/refresh')return route.fulfill({json:{status:'synced'}})
  if(path==='/api/v1/calendar/changes')return route.fulfill({json:{saved:true}})
  if(path==='/api/v1/planner/manual-tasks'){const body=request.postDataJSON() as {tasks?:unknown[]};state.manualTasks=Array.isArray(body.tasks)?body.tasks:state.manualTasks;state.manualVersion++;return route.fulfill({json:{code:200}})}
