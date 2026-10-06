@@ -1,4 +1,4 @@
-import {fireEvent,render,screen} from '@testing-library/react'
+import {fireEvent,render,screen,waitFor} from '@testing-library/react'
 import {afterEach,expect,it,vi} from 'vitest'
 import {EmailBody} from './EmailBody'
 import {safeEmailStyle,sanitizeEmailHtml} from './emailHtml'
@@ -76,6 +76,20 @@ it('fetches HTML only when eligible, defaults to formatted, and retains the text
  fireEvent.click(screen.getByRole('button',{name:'Formatted'}))
  expect(screen.getByText('Privacy details')).toBeInTheDocument()
  expect(screen.queryByRole('button',{name:'Load images'})).not.toBeInTheDocument()
+})
+
+it('shows an honest loading choice and retains text when HTML completes',async()=>{
+ let resolveRequest!:(response:Response)=>void
+ vi.stubGlobal('fetch',vi.fn(()=>new Promise<Response>(resolve=>{resolveRequest=resolve})))
+ const {container}=render(<EmailBody id={'c'.repeat(64)} body="Plain fallback" hasHtml/>)
+ expect(screen.getByRole('status')).toHaveTextContent('Loading formatted view')
+ expect(container.querySelector('.email-body')).toBeNull()
+ fireEvent.click(screen.getByRole('button',{name:'Show text now'}))
+ expect(container.querySelector('.email-body')).toHaveTextContent('Plain fallback')
+ resolveRequest({ok:true,json:async()=>({html:'<p>Formatted later</p>'})} as Response)
+ await waitFor(()=>expect(screen.getByRole('button',{name:'Formatted'})).toBeInTheDocument())
+ expect(container.querySelector('.email-body')).toHaveTextContent('Plain fallback')
+ expect(screen.queryByTitle('Formatted email')).not.toBeInTheDocument()
 })
 
 it('does not request HTML when the MIME cache says none exists',()=>{
