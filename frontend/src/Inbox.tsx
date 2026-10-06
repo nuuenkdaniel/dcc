@@ -1,8 +1,10 @@
 import {useState} from 'react'
 import {EmailBody} from './EmailBody'
+import {EmailHtmlCacheProvider} from './EmailHtmlCacheProvider'
 import {accountLabel,isImportant,type MailState} from './useMail'
 
-export function Inbox({mail}:{mail:MailState}){
+export function Inbox(props:{mail:MailState}){return <EmailHtmlCacheProvider><InboxContent {...props}/></EmailHtmlCacheProvider>}
+function InboxContent({mail}:{mail:MailState}){
  const selected=new URLSearchParams(location.search).get('message')
  const [account,setAccount]=useState('all'),[search,setSearch]=useState(''),[filter,setFilter]=useState('all'),[limit,setLimit]=useState(50),[opened,setOpened]=useState<Set<string>>(()=>new Set(selected?[selected]:[]))
  const rows=mail.snapshot.messages.filter(m=>(account==='all'||m.data.account===account)&&(filter==='all'||filter==='unread'&&m.data.unread||filter==='important'&&isImportant(m))&&[m.data.subject,m.data.sender,m.data.body].join(' ').toLowerCase().includes(search.toLowerCase()))

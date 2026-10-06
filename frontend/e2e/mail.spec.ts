@@ -1,5 +1,5 @@
 import {test,expect} from '@playwright/test'
-const origin=`http://127.0.0.1:${process.env.E2E_PORT??'5173'}`
+const origin=`http://127.0.0.1:${process.env.E2E_PORT??'5174'}`
 const msg=(id:string,receivedAt:string,important:boolean,override:boolean|null=null)=>({data:{id,account:'school',address:'test@example.invalid',subject:'Test message '+id,sender:'Test sender',to:'Test recipient',receivedAt,body:'Safe test body <script>alert(1)</script>',bodyNotice:'',unread:true,attachments:[]},analysis:{important,summary:'Test summary '+id,reason:'Test reason'},override})
 test('daily briefing uses Eastern today and manual importance; inbox keeps older mail',async({page})=>{
  const today=new Date().toISOString(),old='2020-01-01T12:00:00Z';let messages=[msg('today',today,true),msg('old',old,true),msg('hidden',today,true,false),msg('manual',today,false,true)]
@@ -84,4 +84,30 @@ test('formatted HTML stays isolated and automatically loads only eligible remote
  await expect(card.getByText('Privacy details')).toBeVisible()
  await card.getByRole('button',{name:'Text'}).click()
  await expect(card.locator('.email-body')).toHaveText('Synthetic plain-text fallback')
+})
+
+test('formatted HTML loading choice survives completion and reopen uses the Inbox cache',async({page})=>{
+ const id='c'.repeat(64),message=msg(id,new Date().toISOString(),true)
+ message.data.body='Delayed plain-text fallback';Reflect.set(message.data,'hasHtml',true)
+ let releaseResponse!:()=>void,htmlRequests=0
+ const delayed=new Promise<void>(resolve=>{releaseResponse=resolve})
+ await page.route('**/api/v1/mail/snapshot',route=>route.fulfill({json:{messages:[message],accounts:[],today:new Date().toISOString().slice(0,10)}}))
+ await page.route('**/api/v1/mail/html/**',async route=>{htmlRequests++;await delayed;await route.fulfill({json:{html:'<p>Cached browser message</p>',hasHtml:true}})})
+ await page.goto(`${origin}/inbox?message=${id}`)
+ const card=page.locator('.email-card[open]')
+ await expect(card.getByRole('status')).toContainText('Loading formatted view')
+ await card.getByRole('button',{name:'Show text now'}).click()
+ await expect(card.locator('.email-body')).toHaveText('Delayed plain-text fallback')
+ releaseResponse()
+ await expect(card.getByRole('button',{name:'Formatted'})).toBeVisible()
+ await expect(card.locator('.email-body')).toHaveText('Delayed plain-text fallback')
+ await expect(card.locator('iframe[title="Formatted email"]')).toHaveCount(0)
+
+ await card.locator('summary').click()
+ await expect(page.locator('.email-card')).not.toHaveAttribute('open','')
+ await page.locator('.email-card summary').click()
+ const reopened=page.locator('.email-card[open]')
+ await expect(reopened.getByRole('status')).toHaveCount(0)
+ await expect(reopened.frameLocator('iframe[title="Formatted email"]').getByText('Cached browser message')).toBeVisible()
+ expect(htmlRequests).toBe(1)
 })
