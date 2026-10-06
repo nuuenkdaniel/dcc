@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -139,6 +140,53 @@ it('runs mini focus sessions in order and breaks after the last one', () => {
   act(() => vi.advanceTimersByTime(60_000))
   expect(screen.getByText('Break', { selector: '#focus-clock-heading' })).toBeInTheDocument()
   expect(screen.getByTestId('session-time')).toHaveTextContent('05:00')
+})
+
+it('starts immediately and waits a full second before the first displayed decrement', () => {
+  vi.useFakeTimers()
+  window.history.replaceState({}, '', '/pomodoro')
+  render(<StrictMode><App /></StrictMode>)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Start session' }))
+  expect(screen.getByRole('button', { name: 'Pause session' })).toBeInTheDocument()
+  expect(screen.getByText('Stay with the task', { selector: '.focus-status' })).toBeInTheDocument()
+  expect(screen.getByTestId('session-time')).toHaveTextContent('25:00')
+
+  act(() => vi.advanceTimersByTime(999))
+  expect(screen.getByTestId('session-time')).toHaveTextContent('25:00')
+  act(() => vi.advanceTimersByTime(1))
+  expect(screen.getByTestId('session-time')).toHaveTextContent('24:59')
+})
+
+it('preserves fractional elapsed time through a pause and resume', () => {
+  vi.useFakeTimers()
+  window.history.replaceState({}, '', '/pomodoro')
+  render(<App />)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Start session' }))
+  act(() => vi.advanceTimersByTime(400))
+  fireEvent.click(screen.getByRole('button', { name: 'Pause session' }))
+  act(() => vi.advanceTimersByTime(2000))
+  expect(screen.getByTestId('session-time')).toHaveTextContent('25:00')
+
+  fireEvent.click(screen.getByRole('button', { name: 'Resume session' }))
+  act(() => vi.advanceTimersByTime(599))
+  expect(screen.getByTestId('session-time')).toHaveTextContent('25:00')
+  act(() => vi.advanceTimersByTime(1))
+  expect(screen.getByTestId('session-time')).toHaveTextContent('24:59')
+})
+
+it('does not recreate the running interval on timer renders', () => {
+  vi.useFakeTimers()
+  window.history.replaceState({}, '', '/pomodoro')
+  const intervalSpy = vi.spyOn(window, 'setInterval')
+  render(<App />)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Start session' }))
+  const intervalsAfterStart = intervalSpy.mock.calls.length
+  act(() => vi.advanceTimersByTime(2000))
+  expect(intervalSpy).toHaveBeenCalledTimes(intervalsAfterStart)
+  intervalSpy.mockRestore()
 })
 
 it('pauses and resets the ordered mini focus sequence', () => {
