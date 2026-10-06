@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
 test('project saves text and extracted file context for planning',async({page})=>{
  let projects:any[]=[]
  await page.route('**/api/v1/planner/snapshot',r=>r.fulfill({json:{projects,actions:[],preparations:[],status:{}}}))

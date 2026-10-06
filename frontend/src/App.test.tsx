@@ -1,6 +1,10 @@
 import { StrictMode } from 'react'
+import type {ReactNode} from 'react'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import App from './App'
+
+vi.mock('./AuthGate',()=>({AuthGate:({children}:{children:ReactNode})=>children}))
 
 afterEach(() => vi.useRealTimers())
 
@@ -16,8 +20,6 @@ it('warns instead of crashing when stored records are invalid', () => {
   render(<App />)
   expect(screen.getByRole('alert')).toHaveTextContent(/stored tasks/i)
 })
-import App from './App'
-
 beforeEach(() => {
   window.localStorage.clear()
   window.history.replaceState({}, '', '/')
@@ -60,9 +62,6 @@ it('switches between development page previews', () => {
   fireEvent.click(screen.getByRole('button', { name: 'Inbox view' }))
   expect(screen.getByRole('heading', { name: 'Inbox' })).toBeInTheDocument()
   expect(screen.queryByRole('heading', { name: 'Daily plan' })).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: 'Login view' }))
-  expect(screen.getByRole('heading', { name: 'Welcome back' })).toBeInTheDocument()
-  expect(screen.queryByRole('navigation', { name: 'Main navigation' })).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Home view' }))
   expect(screen.getByRole('heading', { name: 'Daily plan' })).toBeInTheDocument()
 })

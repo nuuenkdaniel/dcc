@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
 test('Projects retains an offline draft and sends it on reconnect',async({page})=>{
  await page.route('**/api/v1/planner/**',r=>r.abort())
  await page.goto('http://127.0.0.1:5173/projects')

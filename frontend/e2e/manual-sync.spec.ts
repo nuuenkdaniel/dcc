@@ -1,8 +1,9 @@
-import {test,expect,type BrowserContext} from '@playwright/test'
+import {test,expect,mockAuthenticatedApi,type BrowserContext} from './authenticated'
 test('manual tasks sync between isolated clients without replacing unrelated tasks',async({browser})=>{
  let version=0;let tasks:any[]=[]
  const a=await browser.newContext(),b=await browser.newContext()
  async function setup(context:BrowserContext,id:string){
+  await mockAuthenticatedApi(context)
   await context.addInitScript(({id})=>localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([{id,title:id,date:'2026-10-04',notes:'',completed:false}])),{id})
   await context.route('**/api/v1/planner/manual-tasks',async route=>{
    if(route.request().method()==='GET')return route.fulfill({json:{version,data:{tasks}}})

@@ -1,5 +1,5 @@
-import {test,expect} from '@playwright/test'
-const origin=`http://127.0.0.1:${process.env.E2E_PORT??'5174'}`
+import {test,expect} from './authenticated'
+const origin=`http://127.0.0.1:${process.env.E2E_PORT??'5173'}`
 const msg=(id:string,receivedAt:string,important:boolean,override:boolean|null=null)=>({data:{id,account:'school',address:'test@example.invalid',subject:'Test message '+id,sender:'Test sender',to:'Test recipient',receivedAt,body:'Safe test body <script>alert(1)</script>',bodyNotice:'',unread:true,attachments:[]},analysis:{important,summary:'Test summary '+id,reason:'Test reason'},override})
 test('daily briefing uses Eastern today and manual importance; inbox keeps older mail',async({page})=>{
  const today=new Date().toISOString(),old='2020-01-01T12:00:00Z';let messages=[msg('today',today,true),msg('old',old,true),msg('hidden',today,true,false),msg('manual',today,false,true)]

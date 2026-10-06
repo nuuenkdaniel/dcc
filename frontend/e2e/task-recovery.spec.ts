@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
 test('unplaced tasks remain visible independently of selected date',async({page})=>{
  await page.route('**/api/v1/planner/snapshot',r=>r.fulfill({json:{projects:[],preparations:[],actions:[{kind:'action',version:1,data:{id:'unplaced',title:'Unfinished review',date:'',needsRescheduling:true,minutes:45,notes:'',completed:false,dismissed:false,projectId:''}}],status:{}}}));
  await page.goto('http://127.0.0.1:5173/');await expect(page.getByRole('region',{name:'Needs rescheduling'})).toContainText('Unfinished review');

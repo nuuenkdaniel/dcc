@@ -6,7 +6,7 @@ import {usePlanner,studyCardCount,visiblePlanGroups} from './usePlanner'
 import {Projects,ActionCard,StudyCard,PlanControls} from './Projects'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import { Login } from './Login'
+import { AuthGate } from './AuthGate'
 import { Schedule } from './Schedule'
 import { Inbox } from './Inbox'
 import { Settings } from './Settings'
@@ -84,7 +84,7 @@ function DevToolbar({ view, sampleData, onViewChange, onSampleDataChange }: {
       <div className="dev-toolbar-inner">
         <strong><span aria-hidden="true">◇</span> Development</strong>
         <div className="dev-view-switcher" aria-label="Preview view">
-          {(['home', 'inbox', 'pomodoro', 'login'] as const).map((option) => (
+          {(['home', 'inbox', 'pomodoro'] as const).map((option) => (
             <button key={option} type="button" aria-label={`${option[0].toUpperCase()}${option.slice(1)} view`} aria-pressed={view === option} onClick={() => onViewChange(option)}>
               {option[0].toUpperCase()}{option.slice(1)}
             </button>
@@ -288,7 +288,7 @@ function PomodoroView() {
   )
 }
 
-export default function App() {
+export function Workspace() {
   const mail=useMail()
   const preferencesState = usePreferences()
   const planner = usePlanner()
@@ -371,10 +371,7 @@ export default function App() {
   return (
     <>
       {import.meta.env.DEV && <DevToolbar view={previewView} sampleData={showSampleData} onViewChange={navigate} onSampleDataChange={setShowSampleData} />}
-      {previewView === 'login' ? (
-        <Login onContinue={()=>navigate('home')} />
-      ) : (
-        <main className="app-shell">
+         <main className="app-shell">
           {sidebar}
           {previewView === 'prices' ? <Prices/> : previewView === 'projects' ? <Projects planner={planner}/> : previewView === 'settings' ? <Settings {...preferencesState} /> : previewView === 'inbox' ? (
             <Inbox mail={mail} />
@@ -408,8 +405,9 @@ export default function App() {
               <EmailSummary mail={mail}/>
             </section>
           )}
-        </main>
-      )}
+         </main>
     </>
   )
 }
+
+export default function App(){return <AuthGate><Workspace/></AuthGate>}

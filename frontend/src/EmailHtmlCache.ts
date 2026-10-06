@@ -1,4 +1,5 @@
 import {sanitizeEmailHtml} from './emailHtml'
+import {protectedFetch} from './auth'
 
 export const EMAIL_HTML_CACHE_MAX_ENTRIES=20
 export const EMAIL_HTML_CACHE_MAX_BYTES=4*1024*1024
@@ -16,7 +17,7 @@ export class EmailHtmlCache{
  private destroyTimer:ReturnType<typeof setTimeout>|undefined
  private readonly fetcher:FetchLike
 
- constructor(fetcher:FetchLike=(input,init)=>fetch(input,init)){this.fetcher=fetcher}
+  constructor(fetcher:FetchLike=(input,init)=>protectedFetch(input,init)){this.fetcher=fetcher}
 
  retain(){
   if(this.destroyTimer!==undefined){clearTimeout(this.destroyTimer);this.destroyTimer=undefined}

@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
 test('price tracker condition tabs, exact threshold, settings and cached reload',async({page})=>{
  const now=new Date().toISOString();let target=280000,paused=false
  const item={id:'xps',title:'XPS 14 · X7 · OLED · 32 GB · 1 TB'}

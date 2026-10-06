@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
 test('assignment exposes linked tasks and honest empty state',async({page})=>{
  const project={id:'p',title:'Assignment example',kind:'assignment',category:'school',status:'active',remainingMinutes:60,progress:'',deadline:'2026-10-18'}
  let actions:any[]=[]

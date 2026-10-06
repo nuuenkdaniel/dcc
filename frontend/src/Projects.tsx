@@ -1,6 +1,7 @@
 import {useState} from 'react'
 import type {Planner,Project,Action} from './usePlanner'
 import {formatPlanningMinutes,formatProjectDate} from './projectFormatting'
+import {protectedFetch} from './auth'
 function projectActionGroups(actions:Action[]){
  const groups=new Map<string,Action[]>()
  for(const action of actions){
@@ -23,7 +24,7 @@ export function Projects({planner:p}:{planner:Planner}){
   try{
    if(file.size>5*1024*1024)throw Error('Maximum file size is 5 MB')
    let binary='';for(const byte of new Uint8Array(await file.arrayBuffer()))binary+=String.fromCharCode(byte)
-   const response=await fetch('/api/v1/planner/material',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:file.name,content:btoa(binary)})})
+   const response=await protectedFetch('/api/v1/planner/material',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:file.name,content:btoa(binary)})})
    if(!response.ok)throw Error('Could not read this file')
    const resource=await response.json() as {name:string;text:string}
    field({resources:[...(draft?.resources??[]),resource]})

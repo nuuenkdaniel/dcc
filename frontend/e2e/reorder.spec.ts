@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './authenticated'
 
 test('drag and keyboard reorder determine focus order', async ({ page }) => {
   await page.goto('http://127.0.0.1:5173/pomodoro')
