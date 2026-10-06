@@ -12,6 +12,7 @@ import { Inbox } from './Inbox'
 import { Settings } from './Settings'
 import { usePreferences } from './usePreferences'
 import { advanceFocusTimer, type FocusTimerState, type MiniTimer } from './focusTimer'
+import { LogoutAction } from './LogoutAction'
 
 type Task = { id: string; title: string; date: string; notes: string; completed: boolean; sample?: boolean; important?: boolean }
 type PreviewView = 'home' | 'inbox' | 'pomodoro' | 'login' | 'settings' | 'projects' | 'prices'
@@ -91,7 +92,8 @@ function DevToolbar({ view, sampleData, onViewChange, onSampleDataChange }: {
           ))}
         </div>
         <label className="dev-toggle"><input type="checkbox" checked={sampleData} onChange={(event) => onSampleDataChange(event.target.checked)} /><span>Sample data</span></label>
-        <span className="dev-note">Local preview controls</span>
+        <span className="dev-note">Development only · performs a real logout</span>
+        <LogoutAction className="dev-logout" label="Sign out / test login"/>
       </div>
     </div>
   )

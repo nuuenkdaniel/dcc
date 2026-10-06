@@ -10,10 +10,38 @@ test('signed-out users never see private cached workspace data',async({page})=>{
 })
 
 test('a valid existing session restores the requested route',async({page})=>{
- await page.goto('http://127.0.0.1:5173/projects')
- await expect(page).toHaveURL('http://127.0.0.1:5173/projects')
- await expect(page.getByRole('heading',{name:'Projects',exact:true})).toBeVisible()
- await expect(page.getByLabel('Username',{exact:true})).toHaveCount(0)
+  let loginRequests=0
+  await page.route('**/api/v1/auth/login',route=>{loginRequests++;return route.fulfill({json:{authenticated:true}})})
+  await page.goto('http://127.0.0.1:5173/projects')
+  await expect(page).toHaveURL('http://127.0.0.1:5173/projects')
+  await expect(page.getByRole('heading',{name:'Projects',exact:true})).toBeVisible()
+  await expect(page.getByLabel('Username',{exact:true})).toHaveCount(0)
+  await page.reload()
+  await expect(page.getByRole('heading',{name:'Projects',exact:true})).toBeVisible()
+  expect(loginRequests).toBe(0)
+})
+
+test('development logout posts an empty object and gates the preserved route',async({page})=>{
+  let request:{method:string;body:string|null}|undefined
+  await page.addInitScript(()=>{localStorage.setItem('productivity-app.tasks.v1','[]');localStorage.setItem('daymark.planner.v1','kept-draft')})
+  await page.route('**/api/v1/auth/logout',route=>{request={method:route.request().method(),body:route.request().postData()};return route.fulfill({json:{authenticated:false}})})
+  await page.goto('http://127.0.0.1:5173/projects')
+  await page.getByRole('button',{name:'Sign out / test login',exact:true}).click()
+  await expect(page.getByLabel('Username',{exact:true})).toBeVisible()
+  await expect(page).toHaveURL(/\/login\?next=%2Fprojects$/)
+  expect(request).toEqual({method:'POST',body:'{}'})
+  expect(await page.evaluate(()=>localStorage.getItem('daymark.planner.v1'))).toBe('kept-draft')
+  await expect(page.getByRole('toolbar',{name:'Development tools'})).toHaveCount(0)
+})
+
+test('Settings logout uses the real endpoint and preserves the Settings return route',async({page})=>{
+  let body:string|null=null
+  await page.route('**/api/v1/auth/logout',route=>{body=route.request().postData();return route.fulfill({json:{authenticated:false}})})
+  await page.goto('http://127.0.0.1:5173/settings')
+  await page.getByRole('button',{name:'Sign out',exact:true}).click()
+  await expect(page.getByLabel('Username',{exact:true})).toBeVisible()
+  await expect(page).toHaveURL(/\/login\?next=%2Fsettings$/)
+  expect(body).toBe('{}')
 })
 
 test('a protected 401 returns to login without changing browser drafts',async({page})=>{
