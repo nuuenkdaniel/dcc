@@ -49,7 +49,7 @@ it('creates, expands, completes, and restores a local task', () => {
 
 it('shows a quiet empty state without seeded tasks', () => {
   render(<App />)
-  expect(screen.getByText('No tasks for this day')).toBeInTheDocument()
+  expect(screen.getByText('Loading tasks…')).toBeInTheDocument()
   expect(screen.getByText(/saved only in this browser/i)).toBeInTheDocument()
 })
 
