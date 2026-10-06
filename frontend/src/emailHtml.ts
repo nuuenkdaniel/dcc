@@ -77,7 +77,7 @@ function convertedStyle(element:Element|null,includeText=false){
 
 function hostLabel(href:string){try{return new URL(href).hostname}catch{return ''}}
 
-export function sanitizeEmailHtml(raw:string,loadImages=false){
+export function sanitizeEmailHtml(raw:string){
  const template=document.createElement('template'),root=document.createElement('div'),imageSources=new WeakMap<Element,string>(),anchorLabels=new WeakMap<Element,string>()
  template.content.append(root);root.innerHTML=raw
  const wrapperStyle=[convertedStyle(openingAttributes(raw,'html'),true),convertedStyle(openingAttributes(raw,'body'),true)].filter(Boolean).join(';')
@@ -94,7 +94,7 @@ export function sanitizeEmailHtml(raw:string,loadImages=false){
   for(const attr of [...element.attributes])if(attr.name.startsWith('on')||['srcset','ping','download','formaction'].includes(attr.name))element.removeAttribute(attr.name)
   if(element.tagName==='IMG'){
    const source=imageSources.get(element)||'',readable=readableEmailUrl(source)
-   if(readable){element.setAttribute('data-email-image',readable.target);if(loadImages)element.setAttribute('src',readable.target)}
+   if(readable){element.setAttribute('data-email-image',readable.target);element.setAttribute('src',readable.target)}
    else if(source.toLowerCase().startsWith('cid:'))element.setAttribute('alt',element.getAttribute('alt')||'[Embedded image unavailable]')
   }
  }
@@ -106,6 +106,6 @@ export function sanitizeEmailHtml(raw:string,loadImages=false){
  }
  root.className='email-content'
  root.setAttribute('style',`min-height:calc(100vh - 24px);box-sizing:border-box;${wrapperStyle}`)
- const csp=loadImages?"default-src 'none'; style-src 'unsafe-inline'; img-src http: https:; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'":"default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
+ const csp="default-src 'none'; style-src 'unsafe-inline'; img-src http: https:; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="referrer" content="no-referrer"></head><body style="margin:12px;font-family:system-ui,sans-serif;font-size:14px">${template.innerHTML}</body></html>`
 }

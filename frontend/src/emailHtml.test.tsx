@@ -1,4 +1,4 @@
-import {fireEvent,render,screen,waitFor} from '@testing-library/react'
+import {fireEvent,render,screen} from '@testing-library/react'
 import {afterEach,expect,it,vi} from 'vitest'
 import {EmailBody} from './EmailBody'
 import {safeEmailStyle,sanitizeEmailHtml} from './emailHtml'
@@ -13,20 +13,23 @@ it('removes active content and keeps only a small safe inline-style subset',()=>
  expect(doc.querySelector('table')?.getAttribute('style')).toBe('color:#123;border-collapse:collapse')
  expect(doc.querySelector('td')?.getAttribute('onclick')).toBeNull()
  expect(result).toContain("default-src 'none'")
- expect(result).toContain("img-src 'none'")
+ expect(result).toContain('img-src http: https:')
+ expect(result).toContain("font-src 'none'")
+ expect(result).toContain("frame-src 'none'")
+ expect(result).toContain("form-action 'none'")
  expect(safeEmailStyle('font-family:Arial;color:red;--secret:x;position:absolute')).toBe('font-family:Arial;color:red')
  expect(safeEmailStyle('padding:1px 2px;border-spacing:2px 3px')).toBe('padding:1px 2px;border-spacing:2px 3px')
 })
 
-it('blocks images by default and enables only risk-checked HTTP(S) URLs explicitly',()=>{
- const raw='<img alt="remote" src="https://images.example/pixel.png"><img src="http://127.0.0.1/private"><img src="cid:part1"><img srcset="https://evil.example/2x 2x" src="javascript:alert(1)">'
- const blocked=new DOMParser().parseFromString(sanitizeEmailHtml(raw),'text/html')
- expect([...blocked.images].every(image=>!image.hasAttribute('src'))).toBe(true)
- expect(blocked.documentElement.innerHTML).not.toContain('srcset')
- const loaded=new DOMParser().parseFromString(sanitizeEmailHtml(raw,true),'text/html')
- expect([...loaded.images].map(image=>image.getAttribute('src'))).toEqual(['https://images.example/pixel.png',null,null,null])
- expect(loaded.documentElement.innerHTML).toContain('img-src http: https:')
- expect(loaded.body.textContent).not.toContain('evil.example')
+it('automatically includes only eligible HTTP(S) image URLs',()=>{
+ const unsafe=['http://127.0.0.1/private','http://192.168.1.8/private','http://2130706433/private','http://localhost/private','https://user@evil.example/pixel','https://example.com/%E2%80%AEhidden','javascript:alert(1)','data:image/png;base64,AAAA']
+ const raw='<img alt="remote" src="https://images.example/pixel.png">'+unsafe.map(source=>`<img src="${source}">`).join('')+'<img src="cid:part1"><img srcset="https://evil.example/2x 2x">'
+ const doc=new DOMParser().parseFromString(sanitizeEmailHtml(raw),'text/html')
+ expect([...doc.images].map(image=>image.getAttribute('src'))).toEqual(['https://images.example/pixel.png',...unsafe.map(()=>null),null,null])
+ expect(doc.documentElement.innerHTML).not.toContain('srcset')
+ expect(doc.documentElement.innerHTML).toContain('img-src http: https:')
+ expect(doc.querySelector('img[src="cid:part1"]')).toBeNull()
+ expect([...doc.images].at(-2)?.getAttribute('alt')).toBe('[Embedded image unavailable]')
 })
 
 it('keeps safe links and their content, exposes destinations accessibly, and disables risky destinations',()=>{
@@ -66,14 +69,13 @@ it('fetches HTML only when eligible, defaults to formatted, and retains the text
  expect(fetchMock).toHaveBeenCalledTimes(1)
  expect(frame).toHaveAttribute('sandbox','allow-popups allow-popups-to-escape-sandbox')
  expect(frame).toHaveAttribute('referrerpolicy','no-referrer')
- expect(frame.getAttribute('srcdoc')).toContain("img-src 'none'")
+ expect(frame.getAttribute('srcdoc')).toContain('img-src http: https:')
+ expect(frame.getAttribute('srcdoc')).toContain('src="https://images.example/p.png"')
  fireEvent.click(screen.getByRole('button',{name:'Text'}))
  expect(container.querySelector('.email-body')).toHaveTextContent('Plain fallback')
  fireEvent.click(screen.getByRole('button',{name:'Formatted'}))
- expect(screen.getByText('Remote images are blocked for privacy.')).toBeInTheDocument()
  expect(screen.getByText('Privacy details')).toBeInTheDocument()
- fireEvent.click(screen.getByRole('button',{name:'Load images'}))
- await waitFor(()=>expect(screen.getByTitle('Formatted email').getAttribute('srcdoc')).toContain('src="https://images.example/p.png"'))
+ expect(screen.queryByRole('button',{name:'Load images'})).not.toBeInTheDocument()
 })
 
 it('does not request HTML when the MIME cache says none exists',()=>{
