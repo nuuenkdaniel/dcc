@@ -11,10 +11,10 @@ test('mobile mail pagination, metadata-only results, body and search',async()=>{
  const pool=new Pool({connectionString:process.env.DATABASE_URL,options:`-c search_path=${schema}`});const app=Fastify()
  try{
   await migrateMail(pool)
-  await pool.query(`INSERT INTO mail_messages(id,account,data,override) SELECT lpad(n::text,64,'0'),'school',jsonb_build_object('id',lpad(n::text,64,'0'),'account','school','subject','Fixture '||n,'sender','fixture@example.test','body','Fixture body','receivedAt',to_char('2026-10-01'::timestamp+n*interval '1 minute','YYYY-MM-DD"T"HH24:MI:SS"Z"')),true FROM generate_series(1,205) n`)
+   await pool.query(`INSERT INTO mail_messages(id,account,data,override) SELECT lpad(n::text,64,'0'),'school',jsonb_build_object('id',lpad(n::text,64,'0'),'account','school','subject','Fixture '||n,'sender','fixture@example.test','body','Fixture body','html','<p>Large private HTML</p>','hasHtml',true,'receivedAt',to_char('2026-10-01'::timestamp+n*interval '1 minute','YYYY-MM-DD"T"HH24:MI:SS"Z"')),true FROM generate_series(1,205) n`)
   mailPageRoutes(app,pool)
   const ids:string[]=[];let cursor:string|null=null
-  do{const r=await app.inject('/api/v1/mail/page'+(cursor?'?cursor='+encodeURIComponent(cursor):''));assert.equal(r.statusCode,200);const p=r.json();assert.equal(p.total,205);assert.ok(p.messages.length<=100);for(const m of p.messages){assert.equal('body' in m.data,false);ids.push(m.data.id)}cursor=p.nextCursor}while(cursor)
+   do{const r=await app.inject('/api/v1/mail/page'+(cursor?'?cursor='+encodeURIComponent(cursor):''));assert.equal(r.statusCode,200);const p=r.json();assert.equal(p.total,205);assert.ok(p.messages.length<=100);for(const m of p.messages){assert.equal('body' in m.data,false);assert.equal('html' in m.data,false);assert.equal(m.data.hasHtml,true);ids.push(m.data.id)}cursor=p.nextCursor}while(cursor)
   assert.equal(ids.length,205);assert.equal(new Set(ids).size,205)
   const body=await app.inject('/api/v1/mail/message/'+ids[0]);assert.equal(body.json().body,'Fixture body')
   assert.equal((await app.inject('/api/v1/mail/page?q=Fixture%20205')).json().total,1)
