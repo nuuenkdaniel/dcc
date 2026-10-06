@@ -54,7 +54,7 @@ test('inbox switches between readable spacing and exact original text',async({pa
 
 test('formatted HTML stays isolated and loads a remote image only after explicit consent',async({page})=>{
  const id='a'.repeat(64),message=msg(id,new Date().toISOString(),true);message.data.body='Synthetic plain-text fallback';Reflect.set(message.data,'hasHtml',true)
- const html='<meta http-equiv="refresh" content="0;url=https://navigate.example"><link rel="stylesheet" href="https://styles.example/mail.css"><iframe src="https://frame.example/load"></iframe><script src="https://script.example/file.js">parent.location="https://navigate.example";fetch("https://script.example/run")</script><form action="https://navigate.example"><input type="image" src="https://forms.example/button.png"><button>Navigate</button></form><p>Safe formatted content</p><img alt="remote pixel" src="https://images.example/pixel.png">'
+ const html='<html style="background-color:#eef2f5"><body bgcolor="#f4f5f7" style="margin:0;line-height:1.5"><meta http-equiv="refresh" content="0;url=https://navigate.example"><link rel="stylesheet" href="https://styles.example/mail.css"><iframe src="https://frame.example/load"></iframe><script src="https://script.example/file.js">parent.location="https://navigate.example";fetch("https://script.example/run")</script><form action="https://navigate.example"><input type="image" src="https://forms.example/button.png"><button>Navigate</button></form><table bgcolor="#ffffff" style="border:1px solid #dadce0;border-radius:12px;padding:16px"><tr><td><p>Safe formatted content</p><a href="https://dashboard.gitguardian.example/incidents/123?source=email" style="display:inline-block;background-color:#6b4eff;border-radius:6px;padding:10px 16px;color:#ffffff">View incident</a><img alt="remote pixel" src="https://images.example/pixel.png"></td></tr></table></body></html>'
  const external:string[]=[]
  page.on('request',request=>{if(!request.url().startsWith(origin))external.push(request.url())})
  await page.route('**/api/v1/mail/snapshot',route=>route.fulfill({json:{messages:[message],accounts:[],today:new Date().toISOString().slice(0,10)}}))
@@ -64,10 +64,19 @@ test('formatted HTML stays isolated and loads a remote image only after explicit
  const card=page.locator('.email-card[open]'),frame=card.frameLocator('iframe[title="Formatted email"]')
  await expect(frame.getByText('Safe formatted content')).toBeVisible()
  await expect(frame.locator('script,iframe,form,link,meta[http-equiv="refresh"]')).toHaveCount(0)
+ const content=frame.locator('.email-content'),emailCard=frame.locator('table'),button=frame.getByRole('link',{name:'View incident (dashboard.gitguardian.example)'})
+ await expect(content).toHaveCSS('background-color','rgb(244, 245, 247)')
+ await expect(content).toHaveCSS('line-height','21px')
+ await expect(emailCard).toHaveCSS('border-radius','12px')
+ await expect(button).toHaveText('View incident')
+ await expect(button).toHaveAttribute('href','https://dashboard.gitguardian.example/incidents/123?source=email')
+ await expect(button).toHaveAttribute('title','https://dashboard.gitguardian.example/incidents/123?source=email')
+ await expect(button).toHaveAttribute('aria-label','View incident (dashboard.gitguardian.example)')
  await page.waitForTimeout(200)
  expect(external).toEqual([])
  expect(page.url()).toBe(`${origin}/inbox?message=${id}`)
- await card.getByRole('button',{name:/Load remote images/}).click()
+ await expect(card.getByText('Remote images are blocked for privacy.')).toBeVisible()
+ await card.getByRole('button',{name:'Load images'}).click()
  await expect.poll(()=>external).toEqual(['https://images.example/pixel.png'])
  await card.getByRole('button',{name:'Text'}).click()
  await expect(card.locator('.email-body')).toHaveText('Synthetic plain-text fallback')
