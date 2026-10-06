@@ -1,5 +1,15 @@
 import {useState} from 'react'
 import type {Planner,Project,Action} from './usePlanner'
+import {formatPlanningMinutes,formatProjectDate} from './projectFormatting'
+function projectActionGroups(actions:Action[]){
+ const groups=new Map<string,Action[]>()
+ for(const action of actions){
+  const key=action.needsRescheduling||!action.date?'':action.date
+  groups.set(key,[...(groups.get(key)??[]),action])
+ }
+ return [...groups.entries()].sort(([a],[b])=>!a?1:!b?-1:a.localeCompare(b))
+}
+
 export function PlannerStatus({planner:p,showScheduling=true}:{planner:Planner;showScheduling?:boolean}){return <div className="planner-status">{showScheduling&&<SchedulingWarnings planner={p}/>}<p role="status">{p.message}{p.pending>0?` · ${p.pending} saved draft(s)`:''}</p><button type="button" disabled={p.syncing} aria-busy={p.syncing} onClick={()=>void p.sync()}>{p.syncing?'Syncing…':'Sync now'}</button>{p.lastSynced&&!p.syncing&&<small className="local-note"> Last synced {p.lastSynced}</small>}{p.conflict&&<section className="planner-conflict" role="alert"><h3>Review conflicting edits</h3><p>Latest saved version</p><pre>{JSON.stringify(p.latest,null,2)}</pre><p>Your retained draft</p><pre>{JSON.stringify(p.conflict.data,null,2)}</pre><button onClick={()=>p.resolve(true)}>Keep my draft instead</button><button onClick={()=>p.resolve(false)}>Discard my draft</button></section>}</div>}
 function SchedulingWarnings({planner:p}:{planner:Planner}){return <>{p.actions.some(a=>a.needsRescheduling&&!a.completed&&!a.dismissed)&&<details className="planner-conflict"><summary>Needs rescheduling · {p.actions.filter(a=>a.needsRescheduling&&!a.completed&&!a.dismissed).reduce((n,a)=>n+a.minutes,0)} min could not fit</summary><p>These steps remain saved, but have no feasible date before their deadline. Reduce scope, adjust the deadline or free calendar time; the morning rollover retries them.</p>{p.actions.filter(a=>a.needsRescheduling&&!a.completed&&!a.dismissed).map(a=><p key={a.id}>{a.title} · {a.minutes} min</p>)}</details>}</>}
 export function Projects({planner:p}:{planner:Planner}){
@@ -8,8 +18,74 @@ export function Projects({planner:p}:{planner:Planner}){
  const [uploading,setUploading]=useState(false),[uploadError,setUploadError]=useState('')
  const newProject=()=>{setBaseVersion(0);setDraft({id:crypto.randomUUID(),title:'',category:'school',description:'',deadline:'',importance:2,remainingMinutes:60,progress:'',status:'active'})}
  const field=(patch:Partial<Project>)=>setDraft(draft?{...draft,...patch}:null)
- return <section className="content projects-view"><header className="topbar"><div><p className="eyebrow">The bigger picture</p><h1>Projects</h1></div><button className="secondary-action" onClick={newProject} disabled={p.disabled}>New project</button></header><PlannerStatus planner={p}/>{draft&&<form className="card project-editor" onSubmit={e=>{e.preventDefault();if(p.save('project',draft,baseVersion))setDraft(null)}}><h2>{p.projects.some(x=>x.id===draft.id)?'Edit project':'New project'}</h2><label>Project title<input required maxLength={240} value={draft.title} onChange={e=>field({title:e.target.value})}/></label><label>Due date (optional)<input type="date" value={draft.deadline} onChange={e=>field({deadline:e.target.value})}/></label><details><summary>More options</summary><div className="project-fields"><label>Category<select value={draft.category} onChange={e=>field({category:e.target.value})}>{['school','work','personal','club'].map(c=><option key={c}>{c}</option>)}</select></label><label>Importance<select value={draft.importance} onChange={e=>field({importance:Number(e.target.value)})}><option value={1}>Normal</option><option value={2}>Important</option><option value={3}>High</option></select></label><label>Planning allowance (minutes, editable)<input type="number" required min={0} max={100000} value={draft.remainingMinutes} onChange={e=>field({remainingMinutes:Number(e.target.value)})}/></label></div></details><label>Instructions<textarea maxLength={12000} value={draft.description} onChange={e=>field({description:e.target.value})}/></label><label>Attach instructions<input type="file" accept=".pdf,.txt,.md" disabled={uploading} onChange={e=>{const file=e.target.files?.[0];if(!file)return;setUploading(true);setUploadError('');void(async()=>{try{if(file.size>5*1024*1024)throw Error('Maximum file size is 5 MB');let binary='';for(const byte of new Uint8Array(await file.arrayBuffer()))binary+=String.fromCharCode(byte);const r=await fetch('/api/v1/planner/material',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:file.name,content:btoa(binary)})});const data=await r.json();if(!r.ok)throw Error(data.error??'Upload failed');setDraft(current=>{if(!current||current.id!==draft.id)return current;const resources=[...(current.resources??[]),data];if(resources.reduce((n,x)=>n+x.text.length,0)>100000){setUploadError('Combined resources exceed 100,000 characters');return current}return {...current,resources}})}catch(error){setUploadError(error instanceof Error?error.message:'Upload failed')}finally{setUploading(false)}})()}}/></label><p className="local-note">PDF, TXT or Markdown, up to 5 MB each. Readable text is saved with the project; original files are not retained. Scanned PDFs need a text version.</p>{uploading&&<p role="status">Reading attachment…</p>}{uploadError&&<p role="alert">{uploadError}</p>}{(draft.resources??[]).map((r,i)=><details key={i}><summary>{r.name}</summary><pre style={{whiteSpace:'pre-wrap',maxHeight:200,overflow:'auto'}}>{r.text}</pre><button type="button" onClick={()=>field({resources:draft.resources?.filter((_,index)=>index!==i)})}>Remove attachment</button></details>)}<details><summary>Progress & status</summary><label>Progress notes<textarea maxLength={4000} value={draft.progress} onChange={e=>field({progress:e.target.value})}/></label><label>Project status<select value={draft.status} onChange={e=>field({status:e.target.value})}><option value="active">Active</option><option value="complete">Complete</option><option value="archived">Archived</option></select></label></details><div className="project-buttons"><button className="primary-action" type="submit" disabled={uploading}>Save project</button><button type="button" className="secondary-action" onClick={()=>setDraft(null)}>Cancel</button></div></form>}<div className="project-list">{p.projects.length===0&&!draft?<div className="card empty-state"><p>No projects yet</p><small>Add a project to give your daily plan context.</small></div>:p.projects.map(project=><article className="card project-card" key={project.id}><div><small>{project.category} · {project.status}</small><h2>{project.title}</h2><p>{project.deadline?`Due ${project.deadline} · `:''}{project.remainingMinutes} minutes planning allowance</p>{project.progress&&<p>{project.progress}</p>}<details className="assignment-tasks"><summary>Generated tasks ({p.actions.filter(a=>a.projectId===project.id).length})</summary>{p.actions.filter(a=>a.projectId===project.id).length===0?<p className="local-note">No tasks have been created for this project yet. Sync retrieves existing tasks; Request planning queues generation.</p>:p.actions.filter(a=>a.projectId===project.id).sort((a,b)=>a.date.localeCompare(b.date)).map(a=><div key={a.id} className="assignment-task"><strong>{a.title}</strong><p className="local-note">{a.date||'Unscheduled — needs capacity'} · {a.minutes} min · {a.dismissed?'Dismissed':a.completed?'Completed':'Open'}</p><details><summary>Task details</summary><p style={{whiteSpace:'pre-wrap'}}>{a.notes}</p></details></div>)}<button className="secondary-action" type="button" disabled={p.disabled||p.syncing||p.status.requested} onClick={()=>void p.refresh()}>{p.status.requested?'Planning requested…':'Request planning'}</button>{(project.planError||p.status.error)&&<p role="alert">{project.planError??p.status.error}</p>}{(project.planSummary||p.status.summary)&&<p className="local-note">Latest planner summary: {project.planSummary??p.status.summary}</p>}</details></div><button className="secondary-action" onClick={()=>{setBaseVersion(p.versionOf(project.id));setDraft(project)}}>Edit <span className="sr-only">{project.title}</span></button></article>)}</div><p className="local-note">Completing a daily action does not complete its project. Update remaining effort and progress here as you work.</p></section>
+ const upload=async(file:File)=>{
+  setUploading(true);setUploadError('')
+  try{
+   if(file.size>5*1024*1024)throw Error('Maximum file size is 5 MB')
+   let binary='';for(const byte of new Uint8Array(await file.arrayBuffer()))binary+=String.fromCharCode(byte)
+   const response=await fetch('/api/v1/planner/material',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:file.name,content:btoa(binary)})})
+   if(!response.ok)throw Error('Could not read this file')
+   const resource=await response.json() as {name:string;text:string}
+   field({resources:[...(draft?.resources??[]),resource]})
+  }catch(error){setUploadError(error instanceof Error?error.message:'Could not read this file')}finally{setUploading(false)}
+ }
+ return <section className="content projects-view">
+  <header className="topbar"><div><p className="eyebrow">The bigger picture</p><h1>Projects</h1></div><button className="secondary-action" onClick={newProject} disabled={p.disabled}>New project</button></header>
+  <PlannerStatus planner={p}/>
+  {draft&&<form className="card project-editor" onSubmit={event=>{event.preventDefault();if(p.save('project',draft,baseVersion))setDraft(null)}}>
+   <h2>{p.projects.some(project=>project.id===draft.id)?'Edit project':'New project'}</h2>
+   <label>Project title<input required maxLength={240} value={draft.title} onChange={event=>field({title:event.target.value})}/></label>
+   <label>Due date (optional)<input type="date" value={draft.deadline} onChange={event=>field({deadline:event.target.value})}/></label>
+   <details><summary>More options</summary><div className="project-fields">
+    <label>Category<select value={draft.category} onChange={event=>field({category:event.target.value})}>{['school','work','personal','club'].map(category=><option key={category}>{category}</option>)}</select></label>
+    <label>Importance<select value={draft.importance} onChange={event=>field({importance:Number(event.target.value)})}><option value={1}>Normal</option><option value={2}>Important</option><option value={3}>High</option></select></label>
+    <label>Planning allowance (minutes, editable)<input type="number" required min={0} max={100000} value={draft.remainingMinutes} onChange={event=>field({remainingMinutes:Number(event.target.value)})}/></label>
+    <label>Progress<textarea maxLength={4000} value={draft.progress} onChange={event=>field({progress:event.target.value})}/></label>
+    <label>Project status<select value={draft.status} onChange={event=>field({status:event.target.value})}><option value="active">Active</option><option value="complete">Complete</option><option value="archived">Archived</option></select></label>
+   </div></details>
+   <label>Instructions<textarea maxLength={12000} value={draft.description} onChange={event=>field({description:event.target.value})}/></label>
+   <label>Attach instructions<input type="file" accept=".pdf,.txt,.md" disabled={uploading} onChange={event=>{const file=event.target.files?.[0];if(file)void upload(file)}}/></label>
+   {draft.resources?.map((resource,index)=><small key={`${resource.name}-${index}`}>{resource.name}</small>)}
+   {uploadError&&<p role="alert">{uploadError}</p>}
+   <div className="project-buttons"><button type="submit">Save project</button><button type="button" onClick={()=>setDraft(null)}>Cancel</button></div>
+  </form>}
+  <div className="project-list">
+   {p.projects.map(project=>{
+    const actions=p.actions.filter(action=>action.projectId===project.id&&!action.dismissed)
+    const complete=actions.filter(action=>action.completed).length
+    return <article className="card project-card" key={project.id}>
+     <header className="project-card-header">
+      <div className="project-heading"><div className="project-badges"><span>{project.category}</span><span>{project.status}</span></div><h2>{project.title}</h2><p className="project-deadline">{project.deadline?<>Due <time dateTime={project.deadline}>{formatProjectDate(project.deadline)}</time></>:'No deadline'}</p></div>
+      <button className="project-edit" aria-label={`Edit ${project.title}`} onClick={()=>{setBaseVersion(p.versionOf(project.id));setDraft({...project})}}>Edit</button>
+     </header>
+     <div className="project-progress" aria-label={`${complete} of ${actions.length} generated tasks complete`}>
+      <span><strong>{complete}/{actions.length}</strong> generated tasks</span><span><strong>{formatPlanningMinutes(project.remainingMinutes)}</strong> planning allowance</span>
+     </div>
+     <details className="generated-tasks"><summary>Generated tasks ({actions.length})</summary>
+      <div className="generated-task-list">
+       {!actions.length&&<p className="project-empty">No tasks have been created for this project yet.</p>}
+       {projectActionGroups(actions).map(([date,group])=><section className="task-date-group" key={date||'needs-rescheduling'} aria-labelledby={`${project.id}-${date||'undated'}`}>
+        <h3 id={`${project.id}-${date||'undated'}`}>{date?formatProjectDate(date):'Needs rescheduling'}</h3>
+        {group.map(action=><div className="generated-task-row" key={action.id}>
+         <div><strong>{action.title}</strong>{action.notes&&<details className="task-notes"><summary>Task details</summary><p>{action.notes}</p></details>}</div>
+         <small>{formatPlanningMinutes(action.minutes)} · {action.completed?'Complete':'Open'}</small>
+        </div>)}
+       </section>)}
+      </div>
+     </details>
+     {(project.description||project.resources?.length||project.planSummary||project.planError)&&<details className="project-info"><summary>Project details</summary>
+      {project.description&&<section><h3>Description</h3><p>{project.description}</p></section>}
+      {!!project.resources?.length&&<section><h3>Resources</h3><ul>{project.resources.map((resource,index)=><li key={`${resource.name}-${index}`}>{resource.name}</li>)}</ul></section>}
+      {project.planSummary&&<section><h3>Planner summary</h3><p>{project.planSummary}</p></section>}
+      {project.planError&&<p role="alert">{project.planError}</p>}
+     </details>}
+     <footer className="project-card-footer"><button type="button" disabled={p.disabled||p.status.requested} onClick={()=>void p.refresh()}>Request planning</button></footer>
+    </article>
+   })}
+  </div>
+ </section>
 }
+
 export function ActionCard({action,planner:p}:{action:Action;planner:Planner}){
  const [draft,setDraft]=useState<Action|null>(null)
  const [baseVersion,setBaseVersion]=useState(0)

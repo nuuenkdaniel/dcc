@@ -296,6 +296,60 @@ nav { display: grid; gap: 5px; }
 .planner-details summary { cursor:pointer; }
 @media(max-width:600px) { .project-fields { grid-template-columns:1fr; } .project-editor { padding:16px; } .projects-view .topbar { flex-wrap:wrap; } .project-card { align-items:flex-start; } }
 
+/* Projects: keep long generated plans compact and their controls predictable. */
+.projects-view .topbar {margin-bottom:24px;align-items:center;}
+.projects-view > .planner-status {margin-bottom:14px;}
+.project-list {gap:16px;}
+.project-card {display:block;min-width:0;padding:0;overflow:hidden;}
+.project-card-header {display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:20px 22px 16px;}
+.project-heading {min-width:0;}
+.project-card .project-heading h2 {margin:7px 0 4px;font-size:19px;line-height:1.35;}
+.project-badges {display:flex;flex-wrap:wrap;gap:6px;}
+.project-badges span {padding:3px 7px;border-radius:999px;background:var(--accent-soft);color:var(--accent);font-size:10px;line-height:1.4;text-transform:capitalize;}
+.project-badges span + span {background:var(--surface-2);color:var(--subtle);}
+.project-card .project-deadline {margin:0;font-size:12px;line-height:1.5;}
+.project-edit {flex:0 0 auto;min-height:34px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--accent);font-size:12px;}
+.project-edit:hover,.project-card-footer button:hover {background:var(--accent-soft);}
+.project-progress {display:flex;flex-wrap:wrap;gap:8px 24px;padding:11px 22px;border-block:1px solid var(--border);background:var(--sidebar);color:var(--muted);font-size:12px;}
+.project-progress strong {color:var(--text);font-weight:600;}
+.generated-tasks,.project-info {font-size:13px;}
+.generated-tasks > summary,.project-info > summary {padding:13px 22px;cursor:pointer;color:var(--text);font-weight:600;}
+.generated-tasks[open] > summary,.project-info[open] > summary {border-bottom:1px solid var(--border);}
+.generated-task-list {padding:0 22px;}
+.task-date-group {padding:14px 0;}
+.task-date-group + .task-date-group {border-top:1px solid var(--border);}
+.task-date-group h3 {margin:0 0 7px;color:var(--muted);font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;}
+.generated-task-row {display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:12px;padding:8px 0;}
+.generated-task-row + .generated-task-row {border-top:1px solid color-mix(in srgb,var(--border) 65%,transparent);}
+.generated-task-row > div {min-width:0;}
+.generated-task-row strong {display:block;overflow-wrap:anywhere;color:var(--text);font-size:13px;font-weight:500;line-height:1.45;}
+.generated-task-row > small {padding-top:1px;white-space:nowrap;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums;}
+.task-notes {margin-top:3px;color:var(--muted);font-size:11px;}
+.task-notes summary {width:max-content;max-width:100%;padding:2px 0;cursor:pointer;}
+.project-card .task-notes p {margin:4px 0 2px;max-width:80ch;white-space:pre-wrap;font-size:12px;line-height:1.5;}
+.project-card .project-empty {margin:0;padding:16px 0;color:var(--muted);font-size:12px;}
+.project-info {border-top:1px solid var(--border);}
+.project-info > section,.project-info > p {margin:0;padding:12px 22px;}
+.project-info > section + section {padding-top:0;}
+.project-info h3 {margin:0 0 5px;color:var(--muted);font-size:11px;text-transform:uppercase;}
+.project-card .project-info p {margin:0;max-width:85ch;white-space:pre-wrap;font-size:12px;line-height:1.55;}
+.project-info ul {margin:0;padding-left:18px;color:var(--muted);font-size:12px;}
+.project-card-footer {display:flex;justify-content:flex-end;padding:12px 22px;border-top:1px solid var(--border);}
+.project-card-footer button {min-height:34px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--accent);font-size:12px;}
+.project-card-footer button:disabled {opacity:.55;cursor:default;}
+@media(max-width:480px) {
+ .projects-view .topbar {display:flex;align-items:flex-end;gap:12px;}
+ .projects-view .topbar .secondary-action {min-height:38px;padding-inline:12px;}
+ .project-card-header {padding:16px 14px 13px;gap:10px;}
+ .project-progress {display:grid;gap:5px;padding:10px 14px;}
+ .generated-tasks > summary,.project-info > summary {padding:12px 14px;}
+ .generated-task-list {padding-inline:14px;}
+ .generated-task-row {grid-template-columns:minmax(0,1fr);gap:3px;}
+ .generated-task-row > small {padding:0;white-space:normal;}
+ .project-info > section,.project-info > p {padding-inline:14px;}
+ .project-card-footer {padding:11px 14px;}
+}
+
 .preparation-panel { margin:16px 0; padding:16px; min-width:0; }
 .preparation-panel fieldset { min-width:0; border:1px solid var(--border); border-radius:8px; margin:12px 0; padding:12px; }
 .preparation-panel textarea,.preparation-panel input { max-width:100%; box-sizing:border-box; }
