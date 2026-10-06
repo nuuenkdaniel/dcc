@@ -322,6 +322,7 @@ nav { display: grid; gap: 5px; }
 .email-sender {flex-basis:100%;overflow-wrap:anywhere;}
 .email-account {font-size:11px;padding:3px 7px;border-radius:5px;background:var(--accent-soft);color:var(--accent);}
 .email-body {font:inherit;font-size:13px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;}
+.email-body a {color:var(--accent);text-decoration:underline;text-underline-offset:2px;}
 .email-details {margin-top:18px;font-size:13px;overflow-wrap:anywhere;}
 .brief-list {display:grid;gap:0;}
 .email-brief {padding:18px 0;min-width:0;}
