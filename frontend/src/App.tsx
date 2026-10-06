@@ -4,17 +4,17 @@ import {useMail} from './useMail'
 import {EmailSummary} from './EmailSummary'
 import {usePlanner,studyCardCount,visiblePlanGroups} from './usePlanner'
 import {Projects,ActionCard,StudyCard,PlanControls} from './Projects'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { Login } from './Login'
 import { Schedule } from './Schedule'
 import { Inbox } from './Inbox'
 import { Settings } from './Settings'
 import { usePreferences } from './usePreferences'
+import { advanceFocusTimer, type FocusTimerState, type MiniTimer } from './focusTimer'
 
 type Task = { id: string; title: string; date: string; notes: string; completed: boolean; sample?: boolean; important?: boolean }
 type PreviewView = 'home' | 'inbox' | 'pomodoro' | 'login' | 'settings' | 'projects' | 'prices'
-type MiniTimer = { id: string; name: string; duration: number; remaining: number }
 
 const VIEW_PATHS: Record<PreviewView, string> = {
   home: '/',
@@ -147,19 +147,23 @@ function NumberStepper({ id, label, actionName, value, min, max, onChange }: {
 function PomodoroView() {
   const [focusMinutes, setFocusMinutes] = useState(25)
   const [breakMinutes, setBreakMinutes] = useState(5)
-  const [phase, setPhase] = useState<'focus' | 'break'>('focus')
-  const [sessionRemaining, setSessionRemaining] = useState(25 * 60)
-  const [running, setRunning] = useState(false)
+  const [timer, setTimer] = useState<FocusTimerState>({
+    phase: 'focus',
+    sessionRemainingMs: 25 * 60 * 1000,
+    running: false,
+    miniTimers: [],
+    activeMiniId: null,
+  })
+  const { phase, sessionRemainingMs, running, miniTimers, activeMiniId } = timer
+  const lastTick = useRef<number | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [miniTimers, setMiniTimers] = useState<MiniTimer[]>([])
-  const [activeMiniId, setActiveMiniId] = useState<string | null>(null)
   const [miniName, setMiniName] = useState('')
   const [miniMinutes, setMiniMinutes] = useState(5)
   const [dragging, setDragging] = useState<string | null>(null)
   const [dragPreview, setDragPreview] = useState<{ left: number; top: number; width: number; height: number; offsetX: number; offsetY: number; target: string | null } | null>(null)
   const clearDrag = () => { setDragging(null); setDragPreview(null) }
   const [orderNotice, setOrderNotice] = useState('')
-  const canReorder = phase === 'focus' && !activeMiniId && miniTimers.every(timer => timer.remaining === timer.duration)
+  const canReorder = phase === 'focus' && !activeMiniId && miniTimers.every(timer => timer.remainingMs === timer.duration * 1000)
   const moveTimer = (id: string, target: string) => {
     if (!canReorder || id === target) return
     const from = miniTimers.findIndex(timer => timer.id === id)
@@ -168,54 +172,35 @@ function PomodoroView() {
     const next = [...miniTimers]
     const [timer] = next.splice(from, 1)
     next.splice(to, 0, timer)
-    setMiniTimers(next)
-    setSessionRemaining(next[0].duration)
+    setTimer(current => ({ ...current, miniTimers: next, sessionRemainingMs: next[0].duration * 1000 }))
     setOrderNotice(`${timer.name} moved to position ${to + 1}`)
   }
 
   useEffect(() => {
-    if (!running) return
+    if (!running) {
+      lastTick.current = null
+      return
+    }
+    if (lastTick.current === null) lastTick.current = performance.now()
     const interval = window.setInterval(() => {
-      setSessionRemaining((remaining) => {
-        if (remaining > 1) {
-          if (phase === 'focus' && activeMiniId) {
-            setMiniTimers((timers) => timers.map((timer) => timer.id === activeMiniId ? { ...timer, remaining: Math.max(0, timer.remaining - 1) } : timer))
-          }
-          return remaining - 1
-        }
-
-        if (phase === 'focus') {
-          if (activeMiniId) {
-            const currentIndex = miniTimers.findIndex((timer) => timer.id === activeMiniId)
-            const nextTimer = miniTimers[currentIndex + 1]
-            setMiniTimers((timers) => timers.map((timer) => timer.id === activeMiniId ? { ...timer, remaining: 0 } : timer))
-            if (nextTimer) {
-              setActiveMiniId(nextTimer.id)
-              return nextTimer.remaining
-            }
-          }
-          setPhase('break')
-          setActiveMiniId(null)
-          return breakMinutes * 60
-        }
-
-        setPhase('focus')
-        setRunning(false)
-        setActiveMiniId(null)
-        setMiniTimers((timers) => timers.map((timer) => ({ ...timer, remaining: timer.duration })))
-        return miniTimers[0]?.duration ?? focusMinutes * 60
-      })
-    }, 1000)
+      const now = performance.now()
+      const elapsed = now - (lastTick.current ?? now)
+      lastTick.current = now
+      setTimer(current => advanceFocusTimer(current, elapsed, focusMinutes * 60_000, breakMinutes * 60_000))
+    }, 200)
     return () => window.clearInterval(interval)
-  }, [running, activeMiniId, phase, breakMinutes, focusMinutes, miniTimers])
+  }, [running, breakMinutes, focusMinutes])
 
   const addMiniTimer = () => {
     const name = miniName.trim()
     const minutes = Math.min(120, Math.max(1, miniMinutes))
     if (!name) return
-    const timer = { id: `${Date.now()}-${Math.random()}`, name, duration: minutes * 60, remaining: minutes * 60 }
-    if (miniTimers.length === 0 && phase === 'focus' && !running) setSessionRemaining(timer.duration)
-    setMiniTimers((timers) => [...timers, timer])
+    const miniTimer: MiniTimer = { id: crypto.randomUUID(), name, duration: minutes * 60, remainingMs: minutes * 60_000 }
+    setTimer(current => ({
+      ...current,
+      sessionRemainingMs: current.miniTimers.length === 0 && current.phase === 'focus' && !current.running ? miniTimer.duration * 1000 : current.sessionRemainingMs,
+      miniTimers: [...current.miniTimers, miniTimer],
+    }))
     setMiniName('')
   }
 
@@ -224,36 +209,42 @@ function PomodoroView() {
     const minutes = Math.min(maximum, Math.max(1, value || 1))
     if (kind === 'focus') {
       setFocusMinutes(minutes)
-      if (phase === 'focus' && !running && miniTimers.length === 0) setSessionRemaining(minutes * 60)
+      if (phase === 'focus' && !running && miniTimers.length === 0) setTimer(current => ({ ...current, sessionRemainingMs: minutes * 60_000 }))
     } else {
       setBreakMinutes(minutes)
-      if (phase === 'break' && !running) setSessionRemaining(minutes * 60)
+      if (phase === 'break' && !running) setTimer(current => ({ ...current, sessionRemainingMs: minutes * 60_000 }))
     }
   }
 
   const resetSession = () => {
-    setRunning(false)
-    setPhase('focus')
-    setActiveMiniId(null)
-    setSessionRemaining(miniTimers[0]?.duration ?? focusMinutes * 60)
-    setMiniTimers((timers) => timers.map((timer) => ({ ...timer, remaining: timer.duration })))
+    lastTick.current = null
+    setTimer(current => {
+      const resetMiniTimers = current.miniTimers.map(item => ({ ...item, remainingMs: item.duration * 1000 }))
+      return { ...current, running: false, phase: 'focus', activeMiniId: null, sessionRemainingMs: (resetMiniTimers[0]?.duration ?? 0) * 1000 || focusMinutes * 60_000, miniTimers: resetMiniTimers }
+    })
   }
 
   const toggleSession = () => {
     if (running) {
-      setRunning(false)
+      const now = performance.now()
+      const elapsed = now - (lastTick.current ?? now)
+      lastTick.current = null
+      setTimer(current => ({ ...advanceFocusTimer(current, elapsed, focusMinutes * 60_000, breakMinutes * 60_000), running: false }))
       return
     }
-    if (phase === 'focus' && miniTimers.length > 0 && !activeMiniId) {
-      const nextTimer = miniTimers.find((timer) => timer.remaining > 0) ?? miniTimers[0]
-      setActiveMiniId(nextTimer.id)
-      setSessionRemaining(nextTimer.remaining || nextTimer.duration)
-    }
-    setRunning(true)
+    lastTick.current = performance.now()
+    setTimer(current => {
+      if (current.phase === 'focus' && current.miniTimers.length > 0 && !current.activeMiniId) {
+        const nextTimer = current.miniTimers.find(item => item.remainingMs > 0) ?? current.miniTimers[0]
+        return { ...current, activeMiniId: nextTimer.id, sessionRemainingMs: nextTimer.remainingMs || nextTimer.duration * 1000, running: true }
+      }
+      return { ...current, running: true }
+    })
   }
 
   const phaseLabel = phase === 'focus' ? 'Focus' : 'Break'
   const activeMini = miniTimers.find((timer) => timer.id === activeMiniId)
+  const sessionRemaining = Math.ceil(sessionRemainingMs / 1000)
   const currentDuration = phase === 'break' ? breakMinutes * 60 : activeMini?.duration ?? miniTimers[0]?.duration ?? focusMinutes * 60
 
   return (
@@ -262,15 +253,15 @@ function PomodoroView() {
       <section className={`card focus-panel ${phase === 'break' ? 'break-phase' : ''}`} aria-labelledby="focus-clock-heading">
         <div className="focus-panel-top">
           <div><p className="eyebrow">Current phase</p><h2 id="focus-clock-heading">{phaseLabel}</h2></div>
-          <button className="settings-button" type="button" aria-label="Timer settings" onClick={() => { setRunning(false); setSettingsOpen(true) }}>⚙</button>
+          <button className="settings-button" type="button" aria-label="Timer settings" onClick={() => { if (running) toggleSession(); setSettingsOpen(true) }}>⚙</button>
         </div>
         <output className="focus-time" data-testid="session-time" aria-live="off">{formatTime(sessionRemaining)}</output>
         <p className="focus-status">{running ? activeMini ? activeMini.name : phase === 'break' ? 'Take a breath' : 'Stay with the task' : sessionRemaining === 0 ? `${phaseLabel} complete` : `Ready for ${phase === 'focus' ? 'focus' : 'a break'}`}</p>
-        <div className="focus-actions"><button className="primary-action" type="button" disabled={sessionRemaining === 0} onClick={toggleSession}>{running ? 'Pause session' : sessionRemaining < currentDuration ? 'Resume session' : 'Start session'}</button><button className="secondary-action" type="button" aria-label="Reset session" onClick={resetSession}>Reset</button></div>
+        <div className="focus-actions"><button className="primary-action" type="button" disabled={sessionRemainingMs === 0} onClick={toggleSession}>{running ? 'Pause session' : sessionRemainingMs < currentDuration * 1000 ? 'Resume session' : 'Start session'}</button><button className="secondary-action" type="button" aria-label="Reset session" onClick={resetSession}>Reset</button></div>
 
-        {miniTimers.length > 0 && <div className="focus-steps" aria-label="Mini timers"><div className="focus-steps-heading"><span>Focus sequence</span><small>{miniTimers.filter((timer) => timer.remaining === 0).length}/{miniTimers.length} complete</small></div>{miniTimers.map((timer) => {
+        {miniTimers.length > 0 && <div className="focus-steps" aria-label="Mini timers"><div className="focus-steps-heading"><span>Focus sequence</span><small>{miniTimers.filter((item) => item.remainingMs === 0).length}/{miniTimers.length} complete</small></div>{miniTimers.map((timer) => {
           const active = timer.id === activeMiniId
-          return <article className={`mini-timer ${active ? 'active' : ''}`} key={timer.id}><div><strong>{timer.name}</strong><span>{active ? 'Active focus' : timer.remaining === 0 ? 'Complete' : 'Ready'}</span></div><output data-testid="mini-time">{formatTime(timer.remaining)}</output></article>
+          return <article className={`mini-timer ${active ? 'active' : ''}`} key={timer.id}><div><strong>{timer.name}</strong><span>{active ? 'Active focus' : timer.remainingMs === 0 ? 'Complete' : 'Ready'}</span></div><output data-testid="mini-time">{formatTime(Math.ceil(timer.remainingMs / 1000))}</output></article>
         })}</div>}
       </section>
 
@@ -288,7 +279,7 @@ function PomodoroView() {
             onPointerCancel={clearDrag}
             onLostPointerCapture={clearDrag}
             onKeyDown={event => { if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return; event.preventDefault(); const target = miniTimers[index + (event.key === 'ArrowUp' ? -1 : 1)]; if (target) moveTimer(timer.id, target.id) }}><svg width="16" height="20" viewBox="0 0 16 20" aria-hidden="true" fill="currentColor">{[5, 10, 15].flatMap(y => [5, 11].map(x => <circle key={`${x}-${y}`} cx={x} cy={y} r="1.2" />))}</svg></button>
-          <span>{timer.name}</span><small>{formatTime(timer.duration)}</small><button type="button" aria-label={`Remove ${timer.name}`} onClick={() => { setMiniTimers((timers) => timers.filter((item) => item.id !== timer.id)); if (activeMiniId === timer.id) setActiveMiniId(null) }}>Remove</button></div>)}</div><p className="sr-only" role="status">{orderNotice}</p></>}
+          <span>{timer.name}</span><small>{formatTime(timer.duration)}</small><button type="button" aria-label={`Remove ${timer.name}`} onClick={() => setTimer(current => ({ ...current, miniTimers: current.miniTimers.filter(item => item.id !== timer.id), activeMiniId: current.activeMiniId === timer.id ? null : current.activeMiniId }))}>Remove</button></div>)}</div><p className="sr-only" role="status">{orderNotice}</p></>}
         {dragging && dragPreview && <div aria-hidden="true" data-testid="timer-drag-preview" className="timer-drag-preview" style={{ left: dragPreview.left, top: dragPreview.top, width: dragPreview.width, height: dragPreview.height }}><span>{miniTimers.find(timer => timer.id === dragging)?.name}</span><span>{formatTime(miniTimers.find(timer => timer.id === dragging)?.duration ?? 0)}</span></div>}
         <button className="dialog-done" type="button" onClick={() => setSettingsOpen(false)}>Done</button>
       </section></div>}
