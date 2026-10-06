@@ -12,8 +12,9 @@ function EmailBodyContent({body,id,hasHtml,open=true}:EmailBodyProps){
  const displayed=showOriginal?body:readable
  if(typeof html==='string'&&view==='formatted')return <>
   <div className="email-view-toggle" role="group" aria-label="Email view"><button type="button" aria-pressed="true">Formatted</button><button type="button" aria-pressed="false" onClick={()=>setView('text')}>Text</button></div>
-  <p className="email-privacy-note">Remote images are blocked to protect your privacy. Loading sends requests directly from your browser without a proxy and can reveal your IP. URL checks do not verify DNS results or redirects. Embedded CID images are not available in this first stage.</p>
-  {!loadImages&&<button type="button" className="secondary-action email-load-images" onClick={()=>setLoadImages(true)}>Load remote images directly (privacy risk)</button>}
+  <p className="email-privacy-note">Remote images are blocked for privacy.</p>
+  <details className="email-privacy-details"><summary>Privacy details</summary><p>Loading images sends requests directly from your browser without a proxy and can reveal your IP. URL checks do not verify DNS results or redirects. Embedded CID images remain unavailable.</p></details>
+  {!loadImages&&<button type="button" className="secondary-action email-load-images" onClick={()=>setLoadImages(true)}>Load images</button>}
   <iframe className="email-html-frame" title="Formatted email" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" srcDoc={srcDoc}/>
  </>
  return <>

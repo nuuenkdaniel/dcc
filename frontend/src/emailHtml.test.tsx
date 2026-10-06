@@ -29,16 +29,33 @@ it('blocks images by default and enables only risk-checked HTTP(S) URLs explicit
  expect(loaded.body.textContent).not.toContain('evil.example')
 })
 
-it('keeps safe links, reveals their hostname, and disables risky destinations',()=>{
+it('keeps safe links and their content, exposes destinations accessibly, and disables risky destinations',()=>{
  const doc=new DOMParser().parseFromString(sanitizeEmailHtml('<a href="https://news.example/path">Sender label</a><a href="https://trusted.example@evil.example/login">Misleading</a><a ping="https://tracker.example" download href="javascript:alert(1)">Bad</a>'),'text/html')
  const links=[...doc.querySelectorAll('a')]
  expect(links[0].getAttribute('href')).toBe('https://news.example/path')
  expect(links[0].getAttribute('target')).toBe('_blank')
  expect(links[0].getAttribute('rel')).toBe('noopener noreferrer')
- expect(links[0].textContent).toBe('Sender label [news.example]')
+ expect(links[0].textContent).toBe('Sender label')
+ expect(links[0].getAttribute('title')).toBe('https://news.example/path')
+ expect(links[0].getAttribute('aria-label')).toBe('Sender label (news.example)')
  expect(links[1].getAttribute('href')).toBeNull()
  expect(links[2].getAttribute('href')).toBeNull()
  expect(doc.querySelector('[ping],[download]')).toBeNull()
+})
+
+it('preserves sanitized body, card, button, table, and legacy presentation',()=>{
+ const raw='<html style="background-color:#eef2f5"><body bgcolor="#f4f5f7" text="#202124" align="left" style="font-family:Arial;line-height:1.5;margin:0;background-image:url(https://tracker.example/bg)"><table bgcolor="#ffffff" style="border-radius:12px;border:1px solid #dadce0;margin:24px auto;padding:16px"><tr><td align="center" style="padding-top:8px"><a href="https://dashboard.gitguardian.example/incidents" style="display:inline-block;background-color:#6b4eff;border-radius:6px;padding:10px 16px;color:#ffffff">View incident</a></td></tr></table></body></html>'
+ const doc=new DOMParser().parseFromString(sanitizeEmailHtml(raw),'text/html')
+ const wrapper=doc.querySelector<HTMLElement>('.email-content'),table=doc.querySelector('table'),cell=doc.querySelector('td'),button=doc.querySelector('a')
+ expect(wrapper?.getAttribute('style')).toContain('background-color:#f4f5f7')
+ expect(wrapper?.getAttribute('style')).toContain('color:#202124')
+ expect(wrapper?.getAttribute('style')).toContain('font-family:Arial')
+ expect(wrapper?.getAttribute('style')).toContain('line-height:1.5')
+ expect(wrapper?.getAttribute('style')).not.toContain('background-image')
+ expect(table?.getAttribute('style')).toBe('background-color:#ffffff;border-radius:12px;border:1px solid #dadce0;margin:24px auto;padding:16px')
+ expect(cell?.getAttribute('style')).toBe('text-align:center;padding-top:8px')
+ expect(button?.getAttribute('style')).toBe('display:inline-block;background-color:#6b4eff;border-radius:6px;padding:10px 16px;color:#ffffff')
+ expect(doc.querySelector('[bgcolor],[align],[text]')).toBeNull()
 })
 
 it('fetches HTML only when eligible, defaults to formatted, and retains the text toggle',async()=>{
@@ -53,7 +70,9 @@ it('fetches HTML only when eligible, defaults to formatted, and retains the text
  fireEvent.click(screen.getByRole('button',{name:'Text'}))
  expect(container.querySelector('.email-body')).toHaveTextContent('Plain fallback')
  fireEvent.click(screen.getByRole('button',{name:'Formatted'}))
- fireEvent.click(screen.getByRole('button',{name:/Load remote images/}))
+ expect(screen.getByText('Remote images are blocked for privacy.')).toBeInTheDocument()
+ expect(screen.getByText('Privacy details')).toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'Load images'}))
  await waitFor(()=>expect(screen.getByTitle('Formatted email').getAttribute('srcdoc')).toContain('src="https://images.example/p.png"'))
 })
 
