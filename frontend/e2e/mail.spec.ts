@@ -35,3 +35,18 @@ test('inbox linkifies only eligible plaintext web destinations without loading t
  expect(await page.evaluate(()=>Reflect.get(window,'syntheticExecuted'))).toBeUndefined()
  expect(external).toEqual([])
 })
+test('inbox switches between readable spacing and exact original text',async({page})=>{
+ const body='\r\n \t\u00a0\r\nFirst paragraph \t\r\n\r\n \t\u00a0\r\n\r\n  indented line\r\n'
+ const message=msg('spacing',new Date().toISOString(),true);message.data.body=body
+ await page.route('**/api/v1/mail/snapshot',route=>route.fulfill({json:{messages:[message],accounts:[],today:new Date().toISOString().slice(0,10)}}))
+ await page.goto('http://127.0.0.1:5173/inbox?message=spacing')
+ const card=page.locator('.email-card[open]'),emailBody=card.locator('.email-body')
+ const readable=card.getByRole('button',{name:'Readable spacing'}),original=card.getByRole('button',{name:'Original text'})
+ expect(await emailBody.textContent()).toBe('First paragraph\n\n  indented line')
+ await expect(readable).toHaveAttribute('aria-pressed','true')
+ await original.click()
+ expect(await emailBody.textContent()).toBe(body)
+ await expect(original).toHaveAttribute('aria-pressed','true')
+ await readable.click()
+ expect(await emailBody.textContent()).toBe('First paragraph\n\n  indented line')
+})

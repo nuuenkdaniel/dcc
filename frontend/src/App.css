@@ -321,6 +321,10 @@ nav { display: grid; gap: 5px; }
 .email-card summary small,.email-sender {color:var(--muted);font-size:12px;}
 .email-sender {flex-basis:100%;overflow-wrap:anywhere;}
 .email-account {font-size:11px;padding:3px 7px;border-radius:5px;background:var(--accent-soft);color:var(--accent);}
+.email-spacing-toggle {display:flex;justify-content:flex-end;gap:4px;margin-top:12px;}
+.email-spacing-toggle button {padding:4px 7px;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--muted);font:inherit;font-size:11px;}
+.email-spacing-toggle button:hover,.email-spacing-toggle button:focus-visible {border-color:var(--border);color:var(--text);}
+.email-spacing-toggle button[aria-pressed="true"] {background:var(--accent-soft);color:var(--accent);}
 .email-body {font:inherit;font-size:13px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;}
 .email-body a {color:var(--accent);text-decoration:underline;text-underline-offset:2px;}
 .email-details {margin-top:18px;font-size:13px;overflow-wrap:anywhere;}

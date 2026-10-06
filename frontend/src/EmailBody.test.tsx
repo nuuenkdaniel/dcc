@@ -1,7 +1,8 @@
-import {render,screen} from '@testing-library/react'
+import {fireEvent,render,screen} from '@testing-library/react'
 import {expect,it} from 'vitest'
 import {EmailBody} from './EmailBody'
 import {emailBodyParts,readableEmailUrl} from './emailLinks'
+import {readableEmailBody} from './readableEmailBody'
 
 it('makes long newsletter URLs readable without changing their destination',()=>{
  const url='https://www.newegg.com/p/N82E16834156587?Item=N82E16834156587&utm_source=newsletter&utm_campaign=long-tracking-value&amp;cm_sp=homepage_dailydeal'
@@ -101,4 +102,50 @@ it('renders HTML-looking email content only as text and preserves line breaks',(
  expect(container.querySelector('img')).toBeNull()
  expect(container.querySelector('.email-body')).toHaveTextContent('First paragraph <script>globalThis.pwned=true</script> <img src="https://tracker.invalid/pixel">')
  expect(container.querySelector('.email-body')?.textContent).toBe(body)
+})
+
+it('normalizes line endings and excessive space, tab, and NBSP blank lines',()=>{
+ const body='\r\n \t\u00a0\r\nFirst paragraph \t\u00a0\r\n \r\n\t\u00a0\n\nSecond paragraph\t \r\n \t\u00a0\r\n'
+ expect(readableEmailBody(body)).toBe('First paragraph\n\nSecond paragraph')
+})
+
+it('preserves paragraph breaks and indentation on nonblank lines',()=>{
+ const body='Paragraph one\n\n\n  const value = 1\n\treturn value\n\nParagraph two'
+ expect(readableEmailBody(body)).toBe('Paragraph one\n\n  const value = 1\n\treturn value\n\nParagraph two')
+})
+
+it('switches between readable spacing and the exact original text',()=>{
+ const body='\r\n \t\u00a0\r\n  indented text \t\r\n\r\n\r\nLast line\r\n'
+ const {container}=render(<EmailBody body={body}/>)
+ const emailBody=container.querySelector('.email-body')
+ const readable=screen.getByRole('button',{name:'Readable spacing'})
+ const original=screen.getByRole('button',{name:'Original text'})
+ expect(emailBody?.textContent).toBe('  indented text\n\nLast line')
+ expect(readable).toHaveAttribute('aria-pressed','true')
+ expect(original).toHaveAttribute('aria-pressed','false')
+ fireEvent.click(original)
+ expect(emailBody?.textContent).toBe(body)
+ expect(original).toHaveAttribute('aria-pressed','true')
+ fireEvent.click(readable)
+ expect(emailBody?.textContent).toBe('  indented text\n\nLast line')
+})
+
+it('uses the same safe link rendering in readable and original modes',()=>{
+ const target='https://example.com/news?id=42'
+ const body=`\r\nDeal: ${target} \t\r\n\r\n\r\njavascript:alert(1)\r\n`
+ render(<EmailBody body={body}/>)
+ const assertLinks=()=>{
+  const links=screen.getAllByRole('link')
+  expect(links).toHaveLength(1)
+  expect(links[0]).toHaveAttribute('href',target)
+  expect(screen.getByText(/javascript:alert/)).toBeInTheDocument()
+ }
+ assertLinks()
+ fireEvent.click(screen.getByRole('button',{name:'Original text'}))
+ assertLinks()
+})
+
+it('does not render spacing controls when the text needs no normalization',()=>{
+ render(<EmailBody body="First paragraph\n\nSecond paragraph"/>)
+ expect(screen.queryByRole('group',{name:'Email text spacing'})).not.toBeInTheDocument()
 })
