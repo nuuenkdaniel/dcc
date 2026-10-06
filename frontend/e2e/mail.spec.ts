@@ -17,3 +17,21 @@ test('email rules save and read back without touching mailbox settings',async({p
  await page.route('**/api/v1/mail/preferences',async r=>{if(r.request().method()==='POST'){rules=r.request().postDataJSON().rules;await r.fulfill({json:{saved:true}})}else await r.fulfill({json:{rules}})})
  await page.goto('http://127.0.0.1:5173/settings');await expect(page.getByLabel('Additional importance rules')).toBeEnabled();await page.getByLabel('Additional importance rules').fill('Prioritize direct requests from my project team.');await page.getByRole('button',{name:'Save email rules'}).click();await expect(page.getByText('Saved. Today’s automatic classifications',{exact:false})).toBeVisible();await page.reload();await expect(page.getByLabel('Additional importance rules')).toHaveValue(rules)
 })
+test('inbox linkifies only eligible plaintext web destinations without loading them',async({page})=>{
+ const body=['First paragraph','','Deal https://www.newegg.com/p/N82E16834156587?Item=N82E16834156587&utm_source=email&amp;utm_campaign=synthetic','Balanced (https://example.com/docs_(new)).Next','Normal https://example.com/news','javascript:alert(1)','http://user@evil.example/path','http://127.0.0.1/private','https://раypal.example/login','<script>window.syntheticExecuted=true</script>'].join('\n')
+ const message=msg('links',new Date().toISOString(),true);message.data.body=body
+ const external:string[]=[]
+ page.on('request',request=>{if(!request.url().startsWith('http://127.0.0.1:5173'))external.push(request.url())})
+ await page.route('**/api/v1/mail/snapshot',route=>route.fulfill({json:{messages:[message],accounts:[],today:new Date().toISOString().slice(0,10)}}))
+ await page.goto('http://127.0.0.1:5173/inbox?message=links')
+ const card=page.locator('.email-card[open]')
+ await expect(card.getByRole('link',{name:/newegg\.com/})).toHaveAttribute('href',/utm_source=email&utm_campaign=synthetic/)
+ await expect(card.getByRole('link',{name:'https://example.com/docs_(new)'})).toHaveAttribute('rel','noopener noreferrer')
+ await expect(card.getByRole('link',{name:'https://example.com/news'})).toHaveAttribute('referrerpolicy','no-referrer')
+ await expect(card.getByRole('link')).toHaveCount(3)
+ await expect(card.locator('script')).toHaveCount(0)
+ await expect(card.locator('.email-body')).toContainText('javascript:alert(1)')
+ await expect(card.locator('.email-body')).toHaveCSS('white-space','pre-wrap')
+ expect(await page.evaluate(()=>Reflect.get(window,'syntheticExecuted'))).toBeUndefined()
+ expect(external).toEqual([])
+})
