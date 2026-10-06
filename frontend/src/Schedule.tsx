@@ -2,8 +2,7 @@ import {PreparationPanel} from './PreparationPanel'
 import type {Planner,Exam} from './usePlanner'
 import {useEffect,useState,useCallback,useRef} from 'react'
 import {CalendarEditor,PendingChanges,type EditableEvent} from './CalendarEditor'
-import {pending} from './calendarOutbox'
-import {protectedFetch,reportAuthRequired} from './auth'
+import {protectedFetch} from './auth'
 type Calendar={id:string;name:string}
 type Event=Exam&{etag?:string;id:string;calendarId:string;title:string;start:string;end:string;allDay:boolean;description:string;location:string}
 type Snapshot={calendars:Calendar[];events:Event[];lastSuccess:string|null;error?:string;coverageStart?:string;coverageEnd?:string}
@@ -40,7 +39,7 @@ export function Schedule({date,planner}:{date:string;planner:Planner}){
  const dayStart=new Date(`${date}T00:00:00`),dayEnd=new Date(dayStart);dayEnd.setDate(dayEnd.getDate()+1)
  const events=snapshot.events.filter(e=>!hidden.includes(e.calendarId)&&(e.allDay?e.start<=date&&e.end>date:new Date(e.start)<dayEnd&&(new Date(e.end)>dayStart||e.start===e.end&&new Date(e.start)>=dayStart))).sort((a,b)=>Number(b.allDay)-Number(a.allDay)||a.start.localeCompare(b.start))
  const covered=!snapshot.coverageStart||!snapshot.coverageEnd||dayStart>=new Date(snapshot.coverageStart)&&dayEnd<=new Date(snapshot.coverageEnd)
-  return <section className="schedule-panel" aria-labelledby="schedule-heading"><div className="section-heading"><h2 id="schedule-heading">Schedule</h2><div className="schedule-actions">{session&&<button disabled={syncing} onClick={()=>void refresh(true)}>{syncing?'Syncing…':'Sync calendar'}</button>}{snapshot.calendars.length>0&&<button onClick={()=>setEditing(null)}>New event</button>}{session===null?null:!session?<a href="/login">Sign in</a>:<button onClick={async()=>{try{if((await pending()).length){setStatus('Sync or discard pending calendar drafts before signing out.');return}generation.current++;const r=await protectedFetch('/api/v1/auth/logout',{method:'POST'});if(!r.ok)throw Error();generation.current++;await cache(null);setSnapshot(empty);setSession(false);reportAuthRequired()}catch{setStatus('Could not sign out. Reconnect and try again.')}}}>Sign out</button>}</div></div>
+   return <section className="schedule-panel" aria-labelledby="schedule-heading"><div className="section-heading"><h2 id="schedule-heading">Schedule</h2><div className="schedule-actions">{session&&<button disabled={syncing} onClick={()=>void refresh(true)}>{syncing?'Syncing…':'Sync calendar'}</button>}{snapshot.calendars.length>0&&<button onClick={()=>setEditing(null)}>New event</button>}</div></div>
  {editing!==undefined&&<CalendarEditor date={date} calendars={snapshot.calendars} {...(editing?{event:editing}:{})} onClose={()=>setEditing(undefined)} onSaved={()=>setRevision(v=>v+1)}/>}
  {preparing&&<PreparationPanel event={preparing} planner={planner} onClose={()=>setPreparing(null)}/>}
  <PendingChanges revision={revision} onSent={readSnapshot}/>

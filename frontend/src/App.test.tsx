@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import type {ReactNode} from 'react'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import App from './App'
 
@@ -64,6 +64,17 @@ it('switches between development page previews', () => {
   expect(screen.queryByRole('heading', { name: 'Daily plan' })).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Home view' }))
   expect(screen.getByRole('heading', { name: 'Daily plan' })).toBeInTheDocument()
+})
+
+it('retains logout in development tools and Settings, but not Schedule', () => {
+  render(<App />)
+  const schedule = screen.getByRole('region', { name: 'Schedule' })
+  expect(within(schedule).queryByRole('button', { name: /sign out/i })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Sign out / test login' })).toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+  expect(screen.getByRole('button', { name: /^Sign out$/ })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Sign out / test login' })).toBeInTheDocument()
 })
 
 it('collapses the sidebar without removing navigation', () => {
