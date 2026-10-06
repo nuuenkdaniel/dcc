@@ -3,6 +3,25 @@ import type {FastifyInstance} from 'fastify'
 import {callCurator} from './planner.js'
 import {easternDay} from './planner-policy.js'
 import {mailPageRoutes} from './mail-paging.js'
+import {createHash} from 'node:crypto'
+type CuratorCall=(input:unknown)=>Promise<unknown>
+const htmlLimit=2*1024*1024
+export async function cachedMailHtml(pool:Pool,id:string,curator:CuratorCall=callCurator){
+ if(!/^[a-f0-9]{64}$/.test(id))return {code:404 as const,error:'Message not found'}
+ const row=(await pool.query('SELECT account,data FROM mail_messages WHERE id=$1',[id])).rows[0]
+ if(!row)return {code:404 as const,error:'Message not found'}
+ const data=row.data as Record<string,unknown>
+ const identity=createHash('sha256').update(`${data.account}\0${data.validity}\0${data.uid}`).digest('hex')
+ if(data.id!==id||row.account!==data.account||identity!==id||!['personal','school','work'].includes(String(data.account))||!/^\d+$/.test(String(data.uid))||!/^\d+$/.test(String(data.validity)))return {code:409 as const,error:'Cached message identity is invalid; sync again'}
+ if(Object.hasOwn(data,'html'))return typeof data.html==='string'?{code:200 as const,html:data.html,hasHtml:true}:{code:200 as const,html:null,hasHtml:false}
+ if(data.hasHtml===false)return {code:200 as const,html:null,hasHtml:false}
+ const result=await curator({mode:'mail-html',account:data.account,uid:data.uid,validity:data.validity}) as {html?:unknown}
+ if(!(typeof result?.html==='string'||result?.html===null))throw Error('Invalid HTML result')
+ if(typeof result.html==='string'&&Buffer.byteLength(result.html,'utf8')>htmlLimit)throw Error('HTML exceeds 2 MB limit')
+ const saved=await pool.query("UPDATE mail_messages SET data=jsonb_set(data || jsonb_build_object('hasHtml',$5::boolean),'{html}',$6::jsonb,true) WHERE id=$1 AND account=$2 AND data->>'uid'=$3 AND data->>'validity'=$4",[id,data.account,data.uid,data.validity,typeof result.html==='string',JSON.stringify(result.html)])
+ if(saved.rowCount!==1)throw Error('Cached message identity changed')
+ return {code:200 as const,html:result.html,hasHtml:typeof result.html==='string'}
+}
 export async function migrateMail(pool:Pool){await pool.query(`CREATE TABLE IF NOT EXISTS mail_messages(id text PRIMARY KEY,account text NOT NULL,data jsonb NOT NULL,analysis jsonb,override boolean,feedback_at timestamptz);CREATE TABLE IF NOT EXISTS mail_state(account text PRIMARY KEY,last_success timestamptz,error text,next_run timestamptz NOT NULL DEFAULT now());INSERT INTO mail_state(account) VALUES('personal'),('school'),('work') ON CONFLICT DO NOTHING;CREATE TABLE IF NOT EXISTS mail_preferences(id int PRIMARY KEY CHECK(id=1),rules text NOT NULL DEFAULT '');INSERT INTO mail_preferences(id) VALUES(1) ON CONFLICT DO NOTHING;`)}
 export async function syncMail(pool:Pool){const c=await pool.connect();let locked=false
  try{locked=(await c.query('SELECT pg_try_advisory_lock(817350) ok')).rows[0].ok;if(!locked)return
@@ -26,7 +45,7 @@ export async function syncMail(pool:Pool){const c=await pool.connect();let locke
 export async function classifyMail(pool:Pool){
  const c=await pool.connect();let locked=false
  try{locked=(await c.query('SELECT pg_try_advisory_lock(817351) ok')).rows[0].ok;if(!locked)return
- const today=easternDay(new Date());const rows=(await c.query("SELECT id,data FROM mail_messages WHERE analysis IS NULL AND (data->>'receivedAt')::timestamptz AT TIME ZONE 'America/New_York' >= $1::date ORDER BY data->>'receivedAt' DESC LIMIT 1",[today])).rows
+ const today=easternDay(new Date());const rows=(await c.query("SELECT id,data-'html' AS data FROM mail_messages WHERE analysis IS NULL AND (data->>'receivedAt')::timestamptz AT TIME ZONE 'America/New_York' >= $1::date ORDER BY data->>'receivedAt' DESC LIMIT 1",[today])).rows
  if(!rows.length)return
  const rules=(await c.query('SELECT rules FROM mail_preferences WHERE id=1')).rows[0].rules
  const examples=(await c.query('SELECT data->>\'sender\' sender,data->>\'subject\' subject,override important FROM mail_messages WHERE override IS NOT NULL ORDER BY feedback_at DESC LIMIT 20')).rows
@@ -34,13 +53,14 @@ export async function classifyMail(pool:Pool){
  if(!Array.isArray(result.messages)||result.messages.length!==rows.length||new Set(result.messages.map(m=>m.id)).size!==rows.length||result.messages.some(m=>!rows.some(r=>r.id===m.id)||typeof m.important!=='boolean'||typeof m.summary!=='string'||m.summary.length>500||typeof m.reason!=='string'||m.reason.length>500))throw Error('Invalid classification')
  for(const m of result.messages)await c.query('UPDATE mail_messages SET analysis=$2 WHERE id=$1',[m.id,m])
  }finally{if(locked)await c.query('SELECT pg_advisory_unlock(817351)');c.release()}}
-export function mailRoutes(app:FastifyInstance,pool:Pool){
+export function mailRoutes(app:FastifyInstance,pool:Pool,curator:CuratorCall=callCurator){
  mailPageRoutes(app,pool)
- app.get('/api/v1/mail/snapshot',async()=>({messages:(await pool.query('SELECT data,analysis,override FROM mail_messages ORDER BY data->>\'receivedAt\' DESC')).rows,accounts:(await pool.query('SELECT account,last_success,error FROM mail_state ORDER BY account')).rows,today:easternDay(new Date())}))
+ app.get('/api/v1/mail/snapshot',async()=>({messages:(await pool.query("SELECT data-'html' AS data,analysis,override FROM mail_messages ORDER BY data->>'receivedAt' DESC")).rows,accounts:(await pool.query('SELECT account,last_success,error FROM mail_state ORDER BY account')).rows,today:easternDay(new Date())}))
  app.post('/api/v1/mail/refresh',async()=>{await pool.query("UPDATE mail_state SET next_run=now() WHERE last_success IS NULL OR last_success<now()-interval '30 seconds'");return {queued:true}})
  app.get('/api/v1/mail/preferences',async()=>(await pool.query('SELECT rules FROM mail_preferences WHERE id=1')).rows[0])
  app.post<{Body:{rules:string}}>('/api/v1/mail/preferences',async(req,reply)=>{if(typeof req.body?.rules!=='string'||req.body.rules.length>4000)return reply.code(400).send({error:'Rules must be at most 4,000 characters'});await pool.query('UPDATE mail_preferences SET rules=$1 WHERE id=1',[req.body.rules]);await pool.query('UPDATE mail_messages SET analysis=NULL WHERE override IS NULL AND (data->>\'receivedAt\')::timestamptz AT TIME ZONE \'America/New_York\' >= $1::date',[easternDay(new Date())]);return {saved:true}})
  app.post<{Body:{id:string;important:boolean|null}}>('/api/v1/mail/feedback',async(req,reply)=>{if(typeof req.body?.id!=='string'||!(req.body.important===null||typeof req.body.important==='boolean'))return reply.code(400).send({error:'Invalid feedback'});const r=await pool.query('UPDATE mail_messages SET override=$2,feedback_at=now() WHERE id=$1',[req.body.id,req.body.important]);return r.rowCount?{saved:true}:reply.code(404).send({error:'Message not found'})})
+ app.get<{Params:{id:string}}>('/api/v1/mail/html/:id',async(req,reply)=>{try{const result=await cachedMailHtml(pool,req.params.id,curator);return reply.code(result.code).send(result.code===200?{html:result.html,hasHtml:result.hasHtml}:{error:result.error})}catch{return reply.code(502).send({error:'Formatted message unavailable. The cached text is unchanged.'})}})
  app.get<{Params:{id:string;part:string}}>('/api/v1/mail/attachment/:id/:part',async(req,reply)=>{
  const row=(await pool.query('SELECT data FROM mail_messages WHERE id=$1',[req.params.id])).rows[0];if(!row||!row.data.attachments.some((a:{part:string})=>a.part===req.params.part))return reply.code(404).send({error:'Attachment not in cached message'})
  try{const file=await callCurator({mode:'mail-attachment',account:row.data.account,uid:row.data.uid,validity:row.data.validity,part:req.params.part}) as {name:string;content:string};const bytes=Buffer.from(file.content,'base64');if(bytes.length>25*1024*1024)throw Error('Too large');return reply.header('Content-Type','application/octet-stream').header('X-Content-Type-Options','nosniff').header('Content-Disposition',`attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(file.name.replace(/[\r\n]/g,''))}`).send(bytes)}catch{return reply.code(502).send({error:'Download failed. The message may have moved, or exceeds the 25 MB download limit.'})}

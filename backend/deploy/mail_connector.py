@@ -66,6 +66,14 @@ def fetch_part(c,uid,p,max_size):
 def dispatch(data):
     account=data.get('account');c,validity,address=connect(account)
     try:
+        if data.get('mode')=='mail-html':
+            uid=data.get('uid','')
+            if not re.fullmatch(r'\d+',uid) or data.get('validity')!=validity:raise ValueError('Message identity changed; sync first')
+            match=next((p for p in mime_parts(c,uid) if p['kind']=='text/html' and not p['attachment']),None)
+            if match is None:return {'html':None}
+            binary=fetch_part(c,uid,match,2*1024*1024)
+            if len(binary)>2*1024*1024:raise ValueError('HTML exceeds 2 MB limit')
+            return {'html':binary.decode(match['header'].get_content_charset() or 'utf-8',errors='replace')}
         if data.get('mode')=='mail-attachment':
             uid=data.get('uid','');part=data.get('part','')
             if not re.fullmatch(r'\d+',uid) or not re.fullmatch(r'\d+(?:\.\d+)*',part) or data.get('validity')!=validity:raise ValueError('Message identity changed; sync first')
@@ -100,6 +108,7 @@ def dispatch(data):
             typ,header=c.uid('fetch',uid,'(BODY.PEEK[HEADER])');raw=next(x[1] for x in header if isinstance(x,tuple))
             msg=email.message_from_bytes(raw,policy=email.policy.default);body='';notice=''
             structure=mime_parts(c,uid)
+            base['hasHtml']=any(not p['attachment'] and p['kind']=='text/html' for p in structure)
             candidates=[p for p in structure if not p['attachment'] and p['kind'] in ('text/plain','text/html')]
             candidates.sort(key=lambda p:p['kind']!='text/plain')
             if candidates:

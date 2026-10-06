@@ -30,4 +30,19 @@ class MailTests(unittest.TestCase):
         with patch.object(mail,'connect',return_value=(c,'123','test@example.invalid')):
             with self.assertRaises(ValueError):mail.dispatch({'mode':'mail-attachment','account':'school','uid':'42','validity':'old','part':'2'})
         self.assertEqual(c.calls,[])
+    def test_html_fetches_only_nonattachment_html_with_peek(self):
+        class HtmlFake(Fake):
+            def uid(self,command,*args):
+                self.calls.append((command,args));query=args[1]
+                if query=='(BODYSTRUCTURE)':return 'OK',[b'1 (UID 42 BODYSTRUCTURE (("TEXT" "HTML" ("CHARSET" "UTF-8") NIL NIL "7BIT" 12 1 NIL NIL NIL)("IMAGE" "PNG" NIL NIL NIL "BASE64" 8 NIL ("ATTACHMENT" ("FILENAME" "x.png")) NIL) "MIXED"))']
+                if query=='(BODY.PEEK[1])':return 'OK',[(b'1 BODY[1]',b'<p>Hello</p>')]
+                raise AssertionError(query)
+        c=HtmlFake()
+        with patch.object(mail,'connect',return_value=(c,'123','test@example.invalid')):result=mail.dispatch({'mode':'mail-html','account':'school','uid':'42','validity':'123'})
+        self.assertEqual(result['html'],'<p>Hello</p>');self.assertFalse(any('BODY.PEEK[2]' in str(args) for _,args in c.calls));self.assertFalse(any(command=='store' for command,_ in c.calls))
+    def test_html_validity_mismatch_is_rejected_before_mime_fetch(self):
+        c=Fake()
+        with patch.object(mail,'connect',return_value=(c,'123','test@example.invalid')):
+            with self.assertRaises(ValueError):mail.dispatch({'mode':'mail-html','account':'school','uid':'42','validity':'old'})
+        self.assertEqual(c.calls,[])
 if __name__=='__main__':unittest.main()

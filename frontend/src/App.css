@@ -327,6 +327,12 @@ nav { display: grid; gap: 5px; }
 .email-spacing-toggle button[aria-pressed="true"] {background:var(--accent-soft);color:var(--accent);}
 .email-body {font:inherit;font-size:13px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;}
 .email-body a {color:var(--accent);text-decoration:underline;text-underline-offset:2px;}
+.email-view-toggle {display:flex;justify-content:flex-end;gap:4px;margin-top:12px;}
+.email-view-toggle button {padding:5px 9px;border:1px solid var(--border);border-radius:5px;background:transparent;color:var(--muted);font:inherit;font-size:11px;}
+.email-view-toggle button[aria-pressed="true"] {background:var(--accent-soft);color:var(--accent);}
+.email-privacy-note {color:var(--muted);font-size:12px;line-height:1.5;}
+.email-load-images {margin:0 0 8px;}
+.email-html-frame {display:block;width:100%;min-height:420px;border:1px solid var(--border);border-radius:6px;background:#fff;}
 .email-details {margin-top:18px;font-size:13px;overflow-wrap:anywhere;}
 .brief-list {display:grid;gap:0;}
 .email-brief {padding:18px 0;min-width:0;}
