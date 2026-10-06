@@ -334,7 +334,6 @@ nav { display: grid; gap: 5px; }
 .email-privacy-details {color:var(--muted);font-size:12px;line-height:1.5;margin:0 0 8px;}
 .email-privacy-details summary {cursor:pointer;width:fit-content;}
 .email-privacy-details p {margin:6px 0;}
-.email-load-images {margin:0 0 8px;}
 .email-html-frame {display:block;width:100%;min-height:420px;border:1px solid var(--border);border-radius:6px;background:#fff;}
 .email-details {margin-top:18px;font-size:13px;overflow-wrap:anywhere;}
 .brief-list {display:grid;gap:0;}
