@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
 
 test('long generated project plan stays compact, grouped, and read-only on mount',async({page})=>{
  const project={id:'long-project',title:'Capstone launch with a deliberately long title that must wrap safely',category:'school',description:'Project instructions stay behind details.',deadline:'2026-10-24',importance:3,remainingMinutes:155,progress:'',status:'active',resources:[{name:'brief.pdf',text:'private extracted context'}],planSummary:'Generated from the saved brief.'}

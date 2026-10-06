@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
 test('study plans share the task list, search, filters and empty state',async({page})=>{
  await page.clock.install({time:new Date('2026-10-03T12:00:00')})
  let actions=[30,45].map((minutes,i)=>({kind:'action',version:1,data:{id:String(i),preparationId:'prep',projectId:'p'+i,title:'Study step '+i,notes:'Logistic regression',minutes,date:'2026-10-03',completed:false,dismissed:false}}))

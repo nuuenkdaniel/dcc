@@ -1,6 +1,7 @@
 import {useEffect,useLayoutEffect,useRef,useState} from 'react'
 import {mergeTasks,type SharedTask} from './sharedTasks'
-function taskFetch(path:string,options:RequestInit={}){return fetch(path,{...options,signal:AbortSignal.timeout(10000)})}
+import {protectedFetch} from './auth'
+function taskFetch(path:string,options:RequestInit={}){return protectedFetch(path,{...options,signal:AbortSignal.timeout(10000)})}
 const KEY='dcc.manual-tasks.base.v1'
 export function ManualTaskSync({tasks,onApply}:{tasks:SharedTask[];onApply:(tasks:SharedTask[])=>void}){
  const inFlight=useRef(false),blocked=useRef(false)

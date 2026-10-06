@@ -1,9 +1,10 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './authenticated'
 
 for (const width of [375, 768, 1024, 1920, 3672]) {
   test(`homepage fits at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 1000 })
     await page.goto('http://127.0.0.1:5173')
+    await expect(page.getByLabel('Task title',{exact:true})).toBeVisible()
     const metrics = await page.evaluate(() => {
       const button = document.querySelector('.form-row button')!
       const content = document.querySelector('.content')!.getBoundingClientRect()
@@ -38,14 +39,9 @@ test('development toolbar switches page previews and keeps sample data isolated'
   await expect(page).toHaveURL(/\/inbox$/)
   await expect(page.getByRole('heading', { name: 'Inbox', exact: true })).toBeVisible()
   await page.screenshot({ path: 'test-results/view-inbox.png', fullPage: true })
-  await page.getByRole('button', { name: 'Login view' }).click()
-  await expect(page).toHaveURL(/\/login$/)
-  await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible()
-  await expect(page.getByRole('navigation', { name: 'Main navigation' })).toHaveCount(0)
-  await page.goBack()
-  await expect(page).toHaveURL(/\/inbox$/)
-  await expect(page.getByRole('heading', { name: 'Inbox', exact: true })).toBeVisible()
-  await page.screenshot({ path: 'test-results/view-login.png', fullPage: true })
+  await page.getByRole('button', { name: 'Home view' }).click()
+  await expect(page).toHaveURL(/\/$/)
+  await expect(page.getByText('Review calendar integration')).toBeVisible()
 })
 
 test('sidebar collapses to a functional icon rail', async ({ page }) => {

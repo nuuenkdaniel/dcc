@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
 test('background polling stays quiet while manual sync gives feedback',async({page})=>{
  await page.clock.install()
  let requests=0

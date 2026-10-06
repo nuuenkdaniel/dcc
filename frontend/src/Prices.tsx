@@ -1,5 +1,6 @@
 import {useEffect,useState,useCallback,useId,useMemo} from 'react'
 import {aggregatePriceHistory,type HistoryCondition,type HistoryPeriod,type PriceObservation} from './priceHistory'
+import {protectedFetch} from './auth'
 type Offer={condition:string;cents:number;maxCents?:number;eligible:boolean;availability:string}
 type Source={item_id:string;store:string;status:string;detail:string;last_attempt:string|null;next_run:string;last_good:null|{observedAt:string;url:string;offers:Offer[]}}
 type Item={id:string;title:string;target_cents:number;paused:boolean}
@@ -10,9 +11,9 @@ const links:Record<string,string>={bestbuy:'https://www.bestbuy.com/product/J3K4
 export function Prices(){
  const [data,setData]=useState<Snapshot>(()=>{try{const v=JSON.parse(localStorage.getItem(key)||'null');if(v&&Array.isArray(v.items)&&Array.isArray(v.sources)&&Array.isArray(v.history))return v}catch{/* cache unavailable */}return {items:[],sources:[],history:[]}})
  const [notice,setNotice]=useState(''),[busy,setBusy]=useState(false)
- const read=useCallback(async()=>{const r=await fetch('/api/v1/prices/snapshot',{signal:AbortSignal.timeout(10000)});if(!r.ok)throw Error(r.status===401?'Sign in to load prices.':'Price backend unavailable.');const v=await r.json();if(!Array.isArray(v.items)||!Array.isArray(v.sources)||!Array.isArray(v.history))throw Error('Invalid snapshot');setData(v);try{localStorage.setItem(key,JSON.stringify(v))}catch{setNotice('Device cache could not be saved.')}},[])
+ const read=useCallback(async()=>{const r=await protectedFetch('/api/v1/prices/snapshot',{signal:AbortSignal.timeout(10000)});if(!r.ok)throw Error(r.status===401?'Sign in to load prices.':'Price backend unavailable.');const v=await r.json();if(!Array.isArray(v.items)||!Array.isArray(v.sources)||!Array.isArray(v.history))throw Error('Invalid snapshot');setData(v);try{localStorage.setItem(key,JSON.stringify(v))}catch{setNotice('Device cache could not be saved.')}},[])
  useEffect(()=>{const refresh=()=>void read().catch(e=>setNotice(e.message+' Showing any cached prices.'));refresh();const t=setInterval(refresh,30000);return()=>clearInterval(t)},[read])
- const save=async(item:Item,target:number,paused:boolean)=>{const r=await fetch('/api/v1/prices/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:item.id,targetCents:target,paused})});if(!r.ok)throw Error('Could not save settings. Reconnect and retry.');await read();setNotice('Tracker settings saved.')}
+ const save=async(item:Item,target:number,paused:boolean)=>{const r=await protectedFetch('/api/v1/prices/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:item.id,targetCents:target,paused})});if(!r.ok)throw Error('Could not save settings. Reconnect and retry.');await read();setNotice('Tracker settings saved.')}
  return <section className="content prices-view">
 <header className="topbar">
 <div>
@@ -20,7 +21,7 @@ export function Prices(){
 <h1>Price tracker</h1>
 <p className="subtitle">Checks every 6 hours · No automatic purchases</p>
 </div>
-<button className="secondary-action" disabled={busy} onClick={async()=>{setBusy(true);try{const r=await fetch('/api/v1/prices/refresh',{method:'POST'});if(!r.ok)throw Error('Could not request a check.');const v=await r.json();await read();setNotice(v.note)}catch(e){setNotice(e instanceof Error?e.message:'Check failed')}finally{setBusy(false)}}}>{busy?'Requesting…':'Check prices'}</button>
+<button className="secondary-action" disabled={busy} onClick={async()=>{setBusy(true);try{const r=await protectedFetch('/api/v1/prices/refresh',{method:'POST'});if(!r.ok)throw Error('Could not request a check.');const v=await r.json();await read();setNotice(v.note)}catch(e){setNotice(e instanceof Error?e.message:'Check failed')}finally{setBusy(false)}}}>{busy?'Requesting…':'Check prices'}</button>
 </header>{notice&&<p role="status" className="local-note">{notice}</p>}{!data.items.length&&<p className="local-note">No cached items available yet.</p>}{data.items.map(item=>
 <PriceCard key={item.id} item={item} sources={data.sources.filter(s=>s.item_id===item.id)} history={data.history.filter(h=>h.item_id===item.id)} save={save}/>)}<details className="price-tracking-notes"><summary>Coverage & checking details</summary><p>Retailers checked every 6 hours while the worker and browser are running. This page refreshes saved results every 30 seconds. Manual checks have a 10-minute cooldown per store.</p><p>Local pickup scope: 10 miles around Stony Brook campus. Local inventory filtering is not yet implemented, so pickup eligibility remains unverified. Online shipping is considered separately; confirm delivery and charges before buying.</p><p>This version supports the XPS configuration above. Additional items need verified retailer connectors. No automatic purchases.</p></details>
 </section>

@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
 test('dcc keeps navigation without branding or promotional subtitles',async({page})=>{
  for(const route of ['/','/inbox','/projects','/focus','/login']){
   await page.goto('http://127.0.0.1:5173'+route)

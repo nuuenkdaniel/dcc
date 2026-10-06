@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
 test('reload requests Nextcloud sync and Sync now requests it again',async({page})=>{
  let requests=0
  await page.route('**/api/v1/auth/session',r=>r.fulfill({json:{authenticated:true,configured:true}}))

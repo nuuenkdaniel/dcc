@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
 const origin=process.env.DCC_TEST_ORIGIN??'http://127.0.0.1:5173'
 test('sidebar fills viewport and stays visible on short and long pages',async({page})=>{
  await page.setViewportSize({width:1280,height:900})

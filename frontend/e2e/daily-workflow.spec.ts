@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './authenticated'
 
 test('local task editing, priority, search, delete and undo survive refresh', async ({ page }) => {
   await page.goto('http://127.0.0.1:5173/')
@@ -22,20 +22,13 @@ test('local task editing, priority, search, delete and undo survive refresh', as
   await page.screenshot({ path: 'test-results/home-expanded.png', fullPage: true })
 })
 
-test('disconnected inbox and account remain honest and navigable', async ({ page }) => {
+test('an inbox 401 returns to the required login without a local bypass', async ({ page }) => {
   await page.route('**/api/v1/mail/snapshot', route => route.fulfill({status:401,json:{error:'Sign in required'}}))
-  await page.goto('http://127.0.0.1:5173/')
-  await page.getByRole('link', { name: 'Open inbox' }).click()
-  await expect(page).toHaveURL(/\/inbox$/)
-  await expect(page.getByRole('heading', { name: 'Inbox', exact: true })).toBeVisible()
-  await expect(page.getByText('Sign in to sync email.', { exact: false })).toBeVisible()
-  await page.screenshot({ path: 'test-results/inbox-expanded.png', fullPage: true })
-  await page.route('**/api/v1/auth/session',r=>r.fulfill({json:{configured:false,authenticated:false}}))
-  await page.goto('http://127.0.0.1:5173/login')
-  await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeDisabled()
+  await page.goto('http://127.0.0.1:5173/inbox')
+  await expect(page).toHaveURL(/\/login\?next=%2Finbox$/)
+  await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Continue locally' })).toHaveCount(0)
   await page.screenshot({ path: 'test-results/login-expanded.png', fullPage: true })
-  await page.getByRole('button', { name: 'Continue locally' }).click()
-  await expect(page).toHaveURL(/\/$/)
 })
 
 test('daily actions keep checkoffs without a planned-date editor', async ({ page }) => {

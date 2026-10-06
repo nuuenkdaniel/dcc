@@ -1,4 +1,5 @@
 import {useEffect,useRef,useState,useCallback} from 'react'
+import {protectedFetch} from './auth'
 export type Project={planSummary?:string;planError?:string;kind?:'assignment'|'project';resources?:{name:string;text:string}[];id:string;title:string;category:string;description:string;deadline:string;importance:number;remainingMinutes:number;progress:string;status:string}
 export type Exam={id:string;calendarId:string;uid:string;recurrenceId:string|null;start:string;allDay:boolean;title:string}
 export type Topic={id:string;title:string;notes:string;minutes:number}
@@ -8,7 +9,7 @@ export type Entry<T>={kind:string;version:number;data:T}
 type Change={kind:'project'|'action'|'preparation';version:number;data:Project|Action|Preparation}
 type Snapshot={preparations?:Entry<Preparation>[];projects:Entry<Project>[];actions:Entry<Action>[];status:{summary?:string;error?:string;requested?:boolean;last_success?:string}}
 type Cache={snapshot:Snapshot;pending:Change[]}
-async function plannerFetch(path:string,options:RequestInit={}){return fetch(path,{...options,signal:AbortSignal.timeout(10000)})}
+async function plannerFetch(path:string,options:RequestInit={}){return protectedFetch(path,{...options,signal:AbortSignal.timeout(10000)})}
 const key='daymark.planner.v1'
 const empty:Cache={snapshot:{projects:[],actions:[],status:{}},pending:[]}
 function read():Cache{const text=localStorage.getItem(key);if(!text)return empty;const c=JSON.parse(text);if(!Array.isArray(c.pending)||!Array.isArray(c.snapshot?.projects)||!Array.isArray(c.snapshot?.actions))throw Error('Invalid cache');return c}
