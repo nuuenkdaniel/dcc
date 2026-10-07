@@ -2,7 +2,7 @@ import {ManualTaskSync} from './ManualTaskSync'
 import {Prices} from './Prices'
 import {useMail} from './useMail'
 import {EmailSummary} from './EmailSummary'
-import {usePlanner,studyCardCount,visiblePlanGroups} from './usePlanner'
+import {usePlanner,studyCardCount,visibleActionGroups,visiblePlanGroups} from './usePlanner'
 import {Projects,ActionCard,StudyCard,PlanControls} from './Projects'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
@@ -346,6 +346,9 @@ export function Workspace() {
   const curatedCount = studyCardCount(planner.actions.filter(a=>a.date===selectedDate&&!a.dismissed))
   const selectedTasks = displayedTasks.filter((task) => task.date === selectedDate)
   const planGroups = visiblePlanGroups(planner,selectedDate,taskFilter,taskSearch)
+  const unplacedActions=planner.actions.filter(action=>action.needsRescheduling&&!action.completed&&!action.dismissed)
+  const unplacedGroups=visibleActionGroups(planner,unplacedActions,taskFilter,taskSearch)
+  const unplacedCount=unplacedGroups.reduce((count,group)=>count+group.length,0)
   const visibleTasks = selectedTasks.filter(task => (!taskSearch || task.title.toLowerCase().includes(taskSearch.toLowerCase())) && (taskFilter === 'All' || (taskFilter === 'Open' && !task.completed) || (taskFilter === 'Completed' && task.completed) || (taskFilter === 'Important' && task.important))).sort((a, b) => Number(Boolean(b.important)) - Number(Boolean(a.important)))
   const updateTasks = async (next: Task[]) => {
     if (readError) return false
@@ -415,7 +418,7 @@ export function Workspace() {
                   {storageWarning && <p className="storage-warning" role="alert">{storageWarning}</p>}
                   {planner.loadState==='signed-out'&&<button onClick={()=>navigate('login')}>Sign in</button>}
                   {['offline','storage-error'].includes(planner.loadState)&&<button onClick={()=>void planner.sync()}>Retry task sync</button>}
-                  {planner.actions.some(a=>a.needsRescheduling&&!a.completed&&!a.dismissed)&&<section aria-label="Needs rescheduling"><h3>Needs rescheduling</h3><p>These unfinished tasks could not fit before their deadlines. They are not scheduled for the selected day.</p>{planner.actions.filter(a=>a.needsRescheduling&&!a.completed&&!a.dismissed).map(a=><ActionCard key={a.id} action={a} planner={planner}/>)}</section>}
+                   {unplacedActions.length>0&&<details className="rescheduling-details"><summary><span>Needs rescheduling</span><span className="rescheduling-count">{unplacedCount} {unplacedCount===1?'task':'tasks'}</span></summary><div className="rescheduling-content"><p>Unfinished tasks without a scheduled day. They stay saved until completed, dismissed, or rescheduled.</p>{unplacedGroups.length>0?<div className="rescheduling-list">{unplacedGroups.map(group=>(group[0].preparationId||group[0].assignmentStep)?<StudyCard key={group[0].preparationId??group[0].projectId} actions={group} planner={planner}/>:<ActionCard key={group[0].id} action={group[0]} planner={planner}/>)}</div>:<p className="rescheduling-empty">No unfinished tasks match the current filters.</p>}</div></details>}
                   <PlanControls planner={planner}/>
                 </section>
               </div>

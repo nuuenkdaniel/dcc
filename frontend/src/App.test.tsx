@@ -27,6 +27,24 @@ it('retains but does not display synchronized task tombstones',()=>{
  expect(screen.queryByText('Do not resurrect')).not.toBeInTheDocument()
  expect(JSON.parse(window.localStorage.getItem('productivity-app.tasks.v1')!)[0].deleted).toBe(true)
 })
+it('keeps 16 filtered unplaced tasks in a collapsed native disclosure and updates the count',async()=>{
+ const actions=Array.from({length:16},(_,index)=>({kind:'action',version:1,data:{id:`unplaced-${index}`,projectId:'',title:`Unplaced task ${index+1}`,notes:'',minutes:20,date:'',needsRescheduling:true,completed:false,dismissed:false}}))
+ window.localStorage.setItem('daymark.planner.v1',JSON.stringify({snapshot:{projects:[],preparations:[],actions,status:{}},pending:[]}))
+ render(<App/>)
+ const details=screen.getByText('Needs rescheduling').closest('details')!
+ expect(details).not.toHaveAttribute('open')
+ expect(within(details).getByText('16 tasks')).toBeInTheDocument()
+ expect(within(details).getByText('Unplaced task 1')).not.toBeVisible()
+ fireEvent.change(screen.getByLabelText('Search tasks'),{target:{value:'Unplaced task 16'}})
+ expect(within(details).getByText('1 task')).toBeInTheDocument()
+ fireEvent.change(screen.getByLabelText('Search tasks'),{target:{value:''}})
+ fireEvent.click(within(details).getByText('Needs rescheduling'))
+ const completion=within(details).getByRole('checkbox',{name:'Complete Unplaced task 1'})
+ expect(completion).toBeVisible()
+ fireEvent.click(completion)
+ await waitFor(()=>expect(within(details).getByText('15 tasks')).toBeInTheDocument())
+ expect(within(details).queryByText('Unplaced task 1')).not.toBeInTheDocument()
+})
 it('persists ordinary deletion as a hidden tombstone and Undo restores deleted false',async()=>{
  const now=new Date(),date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`
  window.localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([{id:'ordinary',title:'Ordinary task',date,notes:'',completed:false}]))
