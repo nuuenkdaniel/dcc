@@ -20,6 +20,13 @@ it('warns instead of crashing when stored records are invalid', () => {
   render(<App />)
   expect(screen.getByRole('alert')).toHaveTextContent(/stored tasks/i)
 })
+it('retains but does not display synchronized task tombstones',()=>{
+ const now=new Date(),date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`
+ window.localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([{id:'deleted-task',title:'Do not resurrect',date,notes:'',completed:false,deleted:true}]))
+ render(<App/>)
+ expect(screen.queryByText('Do not resurrect')).not.toBeInTheDocument()
+ expect(JSON.parse(window.localStorage.getItem('productivity-app.tasks.v1')!)[0].deleted).toBe(true)
+})
 beforeEach(() => {
   window.localStorage.clear()
   window.history.replaceState({}, '', '/')
@@ -53,7 +60,7 @@ it('creates, expands, completes, and restores a local task', () => {
 it('shows a quiet empty state without seeded tasks', () => {
   render(<App />)
   expect(screen.getByText('Loading tasks…')).toBeInTheDocument()
-  expect(screen.getByText(/saved only in this browser/i)).toBeInTheDocument()
+  expect(screen.getByText(/manual tasks save locally first and sync/i)).toBeInTheDocument()
 })
 
 it('switches between development page previews', () => {

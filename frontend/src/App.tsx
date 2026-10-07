@@ -13,8 +13,9 @@ import { Settings } from './Settings'
 import { usePreferences } from './usePreferences'
 import { advanceFocusTimer, type FocusTimerState, type MiniTimer } from './focusTimer'
 import { LogoutAction } from './LogoutAction'
+import {AccessibleDialog} from './AccessibleDialog'
 
-type Task = { id: string; title: string; date: string; notes: string; completed: boolean; sample?: boolean; important?: boolean }
+type Task = { id: string; title: string; date: string; notes: string; completed: boolean; sample?: boolean; important?: boolean; deleted?: boolean }
 type PreviewView = 'home' | 'inbox' | 'pomodoro' | 'login' | 'settings' | 'projects' | 'prices'
 
 const VIEW_PATHS: Record<PreviewView, string> = {
@@ -44,7 +45,7 @@ const readTasks = (): { tasks: Task[]; error: boolean } => {
     if (!Array.isArray(parsed) || !parsed.every((item: unknown) => {
       if (!item || typeof item !== 'object') return false
       const task = item as Partial<Task>
-      return typeof task.id === 'string' && typeof task.title === 'string' && typeof task.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(task.date) && typeof task.notes === 'string' && typeof task.completed === 'boolean'
+      return typeof task.id === 'string' && typeof task.title === 'string' && typeof task.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(task.date) && typeof task.notes === 'string' && typeof task.completed === 'boolean' && (task.deleted===undefined||typeof task.deleted==='boolean')
     })) return { tasks: [], error: true }
     return { tasks: parsed, error: false }
   } catch {
@@ -163,9 +164,17 @@ function PomodoroView() {
   const [miniMinutes, setMiniMinutes] = useState(5)
   const [dragging, setDragging] = useState<string | null>(null)
   const [dragPreview, setDragPreview] = useState<{ left: number; top: number; width: number; height: number; offsetX: number; offsetY: number; target: string | null } | null>(null)
+  const timerListRef = useRef<HTMLDivElement>(null)
+  const pendingTimerScroll = useRef<string | null>(null)
   const clearDrag = () => { setDragging(null); setDragPreview(null) }
   const [orderNotice, setOrderNotice] = useState('')
   const canReorder = phase === 'focus' && !activeMiniId && miniTimers.every(timer => timer.remainingMs === timer.duration * 1000)
+  useEffect(()=>{
+    const id=pendingTimerScroll.current
+    if(!id)return
+    pendingTimerScroll.current=null
+    timerListRef.current?.querySelector<HTMLElement>(`[data-timer-id="${CSS.escape(id)}"]`)?.scrollIntoView?.({block:'nearest'})
+  },[miniTimers])
   const moveTimer = (id: string, target: string) => {
     if (!canReorder || id === target) return
     const from = miniTimers.findIndex(timer => timer.id === id)
@@ -198,6 +207,7 @@ function PomodoroView() {
     const minutes = Math.min(120, Math.max(1, miniMinutes))
     if (!name) return
     const miniTimer: MiniTimer = { id: crypto.randomUUID(), name, duration: minutes * 60, remainingMs: minutes * 60_000 }
+    pendingTimerScroll.current=miniTimer.id
     setTimer(current => ({
       ...current,
       sessionRemainingMs: current.miniTimers.length === 0 && current.phase === 'focus' && !current.running ? miniTimer.duration * 1000 : current.sessionRemainingMs,
@@ -267,13 +277,13 @@ function PomodoroView() {
         })}</div>}
       </section>
 
-      {settingsOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false) }}><section className="timer-dialog" role="dialog" aria-modal="true" aria-labelledby="timer-setup-heading">
+      {settingsOpen && <AccessibleDialog labelledBy="timer-setup-heading" onClose={()=>setSettingsOpen(false)}><section className="timer-dialog">
         <div className="dialog-heading"><div><p className="eyebrow">Pomodoro</p><h2 id="timer-setup-heading">Timer setup</h2></div><button type="button" aria-label="Close timer settings" onClick={() => setSettingsOpen(false)}>×</button></div>
         <div className="duration-settings"><NumberStepper id="focus-minutes" label="Focus timer (minutes)" actionName="focus timer" value={focusMinutes} min={1} max={180} onChange={(value) => setDuration('focus', value)} /><NumberStepper id="break-minutes" label="Break timer (minutes)" actionName="break timer" value={breakMinutes} min={1} max={60} onChange={(value) => setDuration('break', value)} /></div>
         <div className="dialog-divider" />
         <div className="dialog-section-heading"><div><p className="eyebrow">Optional</p><h3>Mini timers</h3></div><span className="task-count">{miniTimers.length}</span></div>
         <form className="mini-form" onSubmit={(event) => { event.preventDefault(); addMiniTimer() }}><label htmlFor="mini-name">Mini timer name</label><input id="mini-name" value={miniName} onChange={(event) => setMiniName(event.target.value)} placeholder="e.g. Outline the chapter" /><div className="mini-duration-row"><NumberStepper id="mini-minutes" label="Mini timer minutes" actionName="mini timer" value={miniMinutes} min={1} max={120} onChange={setMiniMinutes} /><button type="submit">Add mini timer</button></div></form>
-        {miniTimers.length > 0 && <><p className="local-note">{canReorder ? 'Drag the grip to reorder, or focus it and use ↑ / ↓.' : 'Reset the session to change its order.'}</p><div className="settings-mini-list">{miniTimers.map((timer, index) => <div key={timer.id} data-timer-id={timer.id} className={dragging === timer.id ? 'timer-dragging' : dragPreview?.target === timer.id ? (index < miniTimers.findIndex(item => item.id === dragging) ? 'timer-drop-before' : 'timer-drop-after') : ''}>
+        {miniTimers.length > 0 && <><p className="local-note">{canReorder ? 'Drag the grip to reorder, or focus it and use ↑ / ↓.' : 'Reset the session to change its order.'}</p><div className="settings-mini-list" ref={timerListRef}>{miniTimers.map((timer, index) => <div key={timer.id} data-timer-id={timer.id} className={dragging === timer.id ? 'timer-dragging' : dragPreview?.target === timer.id ? (index < miniTimers.findIndex(item => item.id === dragging) ? 'timer-drop-before' : 'timer-drop-after') : ''}>
           <button type="button" className="timer-grip" aria-label={`Reorder ${timer.name}`} title="Drag to reorder · ↑ / ↓" disabled={!canReorder}
             onPointerDown={event => { if (event.button !== 0) return; const rect = event.currentTarget.closest('[data-timer-id]')!.getBoundingClientRect(); event.currentTarget.setPointerCapture(event.pointerId); setDragging(timer.id); setDragPreview({ left: rect.left, top: rect.top, width: rect.width, height: rect.height, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top, target: null }) }}
             onPointerMove={event => { if (!dragPreview || dragging !== timer.id) return; const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-timer-id]')?.dataset.timerId ?? null; setDragPreview({ ...dragPreview, left: event.clientX - dragPreview.offsetX, top: event.clientY - dragPreview.offsetY, target }) }}
@@ -282,16 +292,18 @@ function PomodoroView() {
             onLostPointerCapture={clearDrag}
             onKeyDown={event => { if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return; event.preventDefault(); const target = miniTimers[index + (event.key === 'ArrowUp' ? -1 : 1)]; if (target) moveTimer(timer.id, target.id) }}><svg width="16" height="20" viewBox="0 0 16 20" aria-hidden="true" fill="currentColor">{[5, 10, 15].flatMap(y => [5, 11].map(x => <circle key={`${x}-${y}`} cx={x} cy={y} r="1.2" />))}</svg></button>
           <span>{timer.name}</span><small>{formatTime(timer.duration)}</small><button type="button" aria-label={`Remove ${timer.name}`} onClick={() => setTimer(current => ({ ...current, miniTimers: current.miniTimers.filter(item => item.id !== timer.id), activeMiniId: current.activeMiniId === timer.id ? null : current.activeMiniId }))}>Remove</button></div>)}</div><p className="sr-only" role="status">{orderNotice}</p></>}
-        {dragging && dragPreview && <div aria-hidden="true" data-testid="timer-drag-preview" className="timer-drag-preview" style={{ left: dragPreview.left, top: dragPreview.top, width: dragPreview.width, height: dragPreview.height }}><span>{miniTimers.find(timer => timer.id === dragging)?.name}</span><span>{formatTime(miniTimers.find(timer => timer.id === dragging)?.duration ?? 0)}</span></div>}
         <button className="dialog-done" type="button" onClick={() => setSettingsOpen(false)}>Done</button>
-      </section></div>}
+      </section>
+      {dragging && dragPreview && <div aria-hidden="true" data-testid="timer-drag-preview" className="timer-drag-preview" style={{ left: dragPreview.left, top: dragPreview.top, width: dragPreview.width, height: dragPreview.height }}><span>{miniTimers.find(timer => timer.id === dragging)?.name}</span><span>{formatTime(miniTimers.find(timer => timer.id === dragging)?.duration ?? 0)}</span></div>}
+      </AccessibleDialog>}
       <p className="focus-footnote">Timer state is local to this page for now.</p>
     </section>
   )
 }
 
 export function Workspace() {
-  const mail=useMail()
+  const [previewView, setPreviewView] = useState<PreviewView>(() => viewFromPath(window.location.pathname))
+  const mail=useMail(previewView==='home'||previewView==='inbox')
   const preferencesState = usePreferences()
   const planner = usePlanner()
   const [initial] = useState(readTasks)
@@ -304,7 +316,6 @@ export function Workspace() {
   const [title, setTitle] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [storageWarning, setStorageWarning] = useState(false)
-  const [previewView, setPreviewView] = useState<PreviewView>(() => viewFromPath(window.location.pathname))
   const [showSampleData, setShowSampleData] = useState(false)
   const [taskFilter, setTaskFilter] = useState('All')
   const [taskSearch, setTaskSearch] = useState('')
@@ -335,7 +346,7 @@ export function Workspace() {
   }, [])
 
   const days = useMemo(() => calendarDays(month), [month])
-  const displayedTasks = [...tasks, ...(showSampleData ? sampleTasks(selectedDate) : [])]
+  const displayedTasks = [...tasks.filter(task=>!task.deleted), ...(showSampleData ? sampleTasks(selectedDate) : [])]
   const curatedCount = studyCardCount(planner.actions.filter(a=>a.date===selectedDate&&!a.dismissed))
   const selectedTasks = displayedTasks.filter((task) => task.date === selectedDate)
   const planGroups = visiblePlanGroups(planner,selectedDate,taskFilter,taskSearch)

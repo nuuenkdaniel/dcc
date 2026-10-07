@@ -111,6 +111,6 @@ export function PlanControls({planner:p}:{planner:Planner}){
   <section className="planning-sync-section" aria-label="Data synchronization"><strong>Data sync</strong><p className="planning-hint">Sync saved projects and tasks—not a capacity check or a new plan.</p><PlannerStatus planner={p} showScheduling={false}/></section>
   <SchedulingWarnings planner={p}/>
   {p.status.summary&&<details className="planner-history"><summary>Last planner explanation</summary><div className="planner-history-meta">{validTime?<time dateTime={timestamp}>{new Date(timestamp).toLocaleString('en-US',{timeZone:'America/New_York',month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'})} ET</time>:'Generation time unavailable'}</div><p>{p.status.summary}</p><p className="planning-hint">Historical context, not a live capacity check. Assignment breakdowns and later scheduling changes are tracked separately.</p></details>}
-  <details className="planner-storage-note"><summary>Storage & scheduling limits</summary><p>Study plans and project tasks sync with the backend. Manual tasks are saved only in this browser and are not counted in the scheduling budget.</p></details>
+  <details className="planner-storage-note"><summary>Storage & scheduling limits</summary><p>Study plans and project tasks sync with the backend. Manual tasks save locally first and sync with the backend when connected; they are not counted in the scheduling budget.</p></details>
  </details>
 }
