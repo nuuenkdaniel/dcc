@@ -1,9 +1,15 @@
 import {test,expect} from './authenticated'
+import type {Page} from '@playwright/test'
 const origin=`http://127.0.0.1:${process.env.E2E_PORT??'5173'}`
 const msg=(id:string,receivedAt:string,important:boolean,override:boolean|null=null)=>({data:{id,account:'school',address:'test@example.invalid',subject:'Test message '+id,sender:'Test sender',to:'Test recipient',receivedAt,body:'Safe test body <script>alert(1)</script>',bodyNotice:'',unread:true,attachments:[]},analysis:{important,summary:'Test summary '+id,reason:'Test reason'},override})
+type SyntheticMessage=ReturnType<typeof msg>
+async function mockMail(page:Page,getMessages:()=>SyntheticMessage[],bodyRequests:string[]=[]){
+ await page.route('**/api/v1/mail/page*',route=>{const url=new URL(route.request().url()),query=(url.searchParams.get('q')??'').toLowerCase(),account=url.searchParams.get('account')??'all',important=url.searchParams.get('important')==='true',offset=Number(url.searchParams.get('cursor')??0),all=getMessages(),filtered=all.filter(message=>(account==='all'||message.data.account===account)&&(!important||(message.override??message.analysis.important))&&(!query||`${message.data.subject} ${message.data.sender}`.toLowerCase().includes(query))),metadata=(message:SyntheticMessage)=>({...message,data:Object.fromEntries(Object.entries(message.data).filter(([key])=>key!=='body'))}),messages=filtered.slice(offset,offset+100).map(metadata),nextCursor=offset+100<filtered.length?String(offset+100):null,today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()),briefing=all.filter(message=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(message.data.receivedAt))===today&&(message.override??message.analysis.important)).map(metadata);return route.fulfill({json:{messages,nextCursor,total:filtered.length,accounts:[],today,briefing}})})
+ await page.route('**/api/v1/mail/message/*',route=>{const id=decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-1)??'');bodyRequests.push(id);const message=getMessages().find(item=>item.data.id===id);return message?route.fulfill({json:{id,body:message.data.body}}):route.fulfill({status:404,json:{error:'Synthetic message not found'}})})
+}
 test('daily briefing uses Eastern today and manual importance; inbox keeps older mail',async({page})=>{
  const today=new Date().toISOString(),old='2020-01-01T12:00:00Z';let messages=[msg('today',today,true),msg('old',old,true),msg('hidden',today,true,false),msg('manual',today,false,true)]
- await page.route('**/api/v1/mail/snapshot',r=>r.fulfill({json:{messages,accounts:[],today:today.slice(0,10)}}))
+ await mockMail(page,()=>messages)
  await page.route('**/api/v1/mail/feedback',async r=>{const body=r.request().postDataJSON();messages=messages.map(m=>m.data.id===body.id?{...m,override:body.important}:m);await r.fulfill({json:{saved:true}})})
  await page.goto(origin+'/');await expect(page.locator('.email-brief')).toHaveCount(2);await expect(page.locator('.email-brief').getByText('Test message old')).toHaveCount(0)
  await expect(page.locator('.email-brief').first().getByText('Test reason',{exact:true})).not.toBeVisible();await page.locator('.email-brief').first().getByText('Why it matters',{exact:true}).click();await expect(page.locator('.email-brief').first().getByText('Test reason',{exact:true})).toBeVisible();
@@ -23,7 +29,7 @@ test('inbox linkifies only eligible plaintext web destinations without loading t
  const message=msg('links',new Date().toISOString(),true);message.data.body=body
  const external:string[]=[]
  page.on('request',request=>{if(!request.url().startsWith(origin))external.push(request.url())})
- await page.route('**/api/v1/mail/snapshot',route=>route.fulfill({json:{messages:[message],accounts:[],today:new Date().toISOString().slice(0,10)}}))
+ await mockMail(page,()=>[message])
  await page.goto(origin+'/inbox?message=links')
  const card=page.locator('.email-card[open]')
  await expect(card.getByRole('link',{name:/newegg\.com/})).toHaveAttribute('href',/utm_source=email&utm_campaign=synthetic/)
@@ -39,7 +45,7 @@ test('inbox linkifies only eligible plaintext web destinations without loading t
 test('inbox switches between readable spacing and exact original text',async({page})=>{
  const body='\r\n \t\u00a0\r\nFirst paragraph \t\r\n\r\n \t\u00a0\r\n\r\n  indented line\r\n'
  const message=msg('spacing',new Date().toISOString(),true);message.data.body=body
- await page.route('**/api/v1/mail/snapshot',route=>route.fulfill({json:{messages:[message],accounts:[],today:new Date().toISOString().slice(0,10)}}))
+ await mockMail(page,()=>[message])
  await page.goto(origin+'/inbox?message=spacing')
  const card=page.locator('.email-card[open]'),emailBody=card.locator('.email-body')
  const readable=card.getByRole('button',{name:'Readable spacing'}),original=card.getByRole('button',{name:'Original text'})
@@ -58,7 +64,7 @@ test('formatted HTML stays isolated and automatically loads only eligible remote
  const html='<html style="background-color:#eef2f5"><body bgcolor="#f4f5f7" style="margin:0;line-height:1.5"><meta http-equiv="refresh" content="0;url=https://navigate.example"><link rel="stylesheet" href="https://styles.example/mail.css"><style>@font-face{font-family:Tracked;src:url(https://fonts.example/mail.woff2)}</style><iframe src="https://frame.example/load"></iframe><script src="https://script.example/file.js">parent.location="https://navigate.example";fetch("https://script.example/run")</script><form action="https://navigate.example"><input type="image" src="https://forms.example/button.png"><button>Navigate</button></form><table bgcolor="#ffffff" style="border:1px solid #dadce0;border-radius:12px;padding:16px"><tr><td><p>Formatted content</p><a href="https://dashboard.gitguardian.example/incidents/123?source=email" style="display:inline-block;background-color:#6b4eff;border-radius:6px;padding:10px 16px;color:#ffffff">View incident</a><img alt="remote pixel" src="https://images.example/pixel.png"><img alt="private" src="http://127.0.0.1/private.png"><img alt="userinfo" src="https://user@images.example/tracker.png"><img alt="hidden" src="https://images.example/%E2%80%AEtracker.png"><img alt="unsafe scheme" src="javascript:alert(1)"></td></tr></table></body></html>'
  const external:string[]=[],htmlRequests:string[]=[]
  page.on('request',request=>{if(!request.url().startsWith(origin))external.push(request.url())})
- await page.route('**/api/v1/mail/snapshot',route=>route.fulfill({json:{messages:[message,closed],accounts:[],today:new Date().toISOString().slice(0,10)}}))
+ await mockMail(page,()=>[message,closed])
  await page.route('**/api/v1/mail/html/**',route=>{htmlRequests.push(route.request().url());return route.fulfill({json:{html:route.request().url().endsWith(id)?html:'<img src="https://images.example/collapsed.png">',hasHtml:true}})})
  await page.route('https://**/*',route=>route.request().url()==='https://images.example/pixel.png'?route.fulfill({status:200,contentType:'image/gif',body:Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==','base64')}):route.abort())
  await page.route('http://127.0.0.1/private.png',route=>route.abort())
@@ -106,7 +112,7 @@ test('formatted HTML loading choice survives completion and reopen uses the Inbo
  message.data.body='Delayed plain-text fallback';Reflect.set(message.data,'hasHtml',true)
  let releaseResponse!:()=>void,htmlRequests=0
  const delayed=new Promise<void>(resolve=>{releaseResponse=resolve})
- await page.route('**/api/v1/mail/snapshot',route=>route.fulfill({json:{messages:[message],accounts:[],today:new Date().toISOString().slice(0,10)}}))
+ await mockMail(page,()=>[message])
  await page.route('**/api/v1/mail/html/**',async route=>{htmlRequests++;await delayed;await route.fulfill({json:{html:'<p>Cached browser message</p>',hasHtml:true}})})
  await page.goto(`${origin}/inbox?message=${id}`)
  const card=page.locator('.email-card[open]')
@@ -125,4 +131,52 @@ test('formatted HTML loading choice survives completion and reopen uses the Inbo
  await expect(reopened.getByRole('status')).toHaveCount(0)
  await expect(reopened.frameLocator('iframe[title="Formatted email"]').getByText('Cached browser message')).toBeVisible()
  expect(htmlRequests).toBe(1)
+})
+
+test('paginates 205 equal-time messages, searches beyond loaded rows, and fetches only opened bodies',async({page})=>{
+ const receivedAt=new Date().toISOString(),messages=Array.from({length:205},(_,index)=>msg(`mail-${String(index).padStart(3,'0')}`,receivedAt,index%2===0)),bodyRequests:string[]=[]
+ await mockMail(page,()=>messages,bodyRequests)
+ await page.goto(origin+'/inbox')
+ await expect(page.locator('.email-card')).toHaveCount(100)
+ expect(bodyRequests).toEqual([])
+ await page.getByRole('button',{name:'Load more'}).click();await expect(page.locator('.email-card')).toHaveCount(200)
+ await page.getByRole('button',{name:'Load more'}).click();await expect(page.locator('.email-card')).toHaveCount(205)
+ await page.getByLabel('Search emails').fill('mail-204');await expect(page.locator('.email-card')).toHaveCount(1)
+ expect(bodyRequests).toEqual([])
+ await page.locator('.email-card summary').click();await expect(page.getByText('Safe test body',{exact:false})).toBeVisible()
+ expect(bodyRequests).toEqual(['mail-204'])
+})
+
+test('migrates legacy snapshot bodies additively for offline opening',async({page})=>{
+ await page.goto(origin+'/settings')
+ const legacy=msg('legacy-offline',new Date().toISOString(),true),newer=msg('already-newer',new Date().toISOString(),true);legacy.data.body='Previously cached legacy body';newer.data.body='Stale legacy body'
+ await page.evaluate(async({snapshot,newerId})=>{
+  await new Promise<void>((resolve,reject)=>{const request=indexedDB.deleteDatabase('daymark-mail-paged');request.onsuccess=()=>resolve();request.onerror=()=>reject(request.error);request.onblocked=()=>reject(Error('paged database blocked'))})
+  await new Promise<void>((resolve,reject)=>{const request=indexedDB.open('daymark-mail-paged',1);request.onupgradeneeded=()=>{request.result.createObjectStore('pages');request.result.createObjectStore('bodies')};request.onsuccess=()=>{const db=request.result,transaction=db.transaction('bodies','readwrite');transaction.objectStore('bodies').put('Newer fetched body',newerId);transaction.oncomplete=()=>{db.close();resolve()};transaction.onerror=()=>{db.close();reject(transaction.error)}};request.onerror=()=>reject(request.error)})
+  await new Promise<void>((resolve,reject)=>{const request=indexedDB.open('daymark-mail',1);request.onupgradeneeded=()=>request.result.createObjectStore('cache');request.onsuccess=()=>{const db=request.result,transaction=db.transaction('cache','readwrite');transaction.objectStore('cache').put(snapshot,'snapshot');transaction.oncomplete=()=>{db.close();resolve()};transaction.onerror=()=>{db.close();reject(transaction.error)}};request.onerror=()=>reject(request.error)})
+ },{snapshot:{messages:[legacy,newer],accounts:[],today:new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())},newerId:newer.data.id})
+ let bodyRequests=0
+ await page.route('**/api/v1/mail/page*',route=>route.abort())
+ await page.route('**/api/v1/mail/message/*',route=>{bodyRequests++;return route.abort()})
+ await page.reload();await page.getByRole('button',{name:'Inbox',exact:true}).click()
+ await expect(page.getByText('Test message legacy-offline',{exact:true})).toBeVisible()
+ await page.locator('.email-card').filter({hasText:'Test message legacy-offline'}).locator('summary').click();await expect(page.getByText('Previously cached legacy body',{exact:true})).toBeVisible()
+ await page.locator('.email-card[open]').getByRole('button',{name:'Important',exact:true}).click();await expect(page.locator('.inbox-view > [role="status"]')).toContainText('Importance preference saved and shown, but mailbox metadata could not refresh')
+ const patched=await page.evaluate(async id=>new Promise<{overrides:(boolean|null)[];legacyBody:string;newerBody:string}>((resolve,reject)=>{const request=indexedDB.open('daymark-mail-paged',1);request.onsuccess=()=>{const db=request.result,transaction=db.transaction(['pages','bodies'],'readonly'),pages=transaction.objectStore('pages').openCursor(),legacy=transaction.objectStore('bodies').get(id),newer=transaction.objectStore('bodies').get('already-newer'),overrides:(boolean|null)[]=[];pages.onsuccess=()=>{const cursor=pages.result;if(!cursor)return;const value=cursor.value as {messages?:SyntheticMessage[];overflow?:SyntheticMessage[];briefing?:SyntheticMessage[]};for(const item of [...(value.messages??[]),...(value.overflow??[]),...(value.briefing??[])])if(item.data.id===id)overrides.push(item.override);cursor.continue()};transaction.oncomplete=()=>{db.close();resolve({overrides,legacyBody:legacy.result,newerBody:newer.result})};transaction.onerror=()=>{db.close();reject(transaction.error)}};request.onerror=()=>reject(request.error)}),legacy.data.id)
+ expect(patched.overrides.length).toBeGreaterThan(1);expect(patched.overrides.every(value=>value===true)).toBe(true);expect(patched.legacyBody).toBe('Previously cached legacy body');expect(patched.newerBody).toBe('Newer fetched body')
+ await page.getByLabel('Search emails').fill('already-newer');await expect(page.locator('.email-card')).toHaveCount(1);await page.locator('.email-card summary').click();await expect(page.getByText('Newer fetched body',{exact:true})).toBeVisible()
+ const unchanged=await page.evaluate(()=>new Promise<unknown>((resolve,reject)=>{const request=indexedDB.open('daymark-mail',1);request.onsuccess=()=>{const db=request.result,transaction=db.transaction('cache','readonly'),get=transaction.objectStore('cache').get('snapshot');transaction.oncomplete=()=>{db.close();resolve(get.result)};transaction.onerror=()=>reject(transaction.error)};request.onerror=()=>reject(request.error)})) as {messages:SyntheticMessage[]}
+ expect(unchanged.messages.map(message=>message.data.body)).toEqual(['Previously cached legacy body','Stale legacy body'])
+ expect(bodyRequests).toBe(0)
+})
+
+test('keeps legacy overflow searchable offline after a fresh page replaces the visible cache',async({page})=>{
+ await page.goto(origin+'/settings')
+ const receivedAt=new Date().toISOString(),legacy=Array.from({length:150},(_,index)=>msg(`archive-${String(index).padStart(3,'0')}`,receivedAt,true)),today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())
+ await page.evaluate(async snapshot=>{
+  await new Promise<void>((resolve,reject)=>{const request=indexedDB.deleteDatabase('daymark-mail-paged');request.onsuccess=()=>resolve();request.onerror=()=>reject(request.error);request.onblocked=()=>reject(Error('paged database blocked'))})
+  await new Promise<void>((resolve,reject)=>{const request=indexedDB.open('daymark-mail',1);request.onupgradeneeded=()=>request.result.createObjectStore('cache');request.onsuccess=()=>{const db=request.result,transaction=db.transaction('cache','readwrite');transaction.objectStore('cache').put(snapshot,'snapshot');transaction.oncomplete=()=>{db.close();resolve()};transaction.onerror=()=>{db.close();reject(transaction.error)}};request.onerror=()=>reject(request.error)})
+ },{messages:legacy,accounts:[],today})
+ const current=msg('fresh-current',receivedAt,true);await mockMail(page,()=>[current]);await page.reload();await page.getByRole('button',{name:'Inbox',exact:true}).click();await expect(page.getByText('Test message fresh-current',{exact:true})).toBeVisible();await expect(page.getByText('Email cache up to date.',{exact:false})).toBeVisible();await expect(page.getByText('1 current mailbox messages',{exact:false})).toBeVisible();await expect(page.getByRole('button',{name:'Show cached older mail (150)'})).toBeVisible();await page.getByRole('button',{name:'Show cached older mail (150)'}).click();await expect(page.getByText('Test message archive-149',{exact:true})).toBeVisible()
+ await page.route('**/api/v1/mail/page*',route=>route.abort());await page.reload();await page.getByLabel('Search emails').fill('archive-149');await expect(page.getByText('Test message archive-149',{exact:true})).toBeVisible();await expect(page.locator('.inbox-view > [role="status"]')).toContainText('search is limited to messages saved')
 })
