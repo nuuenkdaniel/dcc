@@ -18,7 +18,7 @@ test('capabilities explicitly report unavailable services', async () => {
     assert.equal(response.statusCode, 200)
     assert.equal(response.json().apiVersion, 'v1')
     assert.ok(Object.values(response.json().capabilities).every(value => value === false))
-    assert.equal((await app.inject('/api/v1/daily-plan')).statusCode, 404)
+    assert.equal((await app.inject('/api/v1/daily-plan')).statusCode, 401)
   } finally { await app.close() }
 })
 test('configuration defaults and validation', () => {

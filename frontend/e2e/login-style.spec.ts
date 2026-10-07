@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
 test('login actions have clear styled primary and secondary hierarchy',async({page})=>{
  await page.route('**/api/v1/auth/session',r=>r.fulfill({json:{configured:true,authenticated:false}}))
  await page.goto('http://127.0.0.1:5173/login')
@@ -8,7 +8,7 @@ test('login actions have clear styled primary and secondary hierarchy',async({pa
  await expect(signIn).toHaveCSS('cursor','pointer')
  const width=await page.locator('.login-card input').first().evaluate(e=>e.getBoundingClientRect().width)
  expect(await signIn.evaluate(e=>e.getBoundingClientRect().width)).toBe(width)
- await expect(page.getByRole('button',{name:'Continue locally'})).toHaveCSS('opacity','1')
+ await expect(page.getByRole('button',{name:'Continue locally'})).toHaveCount(0)
  await page.screenshot({path:'test-results/login-styled.png',fullPage:true})
  await page.setViewportSize({width:375,height:900})
  await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)

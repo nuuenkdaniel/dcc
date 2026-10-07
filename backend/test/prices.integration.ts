@@ -9,7 +9,7 @@ test('price failure retains history; pause and six-hour schedule suppress checks
  await admin.query(`CREATE SCHEMA ${schema}`)
  const pool=new Pool({connectionString:process.env.DATABASE_URL,options:`-c search_path=${schema}`})
  const original=globalThis.fetch;let calls=0,fail=false
- globalThis.fetch=async()=>{calls++;if(fail)throw Error('Test failure');return new Response(JSON.stringify({store:'bestbuy',status:'verified',detail:'Test only',offers:[{condition:'new',cents:279999,currency:'USD',eligible:true}]}),{status:200})}
+ globalThis.fetch=async()=>{calls++;if(fail)throw Error('Test failure');return new Response(JSON.stringify({store:'bestbuy',url:'https://www.bestbuy.com/product/test-fixture',status:'verified',detail:'Test only',offers:[{condition:'new',cents:279999,currency:'USD',eligible:true,availability:'Fixture shipping availability'}]}),{status:200})}
  try{
   await migratePrices(pool);await pool.query("UPDATE price_sources SET next_run=now()+interval '1 day' WHERE store<>'bestbuy'")
   await checkPrices(pool);assert.equal(calls,1);await checkPrices(pool);assert.equal(calls,1)

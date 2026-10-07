@@ -1,2 +1,3 @@
 import { defineConfig } from '@playwright/test'
-export default defineConfig({ testDir: './e2e', use: { browserName: 'chromium' }, webServer: { command: 'npm run dev -- --host 127.0.0.1 --port 5173 --strictPort', url: 'http://127.0.0.1:5173', reuseExistingServer: !process.env.CI } })
+const port=process.env.E2E_PORT??'5173'
+export default defineConfig({ testDir: './e2e', testIgnore:'production.spec.ts', use: { browserName: 'chromium' }, webServer: { command: `npm run dev -- --host 127.0.0.1 --port ${port} --strictPort`, url: `http://127.0.0.1:${port}`, reuseExistingServer: !process.env.CI } })

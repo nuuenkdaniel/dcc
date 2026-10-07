@@ -69,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 self.respond(502, {'error':'Price browser unavailable; previous observations retained'})
             return
-        if data.get('mode') in ('mail-sync','mail-attachment'):
+        if data.get('mode') in ('mail-sync','mail-attachment','mail-html'):
             try:
                 from mail_connector import dispatch
                 self.respond(200, dispatch(data))

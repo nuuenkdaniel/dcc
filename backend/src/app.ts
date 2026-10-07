@@ -12,13 +12,13 @@ import { registerAuth, type AuthConfig } from './auth.js'
 // Construction is separate from listening so tests require no network port.
 export function buildApp(options: { calendarRefresh?:()=>Promise<string>; plannerPool?:Pool; logger?: boolean | { level: string }; auth?: AuthConfig; calendarSnapshot?:()=>Promise<unknown>; calendarChange?:(change:EventChange)=>Promise<{code:number;error?:string;saved?:boolean}> } = {}) {
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 1048576 })
+  registerAuth(app, options.auth)
   app.get('/health', async () => ({ status: 'ok', service: 'daymark-backend' }))
   app.get('/api/v1/status', async () => ({
     apiVersion: 'v1',
     capabilities: { dailyPlan: !!options.plannerPool, sync: !!options.calendarSnapshot, authentication: !!options.auth, email: !!options.plannerPool, calendar: !!options.calendarSnapshot },
   }))
   app.register(async scope => {
-    await registerAuth(scope, options.auth)
     if(options.plannerPool){manualTaskRoutes(scope,options.plannerPool);mailRoutes(scope,options.plannerPool);priceRoutes(scope,options.plannerPool)}
     scope.get('/api/v1/planner/snapshot',async(_request,reply)=>options.plannerPool?plannerSnapshot(options.plannerPool):reply.code(503).send({error:'Planner unavailable'}))
     scope.post<{Body:{kind:string;version:number;data:Entity}}>('/api/v1/planner/entity',{schema:{body:{type:'object',required:['kind','version','data'],additionalProperties:false,properties:{kind:{enum:['project','action','preparation']},version:{type:'integer',minimum:0},data:{type:'object',required:['id','title'],properties:{id:{type:'string',format:'uuid'},title:{type:'string',minLength:1,maxLength:240}}}}}}},async(request,reply)=>{

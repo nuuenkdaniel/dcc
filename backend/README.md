@@ -1,6 +1,6 @@
 # Current calendar integration
 
-See ../docs/CALENDAR-OPERATIONS.md for running API/worker services, authentication, offline queue behavior and limitations. This section supersedes the scaffold-only notes below.
+Calendar API, worker, authentication, and offline-queue behavior are implemented in `src/`; repository-level capability and safety limits are summarized in `../README.md`.
 
 # Daymark backend
 
@@ -16,4 +16,4 @@ Independent Node.js 22+ / Fastify 5 / strict TypeScript service. Install with `n
 
 `src/app.ts` constructs the app; `src/server.ts` handles environment, listen and graceful shutdown. Fastify supplies request logging and JSON error handling. Unknown routes return 404. No permissive CORS, provider credentials, database, or placeholder business endpoints are configured.
 
-Frontend runs independently on port 5173. No frontend API dependency has been added. See `../docs/OFFLINE-SYNC.md` for the future contract. Root `dev:backend`, `check:backend`, `build:backend`, and `start:backend` scripts are optional shortcuts. Existing root frontend commands remain unchanged.
+Frontend runs independently on port 5173 and proxies `/api` to this service during development. Root `dev:backend`, `check:backend`, `build:backend`, and `start:backend` scripts are optional shortcuts.

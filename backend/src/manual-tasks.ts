@@ -6,9 +6,11 @@ export function validManualTask(d:ManualTask){return !!d&&typeof d.id==='string'
 // Keep a single versioned task collection rather than rewriting local identifiers.
 const COLLECTION='ccbf2a93-9be3-45bd-b039-1019cdb8276f'
 export async function taskSnapshot(pool:Pool){const r=await pool.query('SELECT version,data FROM planner_entities WHERE id=$1 AND kind=$2',[COLLECTION,'manual-tasks']);return r.rows[0]??{version:0,data:{tasks:[]}}}
+const comparable=(tasks:ManualTask[])=>tasks.map(t=>({id:t.id,title:t.title,date:t.date,notes:t.notes,completed:t.completed,important:!!t.important,deleted:!!t.deleted}))
 export async function saveTasks(pool:Pool,version:number,tasks:ManualTask[]){
  if(!Number.isInteger(version)||version<0||!Array.isArray(tasks)||tasks.length>10000||!tasks.every(validManualTask)||new Set(tasks.map(t=>t.id)).size!==tasks.length)return {code:400,error:'Invalid task collection'}
  const c=await pool.connect();try{await c.query('BEGIN');await c.query('SELECT pg_advisory_xact_lock(817342)');const old=await taskSnapshot(c as unknown as Pool)
+ if(JSON.stringify(comparable(old.data.tasks??[]))===JSON.stringify(comparable(tasks))){await c.query('COMMIT');return {code:200,version:old.version}}
  if(old.version!==version){await c.query('ROLLBACK');return {code:409,error:'Tasks changed elsewhere',latest:old}}
  await c.query("INSERT INTO planner_entities(id,kind,data) VALUES($1,'manual-tasks',$2) ON CONFLICT(id) DO UPDATE SET data=$2,version=planner_entities.version+1",[COLLECTION,{tasks}]);await c.query('COMMIT');return {code:200}
  }catch(e){await c.query('ROLLBACK');throw e}finally{c.release()}

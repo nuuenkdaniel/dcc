@@ -1,7 +1,8 @@
 import {useState} from 'react'
 import type {Planner,Preparation,Exam,Topic} from './usePlanner'
 import {PlannerStatus} from './Projects'
-async function post(path:string,data:unknown){const r=await fetch('/api/v1/planner/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const result=await r.json();if(!r.ok)throw Error(result.error??'Could not connect');return result}
+import {protectedFetch} from './auth'
+async function post(path:string,data:unknown){const r=await protectedFetch('/api/v1/planner/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const result=await r.json();if(!r.ok)throw Error(result.error??'Could not connect');return result}
 export function PreparationPanel({event,planner:p,onClose}:{event:Exam;planner:Planner;onClose:()=>void}){
  const existing=p.preparations.find(x=>x.event.calendarId===event.calendarId&&x.event.uid===event.uid&&x.event.recurrenceId===event.recurrenceId)
  const key='daymark.study-draft.'+event.calendarId+':'+event.uid+':'+event.recurrenceId

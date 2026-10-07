@@ -1,5 +1,10 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { StrictMode } from 'react'
+import type {ReactNode} from 'react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import App from './App'
+
+vi.mock('./AuthGate',()=>({AuthGate:({children}:{children:ReactNode})=>children}))
 
 afterEach(() => vi.useRealTimers())
 
@@ -15,8 +20,13 @@ it('warns instead of crashing when stored records are invalid', () => {
   render(<App />)
   expect(screen.getByRole('alert')).toHaveTextContent(/stored tasks/i)
 })
-import App from './App'
-
+it('retains but does not display synchronized task tombstones',()=>{
+ const now=new Date(),date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`
+ window.localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([{id:'deleted-task',title:'Do not resurrect',date,notes:'',completed:false,deleted:true}]))
+ render(<App/>)
+ expect(screen.queryByText('Do not resurrect')).not.toBeInTheDocument()
+ expect(JSON.parse(window.localStorage.getItem('productivity-app.tasks.v1')!)[0].deleted).toBe(true)
+})
 beforeEach(() => {
   window.localStorage.clear()
   window.history.replaceState({}, '', '/')
@@ -49,8 +59,8 @@ it('creates, expands, completes, and restores a local task', () => {
 
 it('shows a quiet empty state without seeded tasks', () => {
   render(<App />)
-  expect(screen.getByText('No tasks for this day')).toBeInTheDocument()
-  expect(screen.getByText(/saved only in this browser/i)).toBeInTheDocument()
+  expect(screen.getByText('Loading tasks…')).toBeInTheDocument()
+  expect(screen.getByText(/manual tasks save locally first and sync/i)).toBeInTheDocument()
 })
 
 it('switches between development page previews', () => {
@@ -59,11 +69,19 @@ it('switches between development page previews', () => {
   fireEvent.click(screen.getByRole('button', { name: 'Inbox view' }))
   expect(screen.getByRole('heading', { name: 'Inbox' })).toBeInTheDocument()
   expect(screen.queryByRole('heading', { name: 'Daily plan' })).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: 'Login view' }))
-  expect(screen.getByRole('heading', { name: 'Welcome back' })).toBeInTheDocument()
-  expect(screen.queryByRole('navigation', { name: 'Main navigation' })).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Home view' }))
   expect(screen.getByRole('heading', { name: 'Daily plan' })).toBeInTheDocument()
+})
+
+it('retains logout in development tools and Settings, but not Schedule', () => {
+  render(<App />)
+  const schedule = screen.getByRole('region', { name: 'Schedule' })
+  expect(within(schedule).queryByRole('button', { name: /sign out/i })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Sign out / test login' })).toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+  expect(screen.getByRole('button', { name: /^Sign out$/ })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Sign out / test login' })).toBeInTheDocument()
 })
 
 it('collapses the sidebar without removing navigation', () => {
@@ -139,6 +157,53 @@ it('runs mini focus sessions in order and breaks after the last one', () => {
   act(() => vi.advanceTimersByTime(60_000))
   expect(screen.getByText('Break', { selector: '#focus-clock-heading' })).toBeInTheDocument()
   expect(screen.getByTestId('session-time')).toHaveTextContent('05:00')
+})
+
+it('starts immediately and waits a full second before the first displayed decrement', () => {
+  vi.useFakeTimers()
+  window.history.replaceState({}, '', '/pomodoro')
+  render(<StrictMode><App /></StrictMode>)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Start session' }))
+  expect(screen.getByRole('button', { name: 'Pause session' })).toBeInTheDocument()
+  expect(screen.getByText('Stay with the task', { selector: '.focus-status' })).toBeInTheDocument()
+  expect(screen.getByTestId('session-time')).toHaveTextContent('25:00')
+
+  act(() => vi.advanceTimersByTime(999))
+  expect(screen.getByTestId('session-time')).toHaveTextContent('25:00')
+  act(() => vi.advanceTimersByTime(1))
+  expect(screen.getByTestId('session-time')).toHaveTextContent('24:59')
+})
+
+it('preserves fractional elapsed time through a pause and resume', () => {
+  vi.useFakeTimers()
+  window.history.replaceState({}, '', '/pomodoro')
+  render(<App />)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Start session' }))
+  act(() => vi.advanceTimersByTime(400))
+  fireEvent.click(screen.getByRole('button', { name: 'Pause session' }))
+  act(() => vi.advanceTimersByTime(2000))
+  expect(screen.getByTestId('session-time')).toHaveTextContent('25:00')
+
+  fireEvent.click(screen.getByRole('button', { name: 'Resume session' }))
+  act(() => vi.advanceTimersByTime(599))
+  expect(screen.getByTestId('session-time')).toHaveTextContent('25:00')
+  act(() => vi.advanceTimersByTime(1))
+  expect(screen.getByTestId('session-time')).toHaveTextContent('24:59')
+})
+
+it('does not recreate the running interval on timer renders', () => {
+  vi.useFakeTimers()
+  window.history.replaceState({}, '', '/pomodoro')
+  const intervalSpy = vi.spyOn(window, 'setInterval')
+  render(<App />)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Start session' }))
+  const intervalsAfterStart = intervalSpy.mock.calls.length
+  act(() => vi.advanceTimersByTime(2000))
+  expect(intervalSpy).toHaveBeenCalledTimes(intervalsAfterStart)
+  intervalSpy.mockRestore()
 })
 
 it('pauses and resets the ordered mini focus sequence', () => {

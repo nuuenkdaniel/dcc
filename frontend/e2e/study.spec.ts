@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
 test('exam preparation requires review and start date and stays attached to its event',async({page})=>{
  const event={id:'exam1',calendarId:'c',uid:'exam-uid',recurrenceId:null,title:'Midterm',start:'2030-10-12',end:'2030-10-13',allDay:true,description:'',location:''}
  let preparations:any[]=[]

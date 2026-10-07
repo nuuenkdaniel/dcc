@@ -4,17 +4,19 @@ import {useMail} from './useMail'
 import {EmailSummary} from './EmailSummary'
 import {usePlanner,studyCardCount,visiblePlanGroups} from './usePlanner'
 import {Projects,ActionCard,StudyCard,PlanControls} from './Projects'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import { Login } from './Login'
+import { AuthGate } from './AuthGate'
 import { Schedule } from './Schedule'
 import { Inbox } from './Inbox'
 import { Settings } from './Settings'
 import { usePreferences } from './usePreferences'
+import { advanceFocusTimer, type FocusTimerState, type MiniTimer } from './focusTimer'
+import { LogoutAction } from './LogoutAction'
+import {AccessibleDialog} from './AccessibleDialog'
 
-type Task = { id: string; title: string; date: string; notes: string; completed: boolean; sample?: boolean; important?: boolean }
+type Task = { id: string; title: string; date: string; notes: string; completed: boolean; sample?: boolean; important?: boolean; deleted?: boolean }
 type PreviewView = 'home' | 'inbox' | 'pomodoro' | 'login' | 'settings' | 'projects' | 'prices'
-type MiniTimer = { id: string; name: string; duration: number; remaining: number }
 
 const VIEW_PATHS: Record<PreviewView, string> = {
   home: '/',
@@ -43,7 +45,7 @@ const readTasks = (): { tasks: Task[]; error: boolean } => {
     if (!Array.isArray(parsed) || !parsed.every((item: unknown) => {
       if (!item || typeof item !== 'object') return false
       const task = item as Partial<Task>
-      return typeof task.id === 'string' && typeof task.title === 'string' && typeof task.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(task.date) && typeof task.notes === 'string' && typeof task.completed === 'boolean'
+      return typeof task.id === 'string' && typeof task.title === 'string' && typeof task.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(task.date) && typeof task.notes === 'string' && typeof task.completed === 'boolean' && (task.deleted===undefined||typeof task.deleted==='boolean')
     })) return { tasks: [], error: true }
     return { tasks: parsed, error: false }
   } catch {
@@ -84,14 +86,15 @@ function DevToolbar({ view, sampleData, onViewChange, onSampleDataChange }: {
       <div className="dev-toolbar-inner">
         <strong><span aria-hidden="true">◇</span> Development</strong>
         <div className="dev-view-switcher" aria-label="Preview view">
-          {(['home', 'inbox', 'pomodoro', 'login'] as const).map((option) => (
+          {(['home', 'inbox', 'pomodoro'] as const).map((option) => (
             <button key={option} type="button" aria-label={`${option[0].toUpperCase()}${option.slice(1)} view`} aria-pressed={view === option} onClick={() => onViewChange(option)}>
               {option[0].toUpperCase()}{option.slice(1)}
             </button>
           ))}
         </div>
         <label className="dev-toggle"><input type="checkbox" checked={sampleData} onChange={(event) => onSampleDataChange(event.target.checked)} /><span>Sample data</span></label>
-        <span className="dev-note">Local preview controls</span>
+        <span className="dev-note">Development only · performs a real logout</span>
+        <LogoutAction className="dev-logout" label="Sign out / test login"/>
       </div>
     </div>
   )
@@ -147,19 +150,31 @@ function NumberStepper({ id, label, actionName, value, min, max, onChange }: {
 function PomodoroView() {
   const [focusMinutes, setFocusMinutes] = useState(25)
   const [breakMinutes, setBreakMinutes] = useState(5)
-  const [phase, setPhase] = useState<'focus' | 'break'>('focus')
-  const [sessionRemaining, setSessionRemaining] = useState(25 * 60)
-  const [running, setRunning] = useState(false)
+  const [timer, setTimer] = useState<FocusTimerState>({
+    phase: 'focus',
+    sessionRemainingMs: 25 * 60 * 1000,
+    running: false,
+    miniTimers: [],
+    activeMiniId: null,
+  })
+  const { phase, sessionRemainingMs, running, miniTimers, activeMiniId } = timer
+  const lastTick = useRef<number | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [miniTimers, setMiniTimers] = useState<MiniTimer[]>([])
-  const [activeMiniId, setActiveMiniId] = useState<string | null>(null)
   const [miniName, setMiniName] = useState('')
   const [miniMinutes, setMiniMinutes] = useState(5)
   const [dragging, setDragging] = useState<string | null>(null)
   const [dragPreview, setDragPreview] = useState<{ left: number; top: number; width: number; height: number; offsetX: number; offsetY: number; target: string | null } | null>(null)
+  const timerListRef = useRef<HTMLDivElement>(null)
+  const pendingTimerScroll = useRef<string | null>(null)
   const clearDrag = () => { setDragging(null); setDragPreview(null) }
   const [orderNotice, setOrderNotice] = useState('')
-  const canReorder = phase === 'focus' && !activeMiniId && miniTimers.every(timer => timer.remaining === timer.duration)
+  const canReorder = phase === 'focus' && !activeMiniId && miniTimers.every(timer => timer.remainingMs === timer.duration * 1000)
+  useEffect(()=>{
+    const id=pendingTimerScroll.current
+    if(!id)return
+    pendingTimerScroll.current=null
+    timerListRef.current?.querySelector<HTMLElement>(`[data-timer-id="${CSS.escape(id)}"]`)?.scrollIntoView?.({block:'nearest'})
+  },[miniTimers])
   const moveTimer = (id: string, target: string) => {
     if (!canReorder || id === target) return
     const from = miniTimers.findIndex(timer => timer.id === id)
@@ -168,54 +183,36 @@ function PomodoroView() {
     const next = [...miniTimers]
     const [timer] = next.splice(from, 1)
     next.splice(to, 0, timer)
-    setMiniTimers(next)
-    setSessionRemaining(next[0].duration)
+    setTimer(current => ({ ...current, miniTimers: next, sessionRemainingMs: next[0].duration * 1000 }))
     setOrderNotice(`${timer.name} moved to position ${to + 1}`)
   }
 
   useEffect(() => {
-    if (!running) return
+    if (!running) {
+      lastTick.current = null
+      return
+    }
+    if (lastTick.current === null) lastTick.current = performance.now()
     const interval = window.setInterval(() => {
-      setSessionRemaining((remaining) => {
-        if (remaining > 1) {
-          if (phase === 'focus' && activeMiniId) {
-            setMiniTimers((timers) => timers.map((timer) => timer.id === activeMiniId ? { ...timer, remaining: Math.max(0, timer.remaining - 1) } : timer))
-          }
-          return remaining - 1
-        }
-
-        if (phase === 'focus') {
-          if (activeMiniId) {
-            const currentIndex = miniTimers.findIndex((timer) => timer.id === activeMiniId)
-            const nextTimer = miniTimers[currentIndex + 1]
-            setMiniTimers((timers) => timers.map((timer) => timer.id === activeMiniId ? { ...timer, remaining: 0 } : timer))
-            if (nextTimer) {
-              setActiveMiniId(nextTimer.id)
-              return nextTimer.remaining
-            }
-          }
-          setPhase('break')
-          setActiveMiniId(null)
-          return breakMinutes * 60
-        }
-
-        setPhase('focus')
-        setRunning(false)
-        setActiveMiniId(null)
-        setMiniTimers((timers) => timers.map((timer) => ({ ...timer, remaining: timer.duration })))
-        return miniTimers[0]?.duration ?? focusMinutes * 60
-      })
-    }, 1000)
+      const now = performance.now()
+      const elapsed = now - (lastTick.current ?? now)
+      lastTick.current = now
+      setTimer(current => advanceFocusTimer(current, elapsed, focusMinutes * 60_000, breakMinutes * 60_000))
+    }, 200)
     return () => window.clearInterval(interval)
-  }, [running, activeMiniId, phase, breakMinutes, focusMinutes, miniTimers])
+  }, [running, breakMinutes, focusMinutes])
 
   const addMiniTimer = () => {
     const name = miniName.trim()
     const minutes = Math.min(120, Math.max(1, miniMinutes))
     if (!name) return
-    const timer = { id: `${Date.now()}-${Math.random()}`, name, duration: minutes * 60, remaining: minutes * 60 }
-    if (miniTimers.length === 0 && phase === 'focus' && !running) setSessionRemaining(timer.duration)
-    setMiniTimers((timers) => [...timers, timer])
+    const miniTimer: MiniTimer = { id: crypto.randomUUID(), name, duration: minutes * 60, remainingMs: minutes * 60_000 }
+    pendingTimerScroll.current=miniTimer.id
+    setTimer(current => ({
+      ...current,
+      sessionRemainingMs: current.miniTimers.length === 0 && current.phase === 'focus' && !current.running ? miniTimer.duration * 1000 : current.sessionRemainingMs,
+      miniTimers: [...current.miniTimers, miniTimer],
+    }))
     setMiniName('')
   }
 
@@ -224,36 +221,42 @@ function PomodoroView() {
     const minutes = Math.min(maximum, Math.max(1, value || 1))
     if (kind === 'focus') {
       setFocusMinutes(minutes)
-      if (phase === 'focus' && !running && miniTimers.length === 0) setSessionRemaining(minutes * 60)
+      if (phase === 'focus' && !running && miniTimers.length === 0) setTimer(current => ({ ...current, sessionRemainingMs: minutes * 60_000 }))
     } else {
       setBreakMinutes(minutes)
-      if (phase === 'break' && !running) setSessionRemaining(minutes * 60)
+      if (phase === 'break' && !running) setTimer(current => ({ ...current, sessionRemainingMs: minutes * 60_000 }))
     }
   }
 
   const resetSession = () => {
-    setRunning(false)
-    setPhase('focus')
-    setActiveMiniId(null)
-    setSessionRemaining(miniTimers[0]?.duration ?? focusMinutes * 60)
-    setMiniTimers((timers) => timers.map((timer) => ({ ...timer, remaining: timer.duration })))
+    lastTick.current = null
+    setTimer(current => {
+      const resetMiniTimers = current.miniTimers.map(item => ({ ...item, remainingMs: item.duration * 1000 }))
+      return { ...current, running: false, phase: 'focus', activeMiniId: null, sessionRemainingMs: (resetMiniTimers[0]?.duration ?? 0) * 1000 || focusMinutes * 60_000, miniTimers: resetMiniTimers }
+    })
   }
 
   const toggleSession = () => {
     if (running) {
-      setRunning(false)
+      const now = performance.now()
+      const elapsed = now - (lastTick.current ?? now)
+      lastTick.current = null
+      setTimer(current => ({ ...advanceFocusTimer(current, elapsed, focusMinutes * 60_000, breakMinutes * 60_000), running: false }))
       return
     }
-    if (phase === 'focus' && miniTimers.length > 0 && !activeMiniId) {
-      const nextTimer = miniTimers.find((timer) => timer.remaining > 0) ?? miniTimers[0]
-      setActiveMiniId(nextTimer.id)
-      setSessionRemaining(nextTimer.remaining || nextTimer.duration)
-    }
-    setRunning(true)
+    lastTick.current = performance.now()
+    setTimer(current => {
+      if (current.phase === 'focus' && current.miniTimers.length > 0 && !current.activeMiniId) {
+        const nextTimer = current.miniTimers.find(item => item.remainingMs > 0) ?? current.miniTimers[0]
+        return { ...current, activeMiniId: nextTimer.id, sessionRemainingMs: nextTimer.remainingMs || nextTimer.duration * 1000, running: true }
+      }
+      return { ...current, running: true }
+    })
   }
 
   const phaseLabel = phase === 'focus' ? 'Focus' : 'Break'
   const activeMini = miniTimers.find((timer) => timer.id === activeMiniId)
+  const sessionRemaining = Math.ceil(sessionRemainingMs / 1000)
   const currentDuration = phase === 'break' ? breakMinutes * 60 : activeMini?.duration ?? miniTimers[0]?.duration ?? focusMinutes * 60
 
   return (
@@ -262,25 +265,25 @@ function PomodoroView() {
       <section className={`card focus-panel ${phase === 'break' ? 'break-phase' : ''}`} aria-labelledby="focus-clock-heading">
         <div className="focus-panel-top">
           <div><p className="eyebrow">Current phase</p><h2 id="focus-clock-heading">{phaseLabel}</h2></div>
-          <button className="settings-button" type="button" aria-label="Timer settings" onClick={() => { setRunning(false); setSettingsOpen(true) }}>⚙</button>
+          <button className="settings-button" type="button" aria-label="Timer settings" onClick={() => { if (running) toggleSession(); setSettingsOpen(true) }}>⚙</button>
         </div>
         <output className="focus-time" data-testid="session-time" aria-live="off">{formatTime(sessionRemaining)}</output>
         <p className="focus-status">{running ? activeMini ? activeMini.name : phase === 'break' ? 'Take a breath' : 'Stay with the task' : sessionRemaining === 0 ? `${phaseLabel} complete` : `Ready for ${phase === 'focus' ? 'focus' : 'a break'}`}</p>
-        <div className="focus-actions"><button className="primary-action" type="button" disabled={sessionRemaining === 0} onClick={toggleSession}>{running ? 'Pause session' : sessionRemaining < currentDuration ? 'Resume session' : 'Start session'}</button><button className="secondary-action" type="button" aria-label="Reset session" onClick={resetSession}>Reset</button></div>
+        <div className="focus-actions"><button className="primary-action" type="button" disabled={sessionRemainingMs === 0} onClick={toggleSession}>{running ? 'Pause session' : sessionRemainingMs < currentDuration * 1000 ? 'Resume session' : 'Start session'}</button><button className="secondary-action" type="button" aria-label="Reset session" onClick={resetSession}>Reset</button></div>
 
-        {miniTimers.length > 0 && <div className="focus-steps" aria-label="Mini timers"><div className="focus-steps-heading"><span>Focus sequence</span><small>{miniTimers.filter((timer) => timer.remaining === 0).length}/{miniTimers.length} complete</small></div>{miniTimers.map((timer) => {
+        {miniTimers.length > 0 && <div className="focus-steps" aria-label="Mini timers"><div className="focus-steps-heading"><span>Focus sequence</span><small>{miniTimers.filter((item) => item.remainingMs === 0).length}/{miniTimers.length} complete</small></div>{miniTimers.map((timer) => {
           const active = timer.id === activeMiniId
-          return <article className={`mini-timer ${active ? 'active' : ''}`} key={timer.id}><div><strong>{timer.name}</strong><span>{active ? 'Active focus' : timer.remaining === 0 ? 'Complete' : 'Ready'}</span></div><output data-testid="mini-time">{formatTime(timer.remaining)}</output></article>
+          return <article className={`mini-timer ${active ? 'active' : ''}`} key={timer.id}><div><strong>{timer.name}</strong><span>{active ? 'Active focus' : timer.remainingMs === 0 ? 'Complete' : 'Ready'}</span></div><output data-testid="mini-time">{formatTime(Math.ceil(timer.remainingMs / 1000))}</output></article>
         })}</div>}
       </section>
 
-      {settingsOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false) }}><section className="timer-dialog" role="dialog" aria-modal="true" aria-labelledby="timer-setup-heading">
+      {settingsOpen && <AccessibleDialog labelledBy="timer-setup-heading" onClose={()=>setSettingsOpen(false)}><section className="timer-dialog">
         <div className="dialog-heading"><div><p className="eyebrow">Pomodoro</p><h2 id="timer-setup-heading">Timer setup</h2></div><button type="button" aria-label="Close timer settings" onClick={() => setSettingsOpen(false)}>×</button></div>
         <div className="duration-settings"><NumberStepper id="focus-minutes" label="Focus timer (minutes)" actionName="focus timer" value={focusMinutes} min={1} max={180} onChange={(value) => setDuration('focus', value)} /><NumberStepper id="break-minutes" label="Break timer (minutes)" actionName="break timer" value={breakMinutes} min={1} max={60} onChange={(value) => setDuration('break', value)} /></div>
         <div className="dialog-divider" />
         <div className="dialog-section-heading"><div><p className="eyebrow">Optional</p><h3>Mini timers</h3></div><span className="task-count">{miniTimers.length}</span></div>
         <form className="mini-form" onSubmit={(event) => { event.preventDefault(); addMiniTimer() }}><label htmlFor="mini-name">Mini timer name</label><input id="mini-name" value={miniName} onChange={(event) => setMiniName(event.target.value)} placeholder="e.g. Outline the chapter" /><div className="mini-duration-row"><NumberStepper id="mini-minutes" label="Mini timer minutes" actionName="mini timer" value={miniMinutes} min={1} max={120} onChange={setMiniMinutes} /><button type="submit">Add mini timer</button></div></form>
-        {miniTimers.length > 0 && <><p className="local-note">{canReorder ? 'Drag the grip to reorder, or focus it and use ↑ / ↓.' : 'Reset the session to change its order.'}</p><div className="settings-mini-list">{miniTimers.map((timer, index) => <div key={timer.id} data-timer-id={timer.id} className={dragging === timer.id ? 'timer-dragging' : dragPreview?.target === timer.id ? (index < miniTimers.findIndex(item => item.id === dragging) ? 'timer-drop-before' : 'timer-drop-after') : ''}>
+        {miniTimers.length > 0 && <><p className="local-note">{canReorder ? 'Drag the grip to reorder, or focus it and use ↑ / ↓.' : 'Reset the session to change its order.'}</p><div className="settings-mini-list" ref={timerListRef}>{miniTimers.map((timer, index) => <div key={timer.id} data-timer-id={timer.id} className={dragging === timer.id ? 'timer-dragging' : dragPreview?.target === timer.id ? (index < miniTimers.findIndex(item => item.id === dragging) ? 'timer-drop-before' : 'timer-drop-after') : ''}>
           <button type="button" className="timer-grip" aria-label={`Reorder ${timer.name}`} title="Drag to reorder · ↑ / ↓" disabled={!canReorder}
             onPointerDown={event => { if (event.button !== 0) return; const rect = event.currentTarget.closest('[data-timer-id]')!.getBoundingClientRect(); event.currentTarget.setPointerCapture(event.pointerId); setDragging(timer.id); setDragPreview({ left: rect.left, top: rect.top, width: rect.width, height: rect.height, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top, target: null }) }}
             onPointerMove={event => { if (!dragPreview || dragging !== timer.id) return; const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-timer-id]')?.dataset.timerId ?? null; setDragPreview({ ...dragPreview, left: event.clientX - dragPreview.offsetX, top: event.clientY - dragPreview.offsetY, target }) }}
@@ -288,28 +291,31 @@ function PomodoroView() {
             onPointerCancel={clearDrag}
             onLostPointerCapture={clearDrag}
             onKeyDown={event => { if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return; event.preventDefault(); const target = miniTimers[index + (event.key === 'ArrowUp' ? -1 : 1)]; if (target) moveTimer(timer.id, target.id) }}><svg width="16" height="20" viewBox="0 0 16 20" aria-hidden="true" fill="currentColor">{[5, 10, 15].flatMap(y => [5, 11].map(x => <circle key={`${x}-${y}`} cx={x} cy={y} r="1.2" />))}</svg></button>
-          <span>{timer.name}</span><small>{formatTime(timer.duration)}</small><button type="button" aria-label={`Remove ${timer.name}`} onClick={() => { setMiniTimers((timers) => timers.filter((item) => item.id !== timer.id)); if (activeMiniId === timer.id) setActiveMiniId(null) }}>Remove</button></div>)}</div><p className="sr-only" role="status">{orderNotice}</p></>}
-        {dragging && dragPreview && <div aria-hidden="true" data-testid="timer-drag-preview" className="timer-drag-preview" style={{ left: dragPreview.left, top: dragPreview.top, width: dragPreview.width, height: dragPreview.height }}><span>{miniTimers.find(timer => timer.id === dragging)?.name}</span><span>{formatTime(miniTimers.find(timer => timer.id === dragging)?.duration ?? 0)}</span></div>}
+          <span>{timer.name}</span><small>{formatTime(timer.duration)}</small><button type="button" aria-label={`Remove ${timer.name}`} onClick={() => setTimer(current => ({ ...current, miniTimers: current.miniTimers.filter(item => item.id !== timer.id), activeMiniId: current.activeMiniId === timer.id ? null : current.activeMiniId }))}>Remove</button></div>)}</div><p className="sr-only" role="status">{orderNotice}</p></>}
         <button className="dialog-done" type="button" onClick={() => setSettingsOpen(false)}>Done</button>
-      </section></div>}
+      </section>
+      {dragging && dragPreview && <div aria-hidden="true" data-testid="timer-drag-preview" className="timer-drag-preview" style={{ left: dragPreview.left, top: dragPreview.top, width: dragPreview.width, height: dragPreview.height }}><span>{miniTimers.find(timer => timer.id === dragging)?.name}</span><span>{formatTime(miniTimers.find(timer => timer.id === dragging)?.duration ?? 0)}</span></div>}
+      </AccessibleDialog>}
       <p className="focus-footnote">Timer state is local to this page for now.</p>
     </section>
   )
 }
 
-export default function App() {
-  const mail=useMail()
+export function Workspace() {
+  const [previewView, setPreviewView] = useState<PreviewView>(() => viewFromPath(window.location.pathname))
+  const mail=useMail(previewView==='home'||previewView==='inbox')
   const preferencesState = usePreferences()
   const planner = usePlanner()
   const [initial] = useState(readTasks)
   const [tasks, setTasks] = useState<Task[]>(initial.tasks)
   const [readError, setReadError] = useState(initial.error)
   const [selectedDate, setSelectedDate] = useState(today)
+  const [followingToday,setFollowingToday]=useState(true)
+  useEffect(()=>{if(!followingToday)return;const update=()=>{const day=today();setSelectedDate(previous=>{if(previous!==day){const now=new Date();now.setDate(1);setMonth(now)}return day})};const timer=setInterval(update,30000);window.addEventListener('focus',update);document.addEventListener('visibilitychange',update);return()=>{clearInterval(timer);window.removeEventListener('focus',update);document.removeEventListener('visibilitychange',update)}},[followingToday])
   const [month, setMonth] = useState(() => { const date = new Date(); date.setDate(1); return date })
   const [title, setTitle] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [storageWarning, setStorageWarning] = useState(false)
-  const [previewView, setPreviewView] = useState<PreviewView>(() => viewFromPath(window.location.pathname))
   const [showSampleData, setShowSampleData] = useState(false)
   const [taskFilter, setTaskFilter] = useState('All')
   const [taskSearch, setTaskSearch] = useState('')
@@ -340,7 +346,7 @@ export default function App() {
   }, [])
 
   const days = useMemo(() => calendarDays(month), [month])
-  const displayedTasks = [...tasks, ...(showSampleData ? sampleTasks(selectedDate) : [])]
+  const displayedTasks = [...tasks.filter(task=>!task.deleted), ...(showSampleData ? sampleTasks(selectedDate) : [])]
   const curatedCount = studyCardCount(planner.actions.filter(a=>a.date===selectedDate&&!a.dismissed))
   const selectedTasks = displayedTasks.filter((task) => task.date === selectedDate)
   const planGroups = visiblePlanGroups(planner,selectedDate,taskFilter,taskSearch)
@@ -378,10 +384,7 @@ export default function App() {
   return (
     <>
       {import.meta.env.DEV && <DevToolbar view={previewView} sampleData={showSampleData} onViewChange={navigate} onSampleDataChange={setShowSampleData} />}
-      {previewView === 'login' ? (
-        <Login onContinue={()=>navigate('home')} />
-      ) : (
-        <main className="app-shell">
+         <main className="app-shell">
           {sidebar}
           {previewView === 'prices' ? <Prices/> : previewView === 'projects' ? <Projects planner={planner}/> : previewView === 'settings' ? <Settings {...preferencesState} /> : previewView === 'inbox' ? (
             <Inbox mail={mail} />
@@ -392,28 +395,32 @@ export default function App() {
               <header className="topbar"><div><p className="eyebrow">Personal workspace</p><h1>{preferencesState.preferences.name.trim() ? `${preferencesState.preferences.name.trim()}’s day` : 'Your day, at a glance.'}</h1></div><div className="date-chip">{formatDay(selectedDate)}</div></header>
               <div className="layout-grid">
                 <section className="card calendar-card" aria-labelledby="calendar-heading">
-                  <div className="section-heading"><div><p className="eyebrow">Planning</p><h2 id="calendar-heading">{formatMonth(month)}</h2></div><div className="calendar-actions"><button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} aria-label="Previous month">←</button><button className="today-button" onClick={() => { const now = new Date(); now.setDate(1); setMonth(now); setSelectedDate(today()) }}>Today</button><button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} aria-label="Next month">→</button></div></div>
+                  <div className="section-heading"><div><p className="eyebrow">Planning</p><h2 id="calendar-heading">{formatMonth(month)}</h2></div><div className="calendar-actions"><button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} aria-label="Previous month">←</button><button className="today-button" onClick={() => { const now = new Date(); now.setDate(1); setMonth(now); setFollowingToday(true);setSelectedDate(today()) }}>Today</button><button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} aria-label="Next month">→</button></div></div>
                   <div className="weekdays">{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => <span key={day}>{day}</span>)}</div>
-                  <div className="calendar-grid">{days.map(({ date, day, current }) => <button key={date} className={`calendar-day ${current ? '' : 'outside'} ${date === selectedDate ? 'selected' : ''}`} onClick={() => setSelectedDate(date)} aria-pressed={date === selectedDate} aria-current={date === today() ? 'date' : undefined} aria-label={formatDay(date)}><span>{day}</span></button>)}</div>
+                  <div className="calendar-grid">{days.map(({ date, day, current }) => <button key={date} className={`calendar-day ${current ? '' : 'outside'} ${date === selectedDate ? 'selected' : ''}`} onClick={() => {setFollowingToday(false);setSelectedDate(date)}} aria-pressed={date === selectedDate} aria-current={date === today() ? 'date' : undefined} aria-label={formatDay(date)}><span>{day}</span></button>)}</div>
                   <Schedule planner={planner} date={selectedDate} />
                 </section>
                 <section className="card tasks-card" aria-labelledby="tasks-heading"><ManualTaskSync tasks={tasks} onApply={updateTasks}/>
                   <div className="section-heading"><div><p className="eyebrow">{formatDay(selectedDate)}</p><h2 id="tasks-heading">Daily plan</h2></div><span className="task-count">{selectedTasks.length+curatedCount}</span></div>
                   <form className="task-form" onSubmit={(event) => { event.preventDefault(); addTask() }}><label htmlFor="task-title">Task title</label><div className="form-row"><input id="task-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Add a daily action…" /><button type="submit" disabled={readError}>Add task</button></div></form>
                   <div className="task-filters"><div className="filter-tabs">{['All', 'Open', 'Important', 'Completed'].map(filter => <button key={filter} aria-pressed={taskFilter === filter} onClick={() => setTaskFilter(filter)}>{filter}</button>)}</div><input aria-label="Search tasks" placeholder="Search tasks" value={taskSearch} onChange={event => setTaskSearch(event.target.value)} /></div>
-                  <div className="task-list">{planGroups.map(group=>(group[0].preparationId||group[0].assignmentStep)?<StudyCard key={group[0].preparationId??group[0].projectId} actions={group} planner={planner}/>:<ActionCard key={group[0].id} action={group[0]} planner={planner}/>)}{visibleTasks.length === 0 && planGroups.length === 0 ? <div className="empty-state"><span className="empty-icon">○</span><p>{selectedTasks.length+curatedCount ? 'No matching tasks' : 'No tasks for this day'}</p><small>Start with one clear, achievable step.</small></div> : visibleTasks.map((task) => <article className={`task-card ${task.completed ? 'completed' : ''} ${task.sample ? 'sample' : ''}`} key={task.id}><div className="task-summary"><input type="checkbox" checked={task.completed} disabled={task.sample} onChange={() => updateTask(task.id, { completed: !task.completed })} aria-label={`Complete ${task.title}`} /><button className="task-title" aria-expanded={expanded === task.id} onClick={() => setExpanded(expanded === task.id ? null : task.id)} aria-label={`${expanded === task.id ? 'Collapse' : 'Expand'} ${task.title}`}>{task.title}</button><span className="task-state">{task.sample ? 'Sample' : task.completed ? 'Completed' : task.important ? 'Important' : 'Open'}</span></div>{expanded === task.id && <div className="task-details"><div className="task-edit-grid"><label>Name<input aria-label={`${task.title} name`} value={task.title} disabled={task.sample || readError} onChange={event => { if (event.target.value.trim()) updateTask(task.id, { title: event.target.value }) }} /></label></div><label className="priority-toggle"><input type="checkbox" checked={Boolean(task.important)} disabled={task.sample || readError} onChange={event => updateTask(task.id, { important: event.target.checked })} />Important</label><textarea aria-label={`${task.title} notes`} value={task.notes} disabled={task.sample} placeholder="Add context or notes" onChange={(event) => updateTask(task.id, { notes: event.target.value })} /><button className="delete-task" disabled={task.sample || readError} onClick={() => { setDeletedTask(task); updateTasks(tasks.filter(item => item.id !== task.id)) }}>Delete task</button></div>}</article>)}</div>
+                  <div className="task-list">{planGroups.map(group=>(group[0].preparationId||group[0].assignmentStep)?<StudyCard key={group[0].preparationId??group[0].projectId} actions={group} planner={planner}/>:<ActionCard key={group[0].id} action={group[0]} planner={planner}/>)}{visibleTasks.length === 0 && planGroups.length === 0 ? <div className="empty-state"><span className="empty-icon">○</span><p>{selectedTasks.length+curatedCount ? 'No matching tasks' : planner.loadState==='loading'?'Loading tasks…':planner.loadState==='signed-out'?'Sign in to load generated tasks':planner.loadState==='offline'?'Unable to refresh tasks — showing cached data':planner.loadState==='storage-error'?'Task storage needs attention':'No tasks for this day'}</p><small>Start with one clear, achievable step.</small></div> : visibleTasks.map((task) => <article className={`task-card ${task.completed ? 'completed' : ''} ${task.sample ? 'sample' : ''}`} key={task.id}><div className="task-summary"><input type="checkbox" checked={task.completed} disabled={task.sample} onChange={() => updateTask(task.id, { completed: !task.completed })} aria-label={`Complete ${task.title}`} /><button className="task-title" aria-expanded={expanded === task.id} onClick={() => setExpanded(expanded === task.id ? null : task.id)} aria-label={`${expanded === task.id ? 'Collapse' : 'Expand'} ${task.title}`}>{task.title}</button><span className="task-state">{task.sample ? 'Sample' : task.completed ? 'Completed' : task.important ? 'Important' : 'Open'}</span></div>{expanded === task.id && <div className="task-details"><div className="task-edit-grid"><label>Name<input aria-label={`${task.title} name`} value={task.title} disabled={task.sample || readError} onChange={event => { if (event.target.value.trim()) updateTask(task.id, { title: event.target.value }) }} /></label></div><label className="priority-toggle"><input type="checkbox" checked={Boolean(task.important)} disabled={task.sample || readError} onChange={event => updateTask(task.id, { important: event.target.checked })} />Important</label><textarea aria-label={`${task.title} notes`} value={task.notes} disabled={task.sample} placeholder="Add context or notes" onChange={(event) => updateTask(task.id, { notes: event.target.value })} /><button className="delete-task" disabled={task.sample || readError} onClick={() => { setDeletedTask(task); updateTasks(tasks.filter(item => item.id !== task.id)) }}>Delete task</button></div>}</article>)}</div>
                   {deletedTask && <div className="undo-message" role="status">Task removed. <button onClick={() => { updateTasks([...tasks, deletedTask]); setDeletedTask(null) }}>Undo</button></div>}
                   {showSampleData && <p className="sample-note">Sample cards are temporary and cannot change your saved tasks.</p>}
                   {readError && <p role="alert" className="storage-warning">Stored tasks could not be read. Editing is paused to protect existing data; recover browser storage before continuing.</p>}
                   {storageWarning && <p className="storage-warning" role="alert">This browser could not save changes. Your tasks may be lost when you close this tab.</p>}
+                  {planner.loadState==='signed-out'&&<button onClick={()=>navigate('login')}>Sign in</button>}
+                  {['offline','storage-error'].includes(planner.loadState)&&<button onClick={()=>void planner.sync()}>Retry task sync</button>}
+                  {planner.actions.some(a=>a.needsRescheduling&&!a.completed&&!a.dismissed)&&<section aria-label="Needs rescheduling"><h3>Needs rescheduling</h3><p>These unfinished tasks could not fit before their deadlines. They are not scheduled for the selected day.</p>{planner.actions.filter(a=>a.needsRescheduling&&!a.completed&&!a.dismissed).map(a=><ActionCard key={a.id} action={a} planner={planner}/>)}</section>}
                   <PlanControls planner={planner}/>
                 </section>
               </div>
               <EmailSummary mail={mail}/>
             </section>
           )}
-        </main>
-      )}
+         </main>
     </>
   )
 }
+
+export default function App(){return <AuthGate><Workspace/></AuthGate>}

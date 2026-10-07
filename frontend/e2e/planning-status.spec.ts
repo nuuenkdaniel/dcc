@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
 test('planning separates historical explanation from sync and keeps controls styled',async({page})=>{
  let requested=false
  await page.route('**/api/v1/planner/snapshot',r=>r.fulfill({json:{projects:[],actions:[],status:{summary:'Earlier budget estimate',last_success:'2026-10-03T14:00:00Z',requested}}}))

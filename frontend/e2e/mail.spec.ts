@@ -1,10 +1,11 @@
-import {test,expect} from '@playwright/test'
+import {test,expect} from './authenticated'
+const origin=`http://127.0.0.1:${process.env.E2E_PORT??'5173'}`
 const msg=(id:string,receivedAt:string,important:boolean,override:boolean|null=null)=>({data:{id,account:'school',address:'test@example.invalid',subject:'Test message '+id,sender:'Test sender',to:'Test recipient',receivedAt,body:'Safe test body <script>alert(1)</script>',bodyNotice:'',unread:true,attachments:[]},analysis:{important,summary:'Test summary '+id,reason:'Test reason'},override})
 test('daily briefing uses Eastern today and manual importance; inbox keeps older mail',async({page})=>{
  const today=new Date().toISOString(),old='2020-01-01T12:00:00Z';let messages=[msg('today',today,true),msg('old',old,true),msg('hidden',today,true,false),msg('manual',today,false,true)]
  await page.route('**/api/v1/mail/snapshot',r=>r.fulfill({json:{messages,accounts:[],today:today.slice(0,10)}}))
  await page.route('**/api/v1/mail/feedback',async r=>{const body=r.request().postDataJSON();messages=messages.map(m=>m.data.id===body.id?{...m,override:body.important}:m);await r.fulfill({json:{saved:true}})})
- await page.goto('http://127.0.0.1:5173/');await expect(page.locator('.email-brief')).toHaveCount(2);await expect(page.locator('.email-brief').getByText('Test message old')).toHaveCount(0)
+ await page.goto(origin+'/');await expect(page.locator('.email-brief')).toHaveCount(2);await expect(page.locator('.email-brief').getByText('Test message old')).toHaveCount(0)
  await expect(page.locator('.email-brief').first().getByText('Test reason',{exact:true})).not.toBeVisible();await page.locator('.email-brief').first().getByText('Why it matters',{exact:true}).click();await expect(page.locator('.email-brief').first().getByText('Test reason',{exact:true})).toBeVisible();
  await expect(page.getByRole('link',{name:'Open inbox →'})).toHaveCSS('text-decoration-line','none');
  await page.screenshot({path:'test-results/briefing-desktop.png',fullPage:true});await page.setViewportSize({width:375,height:900});await expect(page.locator('.daily-email')).toBeVisible();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.locator('.daily-email').screenshot({path:'test-results/briefing-mobile.png'});
@@ -15,5 +16,113 @@ test('daily briefing uses Eastern today and manual importance; inbox keeps older
 test('email rules save and read back without touching mailbox settings',async({page})=>{
  let rules=''
  await page.route('**/api/v1/mail/preferences',async r=>{if(r.request().method()==='POST'){rules=r.request().postDataJSON().rules;await r.fulfill({json:{saved:true}})}else await r.fulfill({json:{rules}})})
- await page.goto('http://127.0.0.1:5173/settings');await expect(page.getByLabel('Additional importance rules')).toBeEnabled();await page.getByLabel('Additional importance rules').fill('Prioritize direct requests from my project team.');await page.getByRole('button',{name:'Save email rules'}).click();await expect(page.getByText('Saved. Today’s automatic classifications',{exact:false})).toBeVisible();await page.reload();await expect(page.getByLabel('Additional importance rules')).toHaveValue(rules)
+ await page.goto(origin+'/settings');await expect(page.getByLabel('Additional importance rules')).toBeEnabled();await page.getByLabel('Additional importance rules').fill('Prioritize direct requests from my project team.');await page.getByRole('button',{name:'Save email rules'}).click();await expect(page.getByText('Saved. Today’s automatic classifications',{exact:false})).toBeVisible();await page.reload();await expect(page.getByLabel('Additional importance rules')).toHaveValue(rules)
+})
+test('inbox linkifies only eligible plaintext web destinations without loading them',async({page})=>{
+ const body=['First paragraph','','Deal https://www.newegg.com/p/N82E16834156587?Item=N82E16834156587&utm_source=email&amp;utm_campaign=synthetic','Balanced (https://example.com/docs_(new)).Next','Normal https://example.com/news','javascript:alert(1)','http://user@evil.example/path','http://127.0.0.1/private','https://раypal.example/login','<script>window.syntheticExecuted=true</script>'].join('\n')
+ const message=msg('links',new Date().toISOString(),true);message.data.body=body
+ const external:string[]=[]
+ page.on('request',request=>{if(!request.url().startsWith(origin))external.push(request.url())})
+ await page.route('**/api/v1/mail/snapshot',route=>route.fulfill({json:{messages:[message],accounts:[],today:new Date().toISOString().slice(0,10)}}))
+ await page.goto(origin+'/inbox?message=links')
+ const card=page.locator('.email-card[open]')
+ await expect(card.getByRole('link',{name:/newegg\.com/})).toHaveAttribute('href',/utm_source=email&utm_campaign=synthetic/)
+ await expect(card.getByRole('link',{name:'https://example.com/docs_(new)'})).toHaveAttribute('rel','noopener noreferrer')
+ await expect(card.getByRole('link',{name:'https://example.com/news'})).toHaveAttribute('referrerpolicy','no-referrer')
+ await expect(card.getByRole('link')).toHaveCount(3)
+ await expect(card.locator('script')).toHaveCount(0)
+ await expect(card.locator('.email-body')).toContainText('javascript:alert(1)')
+ await expect(card.locator('.email-body')).toHaveCSS('white-space','pre-wrap')
+ expect(await page.evaluate(()=>Reflect.get(window,'syntheticExecuted'))).toBeUndefined()
+ expect(external).toEqual([])
+})
+test('inbox switches between readable spacing and exact original text',async({page})=>{
+ const body='\r\n \t\u00a0\r\nFirst paragraph \t\r\n\r\n \t\u00a0\r\n\r\n  indented line\r\n'
+ const message=msg('spacing',new Date().toISOString(),true);message.data.body=body
+ await page.route('**/api/v1/mail/snapshot',route=>route.fulfill({json:{messages:[message],accounts:[],today:new Date().toISOString().slice(0,10)}}))
+ await page.goto(origin+'/inbox?message=spacing')
+ const card=page.locator('.email-card[open]'),emailBody=card.locator('.email-body')
+ const readable=card.getByRole('button',{name:'Readable spacing'}),original=card.getByRole('button',{name:'Original text'})
+ expect(await emailBody.textContent()).toBe('First paragraph\n\n  indented line')
+ await expect(readable).toHaveAttribute('aria-pressed','true')
+ await original.click()
+ expect(await emailBody.textContent()).toBe(body)
+ await expect(original).toHaveAttribute('aria-pressed','true')
+ await readable.click()
+ expect(await emailBody.textContent()).toBe('First paragraph\n\n  indented line')
+})
+
+test('formatted HTML stays isolated and automatically loads only eligible remote images',async({page})=>{
+ const id='a'.repeat(64),closedId='b'.repeat(64),message=msg(id,new Date().toISOString(),true),closed=msg(closedId,new Date().toISOString(),true)
+ message.data.body='Synthetic plain-text fallback';closed.data.body='Collapsed fallback';Reflect.set(message.data,'hasHtml',true);Reflect.set(closed.data,'hasHtml',true)
+ const html='<html style="background-color:#eef2f5"><body bgcolor="#f4f5f7" style="margin:0;line-height:1.5"><meta http-equiv="refresh" content="0;url=https://navigate.example"><link rel="stylesheet" href="https://styles.example/mail.css"><style>@font-face{font-family:Tracked;src:url(https://fonts.example/mail.woff2)}</style><iframe src="https://frame.example/load"></iframe><script src="https://script.example/file.js">parent.location="https://navigate.example";fetch("https://script.example/run")</script><form action="https://navigate.example"><input type="image" src="https://forms.example/button.png"><button>Navigate</button></form><table bgcolor="#ffffff" style="border:1px solid #dadce0;border-radius:12px;padding:16px"><tr><td><p>Formatted content</p><a href="https://dashboard.gitguardian.example/incidents/123?source=email" style="display:inline-block;background-color:#6b4eff;border-radius:6px;padding:10px 16px;color:#ffffff">View incident</a><img alt="remote pixel" src="https://images.example/pixel.png"><img alt="private" src="http://127.0.0.1/private.png"><img alt="userinfo" src="https://user@images.example/tracker.png"><img alt="hidden" src="https://images.example/%E2%80%AEtracker.png"><img alt="unsafe scheme" src="javascript:alert(1)"></td></tr></table></body></html>'
+ const external:string[]=[],htmlRequests:string[]=[]
+ page.on('request',request=>{if(!request.url().startsWith(origin))external.push(request.url())})
+ await page.route('**/api/v1/mail/snapshot',route=>route.fulfill({json:{messages:[message,closed],accounts:[],today:new Date().toISOString().slice(0,10)}}))
+ await page.route('**/api/v1/mail/html/**',route=>{htmlRequests.push(route.request().url());return route.fulfill({json:{html:route.request().url().endsWith(id)?html:'<img src="https://images.example/collapsed.png">',hasHtml:true}})})
+ await page.route('https://**/*',route=>route.request().url()==='https://images.example/pixel.png'?route.fulfill({status:200,contentType:'image/gif',body:Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==','base64')}):route.abort())
+ await page.route('http://127.0.0.1/private.png',route=>route.abort())
+ await page.goto(`${origin}/inbox?message=${id}`)
+ const card=page.locator('.email-card[open]'),frameElement=card.locator('iframe[title="Formatted email"]'),frame=card.frameLocator('iframe[title="Formatted email"]')
+ await expect(frame.getByText('Formatted content')).toBeVisible()
+ await expect(frameElement).toHaveAttribute('sandbox','allow-popups allow-popups-to-escape-sandbox')
+ const defaultHeight=(await frameElement.boundingBox())!.height
+ expect(defaultHeight).toBeGreaterThan(520)
+ const expand=card.getByRole('button',{name:'Expand view'})
+ await expect(expand).toHaveAttribute('aria-expanded','false')
+ await frameElement.evaluate(element=>Reflect.set(element,'sizingTestIdentity',true))
+ await expand.click()
+ await expect(card.getByRole('button',{name:'Reduce view'})).toHaveAttribute('aria-expanded','true')
+ expect((await frameElement.boundingBox())!.height).toBeGreaterThan(defaultHeight)
+ expect(await frameElement.evaluate(element=>Reflect.get(element,'sizingTestIdentity'))).toBe(true)
+ expect(htmlRequests).toHaveLength(1)
+ await expect(frame.locator('script,iframe,form,link,style,meta[http-equiv="refresh"]')).toHaveCount(0)
+ const content=frame.locator('.email-content'),emailCard=frame.locator('table'),button=frame.getByRole('link',{name:'View incident (dashboard.gitguardian.example)'})
+ await expect(content).toHaveCSS('background-color','rgb(244, 245, 247)')
+ await expect(content).toHaveCSS('line-height','21px')
+ await expect(emailCard).toHaveCSS('border-radius','12px')
+ await expect(button).toHaveText('View incident')
+ await expect(button).toHaveAttribute('href','https://dashboard.gitguardian.example/incidents/123?source=email')
+ await expect(button).toHaveAttribute('title','https://dashboard.gitguardian.example/incidents/123?source=email')
+ await expect(button).toHaveAttribute('aria-label','View incident (dashboard.gitguardian.example)')
+ await expect.poll(()=>external).toEqual(['https://images.example/pixel.png'])
+ expect(htmlRequests.length).toBeGreaterThan(0)
+ expect([...new Set(htmlRequests)]).toEqual([`${origin}/api/v1/mail/html/${id}`])
+ await expect(page.locator('.email-card').filter({hasText:'Test message '+closedId})).not.toHaveAttribute('open','')
+ await expect(card.getByRole('button',{name:'Load images'})).toHaveCount(0)
+ expect(await frame.locator('img[alt="private"],img[alt="userinfo"],img[alt="hidden"],img[alt="unsafe scheme"]').evaluateAll(images=>images.every(image=>!image.hasAttribute('src')))).toBe(true)
+ expect(page.url()).toBe(`${origin}/inbox?message=${id}`)
+ await expect(card.getByText('Privacy details')).toBeVisible()
+ await page.setViewportSize({width:375,height:900})
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
+ await card.getByRole('button',{name:'Reduce view'}).click()
+ await expect(card.getByRole('button',{name:'Expand view'})).toHaveAttribute('aria-expanded','false')
+ await card.getByRole('button',{name:'Text'}).click()
+ await expect(card.locator('.email-body')).toHaveText('Synthetic plain-text fallback')
+})
+
+test('formatted HTML loading choice survives completion and reopen uses the Inbox cache',async({page})=>{
+ const id='c'.repeat(64),message=msg(id,new Date().toISOString(),true)
+ message.data.body='Delayed plain-text fallback';Reflect.set(message.data,'hasHtml',true)
+ let releaseResponse!:()=>void,htmlRequests=0
+ const delayed=new Promise<void>(resolve=>{releaseResponse=resolve})
+ await page.route('**/api/v1/mail/snapshot',route=>route.fulfill({json:{messages:[message],accounts:[],today:new Date().toISOString().slice(0,10)}}))
+ await page.route('**/api/v1/mail/html/**',async route=>{htmlRequests++;await delayed;await route.fulfill({json:{html:'<p>Cached browser message</p>',hasHtml:true}})})
+ await page.goto(`${origin}/inbox?message=${id}`)
+ const card=page.locator('.email-card[open]')
+ await expect(card.getByRole('status')).toContainText('Loading formatted view')
+ await card.getByRole('button',{name:'Show text now'}).click()
+ await expect(card.locator('.email-body')).toHaveText('Delayed plain-text fallback')
+ releaseResponse()
+ await expect(card.getByRole('button',{name:'Formatted'})).toBeVisible()
+ await expect(card.locator('.email-body')).toHaveText('Delayed plain-text fallback')
+ await expect(card.locator('iframe[title="Formatted email"]')).toHaveCount(0)
+
+ await card.locator('summary').click()
+ await expect(page.locator('.email-card')).not.toHaveAttribute('open','')
+ await page.locator('.email-card summary').click()
+ const reopened=page.locator('.email-card[open]')
+ await expect(reopened.getByRole('status')).toHaveCount(0)
+ await expect(reopened.frameLocator('iframe[title="Formatted email"]').getByText('Cached browser message')).toBeVisible()
+ expect(htmlRequests).toBe(1)
 })
