@@ -10,11 +10,12 @@ export interface SessionStore {
 }
 export type AuthConfig={username:string;password:string;origin:string;store:SessionStore}
 export const SESSION_SECONDS=30*24*60*60
+const PUBLIC_API_ROUTES=new Set(['/api/v1/status','/api/v1/auth/session','/api/v1/auth/login','/api/v1/auth/logout'])
 const digest=(text:string)=>createHash('sha256').update(text).digest('hex')
 const derive=promisify(scrypt)
-export async function registerAuth(app:FastifyInstance, config?:AuthConfig) {
- await app.register(cookie)
- await app.register(rateLimit,{global:false})
+export function registerAuth(app:FastifyInstance, config?:AuthConfig) {
+ app.register(cookie)
+ app.register(rateLimit,{global:false})
  const salt=randomBytes(32)
  const expected=config ? scryptSync(config.password,salt,64):null
  const identity=config ? digest(config.username+'\0'+config.password):''
@@ -28,7 +29,8 @@ export async function registerAuth(app:FastifyInstance, config?:AuthConfig) {
    if(!config) return reply.code(503).send({error:'Authentication is not configured'})
    if(request.headers.origin!==config.origin) return reply.code(403).send({error:'Origin not permitted'})
   }
-  if((request.url.startsWith('/api/v1/calendar') || request.url.startsWith('/api/v1/planner') || request.url.startsWith('/api/v1/mail') || request.url.startsWith('/api/v1/prices')) && !(await authenticated(request))) return reply.code(401).send({error:'Sign in required'})
+  const path=request.url.split('?',1)[0]??request.url
+  if(path.startsWith('/api/v1/')&&!PUBLIC_API_ROUTES.has(path)&&!(await authenticated(request))) return reply.code(401).send({error:'Sign in required'})
  })
  app.get('/api/v1/auth/session',async request=>({authenticated:await authenticated(request),configured:!!config}))
  app.post<{Body:{username:string;password:string}}>('/api/v1/auth/login',{

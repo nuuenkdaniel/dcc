@@ -29,9 +29,10 @@ Do not commit local.properties, signing keys, credentials, SDKs or generated APK
 ## Scope
 
 See PARITY.md for the implemented vertical slices and remaining web parity gaps.
-Five bottom tabs and bottom Settings/Refresh controls are implemented. HTTPS API code,
-in-memory login, snapshot screens, task checkoff, email importance feedback and a basic
-focus timer now build successfully. Persistent sessions/offline sync and full web parity
-are NOT complete. Preview functions do not create a ViewModel or call the network.
+Five bottom tabs and Settings/Refresh controls are implemented. HTTPS API code,
+encrypted persistent sessions and workspace caches, a durable encrypted planner/calendar
+outbox, snapshot screens, manual-task sync, task checkoff, email importance feedback and
+a persistent focus timer are available. Cold offline sign-in, every web workflow, and full
+web parity are not complete. Preview functions do not create a ViewModel or call the network.
 
 Changes branch from qa using feature/* or fix/* and target qa. Daniel promotes qa to main.

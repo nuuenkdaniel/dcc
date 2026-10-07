@@ -37,8 +37,9 @@ import kotlinx.coroutines.launch
    val merged=mergeManualTasks(base,tasks,remote.getJSONObject("data").getJSONArray("tasks").objects(),choice)
    if(merged.second.isNotEmpty()&&choice==null){conflict=true;error="Tasks changed on both devices. Choose which conflicting edits to keep."}
    else{
-    model.api("/api/v1/planner/manual-tasks",JSONObject().put("version",remote.getInt("version")).put("tasks",JSONArray(merged.first)))
-    val fresh=model.api("/api/v1/planner/manual-tasks").getJSONObject("data").getJSONArray("tasks")
+     val changed=manualTasksNeedWrite(merged.first,remote.getJSONObject("data").getJSONArray("tasks").objects())
+     if(changed)model.api("/api/v1/planner/manual-tasks",JSONObject().put("version",remote.getInt("version")).put("tasks",JSONArray(merged.first)))
+     val fresh=if(changed)model.api("/api/v1/planner/manual-tasks").getJSONObject("data").getJSONArray("tasks") else JSONArray(merged.first)
     check(preferences.edit().putString("tasks",fresh.toString()).putString("sync-base",fresh.toString()).commit()){"Could not save synced tasks on this phone."}
     raw=fresh.toString();conflict=false;error="Tasks synced."
    }
@@ -51,7 +52,7 @@ import kotlinx.coroutines.launch
   TextButton(onClick={if(title.isNotBlank()){save(tasks+JSONObject().put("id",UUID.randomUUID().toString()).put("date",date).put("title",title.trim()).put("completed",false));title=""}},enabled=title.isNotBlank()&&!syncing){Text("Add task")}
   OutlinedTextField(search,{search=it},label={Text("Find manual tasks")},modifier=Modifier.fillMaxWidth(),singleLine=true)
   FilterChip(onlyOpen,{onlyOpen=!onlyOpen},label={Text("Open only")})
-  tasks.filter{it.optString("date")==date&&it.optString("title").contains(search,true)&&(!onlyOpen||!it.optBoolean("completed"))}.sortedByDescending{it.optBoolean("important")}.forEach { task ->
+  tasks.filter{manualTaskVisible(it,date,search,onlyOpen)}.sortedByDescending{it.optBoolean("important")}.forEach { task ->
    Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
     Checkbox(task.optBoolean("completed"),{done->save(tasks.map{if(it==task)JSONObject(it.toString()).put("completed",done) else it})},enabled=!syncing)
     TextButton(onClick={editing=task.toString()},modifier=Modifier.weight(1f),enabled=!syncing){Text((if(task.optBoolean("important"))"★ " else "")+task.optString("title"),style=MaterialTheme.typography.bodyMedium)}

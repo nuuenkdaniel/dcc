@@ -1,6 +1,7 @@
 import {useEffect,useState,useCallback,useId,useMemo} from 'react'
 import {aggregatePriceHistory,type HistoryCondition,type HistoryPeriod,type PriceObservation} from './priceHistory'
 import {protectedFetch} from './auth'
+import {safeRetailerUrl} from './retailerLinks'
 type Offer={condition:string;cents:number;maxCents?:number;eligible:boolean;availability:string}
 type Source={item_id:string;store:string;status:string;detail:string;last_attempt:string|null;next_run:string;last_good:null|{observedAt:string;url:string;offers:Offer[]}}
 type Item={id:string;title:string;target_cents:number;paused:boolean}
@@ -41,7 +42,7 @@ function PriceCard({item,sources,history,save}:{item:Item;sources:Source[];histo
  <div className="price-offers">{sources.map(s=>{const offers=s.last_good?.offers.filter(o=>o.condition===tab)??[];const stale=s.status!=='verified'||!s.last_good||now-Date.parse(s.last_good.observedAt)>7*3600000;return <section className="price-offer" key={s.store}>
 <div className="price-offer-heading">
 <h3>{names[s.store]??s.store}</h3>
-<a href={s.last_good?.url??links[s.store]} target="_blank" rel="noreferrer">View store ↗</a>
+ {safeRetailerUrl(s.store,s.last_good?.url??links[s.store])?<a href={safeRetailerUrl(s.store,s.last_good?.url??links[s.store])!} target="_blank" rel="noopener noreferrer">View store ↗</a>:<span className="local-note">Retailer link unavailable</span>}
 </div>{offers.map(o=>
 <div key={o.condition}>
 <strong className="price-value">{money(o.cents)}{o.maxCents&&o.maxCents!==o.cents?` – ${money(o.maxCents)}`:''}</strong>{!stale&&!item.paused&&o.eligible&&o.cents<item.target_cents&&<span className="price-target">Below target · verify delivery</span>}<p>{o.availability}</p>

@@ -54,8 +54,12 @@ button { cursor: pointer; }
 .mini-timer span { color: var(--subtle); font-size: .66rem; }
 .mini-timer output { color: #dedbea; font-size: 1rem; font-weight: 650; font-variant-numeric: tabular-nums; }
 .mini-timer button { min-height: 34px; padding-inline: 11px; font-size: .72rem; }
-.modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: rgba(6, 7, 16, .72); backdrop-filter: blur(5px); }
-.timer-dialog { width: min(620px, 100%); max-height: min(820px, calc(100vh - 32px)); overflow-y: auto; padding: clamp(28px, 4vw, 38px); background: var(--surface); border: 1px solid #41435f; border-radius: 16px; box-shadow: 0 24px 70px rgba(0, 0, 0, .45); }
+.modal-dialog-shell { position: fixed; inset: 0; z-index: 50; width:100%; max-width:none; height:100%; max-height:none; margin:0; padding:clamp(10px,3vw,24px); border:0; background:transparent; color:inherit; place-items:center; overflow:hidden; }
+.modal-dialog-shell[open] { display:grid; }
+.modal-dialog-shell:focus { outline:none; }
+.modal-dialog-shell::backdrop { background:rgba(6,7,16,.72); backdrop-filter:blur(5px); }
+.timer-dialog { width:min(620px,100%); max-height:calc(100dvh - clamp(20px,6vw,48px)); overflow-y:auto; overscroll-behavior:contain; padding:clamp(20px,4vw,38px); background:var(--surface); border:1px solid #41435f; border-radius:16px; box-shadow:0 24px 70px rgba(0,0,0,.45); scrollbar-gutter:stable; }
+.timer-dialog button:disabled,.calendar-login button:disabled { opacity:.55; cursor:not-allowed; }
 .dialog-heading { align-items: center; }
 .dialog-heading > button { width: 32px; height: 32px; padding: 0; color: var(--muted); background: transparent; border: 1px solid var(--border); border-radius: 50%; font-size: 1.15rem; }
 .duration-settings { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 32px; }

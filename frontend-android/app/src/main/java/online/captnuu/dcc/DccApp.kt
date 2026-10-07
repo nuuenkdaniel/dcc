@@ -10,6 +10,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -81,14 +83,14 @@ fun JSONArray?.objects():List<JSONObject> = if(this==null) emptyList() else (0 u
    }
   }
  }
- if(settings) AlertDialog(onDismissRequest={settings=false},title={Text("Settings")},text={Column {
-  Text("Server: dcc.home.captnuu.online")
-  Text("Session and cached workspace data are encrypted on this phone. Session expiry is set by the server; the next backend release supports 30 days. Passwords are never saved.")
-  AppearanceControl()
-  TaskBackup()
-  UpdateControl()
-  PendingEdits(state,projectModel)
- }},confirmButton={TextButton(onClick={settings=false}){Text("Done")}},dismissButton={TextButton(onClick={if(state.signedIn||state.restorePending)onLogout();local=false;settings=false}){Text(if(state.signedIn)"Sign out" else "Sign in")}})
+  if(settings) AlertDialog(onDismissRequest={settings=false},title={Text("Settings")},text={LazyColumn(Modifier.heightIn(max=420.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+   item{Text("Server: dcc.home.captnuu.online")}
+   item{Text("The session, synced workspace cache, mail bodies, and pending edits are encrypted on this phone. Manual tasks are plaintext in app-private local storage; exported task backup files are also plaintext. Server sessions expire after 30 days. Passwords are never saved.")}
+   item{AppearanceControl()}
+   item{TaskBackup()}
+   item{UpdateControl()}
+   item{PendingEdits(state,projectModel)}
+  }},confirmButton={TextButton(onClick={settings=false}){Text("Done")}},dismissButton={TextButton(onClick={if(state.signedIn||state.restorePending)onLogout();local=false;settings=false}){Text(if(state.signedIn)"Sign out" else "Sign in")}})
 }
 @Composable private fun LoginForm(busy:Boolean,onLogin:(String,String)->Unit) {
  var username by rememberSaveable { mutableStateOf("") };var password by remember { mutableStateOf("") }
@@ -119,9 +121,9 @@ private fun snapshot(state:WorkspaceState,name:String)=workspaceSnapshot(state,n
   if(!tasksVisible) item { CalendarControls(state,date,model) }
   if(!tasksVisible) item { MonthCalendar(date,month,{date=it},{month=it}) }
   item { Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
-   IconButton(onClick={date=LocalDate.parse(date).minusDays(1).toString()}){Icon(Icons.Default.KeyboardArrowLeft,"Previous day")}
+    IconButton(onClick={date=LocalDate.parse(date).minusDays(1).toString()}){Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft,"Previous day")}
    TextButton(onClick={date=LocalDate.now().toString()},modifier=Modifier.weight(1f)) { Text(LocalDate.parse(date).format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d"))) }
-   IconButton(onClick={date=LocalDate.parse(date).plusDays(1).toString()}){Icon(Icons.Default.KeyboardArrowRight,"Next day")}
+    IconButton(onClick={date=LocalDate.parse(date).plusDays(1).toString()}){Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight,"Next day")}
   } }
   if(tasksVisible) {
   item { Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
