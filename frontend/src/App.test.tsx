@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import type {ReactNode} from 'react'
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import App from './App'
 
@@ -26,6 +26,34 @@ it('retains but does not display synchronized task tombstones',()=>{
  render(<App/>)
  expect(screen.queryByText('Do not resurrect')).not.toBeInTheDocument()
  expect(JSON.parse(window.localStorage.getItem('productivity-app.tasks.v1')!)[0].deleted).toBe(true)
+})
+it('persists ordinary deletion as a hidden tombstone and Undo restores deleted false',async()=>{
+ const now=new Date(),date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`
+ window.localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([{id:'ordinary',title:'Ordinary task',date,notes:'',completed:false}]))
+ render(<App/>)
+ fireEvent.click(screen.getByRole('button',{name:'Expand Ordinary task'}))
+ fireEvent.click(screen.getByRole('button',{name:'Delete task'}))
+ expect(await screen.findByRole('button',{name:'Undo'})).toBeInTheDocument()
+ expect(screen.queryByText('Ordinary task')).not.toBeInTheDocument()
+ expect(screen.getByText('0',{selector:'.task-count'})).toBeInTheDocument()
+ await waitFor(()=>expect(JSON.parse(window.localStorage.getItem('productivity-app.tasks.v1')!)[0].deleted).toBe(true))
+ fireEvent.change(screen.getByLabelText('Search tasks'),{target:{value:'Ordinary'}})
+ expect(screen.queryByText('Ordinary task')).not.toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'Undo'}))
+ expect(await screen.findByText('Ordinary task')).toBeInTheDocument()
+ await waitFor(()=>expect(JSON.parse(window.localStorage.getItem('productivity-app.tasks.v1')!)[0].deleted).toBe(false))
+})
+it('retains a new task draft when safe storage locking is unavailable',async()=>{
+ const locks=navigator.locks
+ Object.defineProperty(navigator,'locks',{configurable:true,value:undefined})
+ try{
+  render(<App/>)
+  fireEvent.change(screen.getByLabelText('Task title'),{target:{value:'Keep this draft'}})
+  fireEvent.click(screen.getByRole('button',{name:'Add task'}))
+  expect(await screen.findByText(/Safe task editing requires browser Web Locks/)).toBeInTheDocument()
+  expect(screen.getByLabelText('Task title')).toHaveValue('Keep this draft')
+  expect(window.localStorage.getItem('productivity-app.tasks.v1')).toBeNull()
+ }finally{Object.defineProperty(navigator,'locks',{configurable:true,value:locks})}
 })
 beforeEach(() => {
   window.localStorage.clear()

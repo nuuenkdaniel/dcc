@@ -3,11 +3,15 @@ import {mergeTasks,type SharedTask} from './sharedTasks'
 import {protectedFetch} from './auth'
 function taskFetch(path:string,options:RequestInit={}){return protectedFetch(path,{...options,signal:AbortSignal.timeout(10000)})}
 const KEY='dcc.manual-tasks.base.v1'
-export function ManualTaskSync({tasks,onApply}:{tasks:SharedTask[];onApply:(tasks:SharedTask[])=>void}){
+export function ManualTaskSync({tasks,onApply}:{tasks:SharedTask[];onApply:(tasks:SharedTask[])=>Promise<boolean>}){
  const inFlight=useRef(false),blocked=useRef(false)
  const latest=useRef(tasks);useLayoutEffect(()=>{latest.current=tasks},[tasks])
  const [busy,setBusy]=useState(false),[message,setMessage]=useState(''),[conflict,setConflict]=useState(false)
  async function sync(choice?:'local'|'remote'){
+  if(!navigator.locks?.request){setMessage('Safe task sync requires browser Web Locks. Nothing was overwritten; use a supported browser.');return}
+  await navigator.locks.request('daymark.manual-task-sync.v1',()=>syncLocked(choice))
+ }
+ async function syncLocked(choice?:'local'|'remote'){
   if(inFlight.current||blocked.current&&!choice)return;inFlight.current=true;setBusy(true);let followUp=false
   try{
    const base=JSON.parse(localStorage.getItem(KEY)??'[]') as SharedTask[]
@@ -26,7 +30,8 @@ export function ManualTaskSync({tasks,onApply}:{tasks:SharedTask[];onApply:(task
    const combined=mergeTasks(captured,latest.current,fresh.data.tasks)
    if(combined.conflicts.length)throw Error('Tasks changed while syncing. Local edits retained; sync again to review.')
    followUp=JSON.stringify(combined.tasks)!==JSON.stringify(fresh.data.tasks)
-   localStorage.setItem(KEY,JSON.stringify(fresh.data.tasks));if(JSON.stringify(combined.tasks)!==JSON.stringify(latest.current))onApply(combined.tasks);blocked.current=false;setConflict(false);setMessage('Tasks synced.')
+    if(JSON.stringify(combined.tasks)!==JSON.stringify(latest.current)&&!await onApply(combined.tasks))throw Error('Tasks changed in another tab while syncing. Newer saved edits were retained; review and retry.')
+    localStorage.setItem(KEY,JSON.stringify(fresh.data.tasks));blocked.current=false;setConflict(false);setMessage('Tasks synced.')
   }catch(e){setMessage(e instanceof Error?e.message:'Offline; tasks retained.')}finally{inFlight.current=false;setBusy(false);if(followUp)queueMicrotask(()=>void syncRef.current())}
  }
  const syncRef=useRef(sync);useLayoutEffect(()=>{syncRef.current=sync})
