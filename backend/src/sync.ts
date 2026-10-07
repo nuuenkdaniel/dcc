@@ -33,7 +33,6 @@ export async function runSync(pool:Pool,interval:number,source:string,fetcher:()
   try {
    const snapshot=await fetcher()
    await connection.query(`UPDATE calendar_sync_state SET snapshot=$1,source_hash=$2,last_success=now(),error=NULL,failures=0,next_run=now()+$3*interval '1 second' WHERE id=1`,[JSON.stringify(snapshot),source,interval])
-   await connection.query('DELETE FROM app_sessions WHERE expires_at<now()')
    return 'synced'
   } catch(error) {
    const auth=error instanceof Error && error.message==='CALDAV_AUTH'
