@@ -416,8 +416,8 @@ export function Workspace() {
                   {showSampleData && <p className="sample-note">Sample cards are temporary and cannot change your saved tasks.</p>}
                   {readError && <p role="alert" className="storage-warning">Stored tasks could not be read. Editing is paused to protect existing data; recover browser storage before continuing.</p>}
                   {storageWarning && <p className="storage-warning" role="alert">{storageWarning}</p>}
-                  {planner.loadState==='signed-out'&&<button onClick={()=>navigate('login')}>Sign in</button>}
-                  {['offline','storage-error'].includes(planner.loadState)&&<button onClick={()=>void planner.sync()}>Retry task sync</button>}
+                  {planner.loadState==='signed-out'&&<button className="primary-action" onClick={()=>navigate('login')}>Sign in</button>}
+                  {['offline','storage-error'].includes(planner.loadState)&&<button className="secondary-action" onClick={()=>void planner.sync()}>Retry task sync</button>}
                    {unplacedActions.length>0&&<details className="rescheduling-details"><summary><span>Needs rescheduling</span><span className="rescheduling-count">{unplacedCount} {unplacedCount===1?'task':'tasks'}</span></summary><div className="rescheduling-content"><p>Unfinished tasks without a scheduled day. They stay saved until completed, dismissed, or rescheduled.</p>{unplacedGroups.length>0?<div className="rescheduling-list">{unplacedGroups.map(group=>(group[0].preparationId||group[0].assignmentStep)?<StudyCard key={group[0].preparationId??group[0].projectId} actions={group} planner={planner}/>:<ActionCard key={group[0].id} action={group[0]} planner={planner}/>)}</div>:<p className="rescheduling-empty">No unfinished tasks match the current filters.</p>}</div></details>}
                   <PlanControls planner={planner}/>
                 </section>

@@ -56,8 +56,8 @@ function PriceCard({item,sources,history,save}:{item:Item;sources:Source[];histo
 <form onSubmit={e=>{e.preventDefault();void update(item.paused)}}>
 <label>Target price (USD)<input type="number" min="0.01" max="100000" step="0.01" value={target} onChange={e=>setTarget(e.target.value)}/>
 </label>
-<button disabled={saving}>Save target</button>
-<button type="button" disabled={saving} onClick={()=>void update(!item.paused)}>{item.paused?'Resume':'Pause'} tracking</button>
+ <button className="primary-action" disabled={saving}>Save target</button>
+ <button className="secondary-action" type="button" disabled={saving} onClick={()=>void update(!item.paused)}>{item.paused?'Resume':'Pause'} tracking</button>
 </form>{status&&<p role="status">{status}</p>}</details>
 </article>
 }
