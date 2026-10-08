@@ -16,7 +16,7 @@ test('long generated project plan stays compact, grouped, and read-only on mount
  expect(cardBox).not.toBeNull();expect(editBox).not.toBeNull()
  expect(editBox!.y-cardBox!.y).toBeLessThan(40)
  expect(writes).toBe(0)
- await page.getByText('Generated tasks (18)',{exact:true}).click()
+ await page.getByText('Project tasks (18)',{exact:true}).click()
  await expect(page.getByRole('heading',{name:'Oct 8, 2026'})).toBeVisible()
  await expect(page.getByRole('heading',{name:'Oct 9, 2026'})).toBeVisible()
  await expect(page.getByRole('heading',{name:'Needs rescheduling'})).toBeVisible()

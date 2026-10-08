@@ -1,6 +1,7 @@
 import type {Pool} from 'pg'
 import {budgetForDay,easternDay,easternHour} from './planner-policy.js'
 import {resolveExam,examDay,type Preparation} from './study.js'
+import {isAutomatedAction,scheduledActionMinutes} from './planner.js'
 export async function rollover(pool:Pool,now=new Date()){
  if(easternHour(now)<6)return {status:'not-due'}
  const c=await pool.connect()
@@ -12,15 +13,15 @@ export async function rollover(pool:Pool,now=new Date()){
  const cal=(await c.query('SELECT snapshot,last_success FROM calendar_sync_state WHERE id=1')).rows[0]
  if(!cal?.last_success||now.getTime()-new Date(cal.last_success).getTime()>86400000)throw Error('Calendar unavailable or stale')
  const rows=(await c.query('SELECT id,kind,data FROM planner_entities')).rows
- const actions=rows.filter(r=>r.kind==='action'),projects=rows.filter(r=>r.kind==='project'),preps=rows.filter(r=>r.kind==='preparation')
+  const allActions=rows.filter(r=>r.kind==='action'),actions=allActions.filter(r=>isAutomatedAction(r.data)),projects=rows.filter(r=>r.kind==='project'),preps=rows.filter(r=>r.kind==='preparation')
  const missed=actions.filter(r=>!r.data.completed&&!r.data.dismissed&&((r.data.date&&r.data.date<today)||r.data.needsRescheduling)).map(r=>{
  const a=r.data,p=projects.find(p=>p.id===a.projectId),prep=preps.find(p=>p.id===a.preparationId)?.data as Preparation|undefined
  if(prep){const event=resolveExam(prep,cal.snapshot.events??[]);if(prep.status!=='active'||!event)return null;return {...r,deadline:examDay(event),start:prep.startDate,order:prep.topics.findIndex(t=>t.id===a.topicId)}}
  if(a.assignmentStep&&p?.data.status==='active')return {...r,deadline:p.data.deadline||'',start:today,order:a.sequence??0}
  return null
  }).filter(r=>r!==null).sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999')||a.order-b.order||String(a.data.date).localeCompare(String(b.data.date))||a.id.localeCompare(b.id))
- const moving=new Set(missed.map(r=>r.id)),used=new Map<string,number>()
- for(const a of actions)if(!moving.has(a.id)&&!a.data.dismissed&&a.data.date)used.set(a.data.date,(used.get(a.data.date)??0)+a.data.minutes)
+  const moving=new Set(missed.map(r=>r.id)),used=new Map<string,number>(),fixedActions=allActions.filter(a=>!moving.has(a.id)).map(a=>a.data)
+  for(const date of new Set(fixedActions.map(a=>a.date).filter(Boolean)))used.set(date,scheduledActionMinutes(fixedActions,date))
  let moved=0,unplaced=0,shortfallMinutes=0
  const last=new Map<string,string>()
  for(const r of missed){let chosen='';const group=r.data.preparationId??r.data.projectId

@@ -370,9 +370,22 @@ nav { display: grid; gap: 5px; }
 .project-info h3 {margin:0 0 5px;color:var(--muted);font-size:11px;text-transform:uppercase;}
 .project-card .project-info p {margin:0;max-width:85ch;white-space:pre-wrap;font-size:12px;line-height:1.55;}
 .project-info ul {margin:0;padding-left:18px;color:var(--muted);font-size:12px;}
-.project-card-footer {display:flex;justify-content:flex-end;padding:12px 22px;border-top:1px solid var(--border);}
+.project-card-footer {display:flex;justify-content:flex-end;gap:8px;padding:12px 22px;border-top:1px solid var(--border);}
 .project-card-footer button {min-height:34px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--accent);font-size:12px;}
 .project-card-footer button:disabled {opacity:.55;cursor:default;}
+.project-task-form,.hermes-project-prompt {margin:0;border-top:1px solid var(--border);background:var(--sidebar);padding:16px 22px;}
+.project-task-form button,.hermes-project-prompt button,.project-task-meta button,.dismiss-project-task {min-height:34px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--accent);font:inherit;font-size:12px;}
+.task-origin {display:inline-block;margin-top:3px;color:var(--accent);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;}
+.project-task-title {display:flex;align-items:center;gap:8px;}
+.project-task-title input {flex:0 0 auto;}
+.project-task-meta {display:grid;justify-items:end;gap:5px;}
+.custom-project-task {grid-template-columns:minmax(0,1fr) auto;}
+.custom-project-task > .project-task-form {grid-column:1/-1;width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:8px;}
+.dismiss-project-task {grid-column:1/-1;justify-self:start;color:var(--muted);}
+.hermes-project-prompt fieldset {min-width:0;margin:10px 0;padding:12px;border:1px solid var(--border);border-radius:8px;}
+.hermes-project-prompt legend label {display:flex;grid-template-columns:auto 1fr;align-items:center;gap:7px;}
+.hermes-project-prompt legend input {width:auto;}
+.suggestion-list {display:grid;gap:10px;}
 @media(max-width:480px) {
  .project-form-actions {gap:10px;}
  .project-form-actions button {flex:1 1 120px;}
@@ -385,7 +398,10 @@ nav { display: grid; gap: 5px; }
  .generated-task-row {grid-template-columns:minmax(0,1fr);gap:3px;}
  .generated-task-row > small {padding:0;white-space:normal;}
  .project-info > section,.project-info > p {padding-inline:14px;}
- .project-card-footer {padding:11px 14px;}
+  .project-card-footer {padding:11px 14px;}
+  .project-task-form,.hermes-project-prompt {padding:14px;}
+  .custom-project-task {grid-template-columns:minmax(0,1fr);}
+  .project-task-meta {justify-items:start;}
 }
 
 .preparation-panel { margin:16px 0; padding:16px; min-width:0; }
