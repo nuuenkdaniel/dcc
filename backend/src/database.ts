@@ -24,3 +24,18 @@ export function sessionStore(pool:Pool):SessionStore {
   async remove(id) { await pool.query('DELETE FROM app_sessions WHERE token_hash=$1',[id]) },
  }
 }
+
+const cleanupIntervalMs=24*60*60*1000,cleanupRetryMs=5*60*1000
+export function createExpiredSessionCleanup(now:()=>Date=()=>new Date()) {
+ let nextRun=0
+ return async (pool:Pool) => {
+  const current=now().getTime()
+  if(!Number.isFinite(current))throw Error('Invalid cleanup clock')
+  if(current<nextRun)return 'waiting' as const
+  try {
+   await pool.query('DELETE FROM app_sessions WHERE expires_at<$1',[new Date(current)])
+   nextRun=current+cleanupIntervalMs
+   return 'cleaned' as const
+  } catch(error) {nextRun=current+cleanupRetryMs;throw error}
+ }
+}

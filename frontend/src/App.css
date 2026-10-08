@@ -310,6 +310,15 @@ nav { display: grid; gap: 5px; }
 .curated-source { padding:0 12px 10px; margin:0; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
 .planner-details { color:var(--muted); font-size:12px; margin-top:12px; }
 .planner-details summary { cursor:pointer; }
+.rescheduling-details { min-width:0; margin-top:16px; border:1px solid var(--border); border-radius:8px; background:var(--sidebar); color:var(--muted); font-size:12px; }
+.rescheduling-details > summary { min-height:44px; box-sizing:border-box; padding:13px 12px; cursor:pointer; color:var(--text); font-weight:600; overflow-wrap:anywhere; }
+.rescheduling-details > summary::marker { color:var(--accent); }
+.rescheduling-count { float:right; margin-left:12px; color:var(--accent); font-size:11px; font-weight:600; white-space:nowrap; }
+.rescheduling-content { min-width:0; padding:0 12px 12px; border-top:1px solid var(--border); }
+.rescheduling-content > p { margin:10px 0; line-height:1.5; }
+.rescheduling-list { display:grid; min-width:0; gap:8px; }
+.rescheduling-empty { color:var(--subtle); }
+.rescheduling-details summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 @media(max-width:600px) { .project-fields { grid-template-columns:1fr; } .project-editor { padding:16px; } .projects-view .topbar { flex-wrap:wrap; } .project-card { align-items:flex-start; } }
 
 /* Projects: keep long generated plans compact and their controls predictable. */

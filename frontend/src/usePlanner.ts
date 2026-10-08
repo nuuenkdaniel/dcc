@@ -65,8 +65,12 @@ export type Planner=ReturnType<typeof usePlanner>
 export function studyCardCount(actions:Action[]){return actions.filter(a=>!a.preparationId&&!a.assignmentStep).length+new Set(actions.filter(a=>a.preparationId||a.assignmentStep).map(a=>a.preparationId??a.projectId)).size}
 
 export function visiblePlanGroups(p:Planner,date:string,filter:string,search:string){
+ return visibleActionGroups(p,p.actions.filter(a=>a.date===date&&!a.dismissed),filter,search)
+}
+
+export function visibleActionGroups(p:Planner,actions:Action[],filter:string,search:string){
  const groups=new Map<string,Action[]>()
- for(const a of p.actions.filter(a=>a.date===date&&!a.dismissed)){const key=a.preparationId??(a.assignmentStep?a.projectId:a.id);groups.set(key,[...(groups.get(key)??[]),a])}
+ for(const a of actions){const key=a.preparationId??(a.assignmentStep?a.projectId:a.id);groups.set(key,[...(groups.get(key)??[]),a])}
  return [...groups.values()].filter(group=>{
  const done=group.every(a=>a.completed),important=group.some(a=>a.important)
  const title=group[0].preparationId?'Study for '+(p.preparations.find(x=>x.id===group[0].preparationId)?.title??'Exam'):group[0].assignmentStep?'Work on '+(p.projects.find(x=>x.id===group[0].projectId)?.title??'Assignment'):group[0].title

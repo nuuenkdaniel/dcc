@@ -3,8 +3,10 @@ import type {Planner,Exam} from './usePlanner'
 import {useEffect,useState,useCallback,useRef} from 'react'
 import {CalendarEditor,PendingChanges,type EditableEvent} from './CalendarEditor'
 import {protectedFetch} from './auth'
+import {reconcile,type Pending,isSending} from './calendarOutbox'
+import {projectCalendarChanges,type CalendarEvent} from './calendarProjection'
 type Calendar={id:string;name:string}
-type Event=Exam&{etag?:string;id:string;calendarId:string;title:string;start:string;end:string;allDay:boolean;description:string;location:string}
+type Event=Exam&CalendarEvent
 type Snapshot={calendars:Calendar[];events:Event[];lastSuccess:string|null;error?:string;coverageStart?:string;coverageEnd?:string}
 const empty:Snapshot={calendars:[],events:[],lastSuccess:null}
 function database():Promise<IDBDatabase>{return new Promise((resolve,reject)=>{const r=indexedDB.open('daymark-calendar',1);r.onupgradeneeded=()=>r.result.createObjectStore('cache');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})}
@@ -13,9 +15,11 @@ export function Schedule({date,planner}:{date:string;planner:Planner}){
  const [preparing,setPreparing]=useState<Event|null>(null)
  const [syncing,setSyncing]=useState(false)
  const generation=useRef(0)
+ const lastForcedRefresh=useRef(0)
  const [snapshot,setSnapshot]=useState(empty)
  const [editing,setEditing]=useState<EditableEvent|null|undefined>(undefined)
  const [revision,setRevision]=useState(0)
+ const [pendingItems,setPendingItems]=useState<Pending[]>([])
  const [status,setStatus]=useState('Loading schedule…')
  const [session,setSession]=useState<boolean|null>(null)
  const [hidden,setHidden]=useState<string[]>(()=>{try{const v=JSON.parse(localStorage.getItem('daymark.hidden-calendars')??'[]');return Array.isArray(v)?v.filter(x=>typeof x==='string'):[]}catch{return []}})
@@ -30,21 +34,24 @@ export function Schedule({date,planner}:{date:string;planner:Planner}){
     const r=await protectedFetch('/api/v1/calendar/snapshot',{signal:AbortSignal.timeout(15000)});if(!r.ok)throw Error()
    const data:Snapshot=await r.json();if(!Array.isArray(data.calendars)||!Array.isArray(data.events))throw Error()
    if(current!==generation.current)return
-   setSnapshot(data);setStatus(syncNotice||data.error||(data.lastSuccess?'Synced':'Waiting for first sync'))
+     const remaining=await reconcile(data);if(current!==generation.current)return
+    setPendingItems(remaining);setSnapshot(data);setStatus(syncNotice||data.error||(data.lastSuccess?'Synced':'Waiting for first sync'))
    await cache(data).catch(()=>setStatus('Synced, but browser caching is unavailable'))
   }catch{setStatus('Backend unavailable · showing cached schedule')}
  },[])
- useEffect(()=>{let active=true;void cache().then(value=>{if(value&&active)setSnapshot(value)}).catch(()=>{}).finally(()=>{if(active)void refresh(true)});const timer=window.setInterval(()=>{if(document.visibilityState==='visible')void refresh()},60000);const online=()=>void refresh();window.addEventListener('online',online);return()=>{active=false;clearInterval(timer);window.removeEventListener('online',online)}},[refresh])
- const readSnapshot=useCallback(()=>{void refresh()},[refresh])
+ const forceRefresh=useCallback((freshWrite=false)=>{if(!freshWrite&&Date.now()-lastForcedRefresh.current<2000)return false;lastForcedRefresh.current=Date.now();void refresh(true);return true},[refresh])
+ useEffect(()=>{let active=true;void cache().then(value=>{if(value&&active)setSnapshot(value)}).catch(()=>{}).finally(()=>{if(active)forceRefresh()});const timer=window.setInterval(()=>{if(document.visibilityState==='visible')void refresh()},60000);const online=()=>void refresh();window.addEventListener('online',online);return()=>{active=false;clearInterval(timer);window.removeEventListener('online',online)}},[refresh,forceRefresh])
  const dayStart=new Date(`${date}T00:00:00`),dayEnd=new Date(dayStart);dayEnd.setDate(dayEnd.getDate()+1)
- const events=snapshot.events.filter(e=>!hidden.includes(e.calendarId)&&(e.allDay?e.start<=date&&e.end>date:new Date(e.start)<dayEnd&&(new Date(e.end)>dayStart||e.start===e.end&&new Date(e.start)>=dayStart))).sort((a,b)=>Number(b.allDay)-Number(a.allDay)||a.start.localeCompare(b.start))
+  const projected=projectCalendarChanges(snapshot.events,pendingItems) as Event[]
+  const events=projected.filter(e=>!hidden.includes(e.calendarId)&&(e.allDay?e.start<=date&&e.end>date:new Date(e.start)<dayEnd&&(new Date(e.end)>dayStart||e.start===e.end&&new Date(e.start)>=dayStart))).sort((a,b)=>Number(b.allDay)-Number(a.allDay)||a.start.localeCompare(b.start))
+   const outboxStatus=pendingItems.some(item=>item.error)?'Calendar sync error':pendingItems.some(item=>isSending(item.change.id))?'Syncing':pendingItems.some(item=>item.awaitingConfirmation)?'Awaiting calendar confirmation':pendingItems.length?'Pending sync':''
  const covered=!snapshot.coverageStart||!snapshot.coverageEnd||dayStart>=new Date(snapshot.coverageStart)&&dayEnd<=new Date(snapshot.coverageEnd)
-   return <section className="schedule-panel" aria-labelledby="schedule-heading"><div className="section-heading"><h2 id="schedule-heading">Schedule</h2><div className="schedule-actions">{session&&<button disabled={syncing} onClick={()=>void refresh(true)}>{syncing?'Syncing…':'Sync calendar'}</button>}{snapshot.calendars.length>0&&<button onClick={()=>setEditing(null)}>New event</button>}</div></div>
- {editing!==undefined&&<CalendarEditor date={date} calendars={snapshot.calendars} {...(editing?{event:editing}:{})} onClose={()=>setEditing(undefined)} onSaved={()=>setRevision(v=>v+1)}/>}
+   return <section className="schedule-panel" aria-labelledby="schedule-heading"><div className="section-heading"><h2 id="schedule-heading">Schedule</h2><div className="schedule-actions">{session&&<button disabled={syncing} onClick={()=>forceRefresh(true)}>{syncing?'Syncing…':'Sync calendar'}</button>}{snapshot.calendars.length>0&&<button onClick={()=>setEditing(null)}>New event</button>}</div></div>
+  {editing!==undefined&&<CalendarEditor date={date} calendars={snapshot.calendars} {...(editing?{event:editing}:{})} onClose={()=>setEditing(undefined)} onSaved={item=>{setPendingItems(items=>items.some(existing=>existing.change.id===item.change.id)?items:[...items,item]);setRevision(v=>v+1)}}/>}
  {preparing&&<PreparationPanel event={preparing} planner={planner} onClose={()=>setPreparing(null)}/>}
- <PendingChanges revision={revision} onSent={readSnapshot}/>
- <p className="local-note" role="status">{status}{snapshot.lastSuccess?` · ${new Date(snapshot.lastSuccess).toLocaleString()}`:''}</p>
+   <PendingChanges revision={revision} onRefresh={forceRefresh} onChange={setPendingItems}/>
+  <p className="local-note" role="status">{outboxStatus||status}{snapshot.lastSuccess?` · ${new Date(snapshot.lastSuccess).toLocaleString()}`:''}</p>
  {snapshot.calendars.length>0&&<details><summary>Calendars</summary><div className="calendar-options">{snapshot.calendars.map(c=><label key={c.id}><input type="checkbox" checked={!hidden.includes(c.id)} onChange={e=>{const next=e.target.checked?hidden.filter(id=>id!==c.id):[...hidden,c.id];setHidden(next);try{localStorage.setItem('daymark.hidden-calendars',JSON.stringify(next))}catch{setStatus('Calendar visibility could not be saved')}}}/>{c.name}</label>)}</div></details>}
- {!covered?<p className="local-note">This date is outside the cached calendar range.</p>:events.length===0?<p className="local-note">{snapshot.lastSuccess?'No visible events for this day.':'Your events will appear after the first sync.'}</p>:events.map(e=><details className="schedule-event" key={e.id}><summary><span>{e.allDay?'All day':`${new Date(e.start).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})} – ${new Date(e.end).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}${new Date(e.start).toDateString()!==new Date(e.end).toDateString()?` (${new Date(e.end).toLocaleDateString([],{month:'short',day:'numeric'})})`:''}`}</span><strong>{e.title||'Untitled event'}</strong></summary><p>{snapshot.calendars.find(c=>c.id===e.calendarId)?.name}</p>{!e.allDay&&<p>Ends {new Date(e.end).toLocaleString()}</p>}{e.location&&<p>{e.location}</p>}{e.description&&<p className="event-description">{e.description}</p>}<button onClick={()=>setEditing(e)}>Edit event</button> <button onClick={()=>setPreparing(e)}>Prepare for this event</button></details>)}
+  {!covered?<p className="local-note">This date is outside the cached calendar range.</p>:events.length===0?<p className="local-note">{snapshot.lastSuccess?'No visible events for this day.':'Your events will appear after the first sync.'}</p>:events.map(e=><details className="schedule-event" key={e.id}><summary><span>{e.allDay?'All day':`${new Date(e.start).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})} – ${new Date(e.end).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}${new Date(e.start).toDateString()!==new Date(e.end).toDateString()?` (${new Date(e.end).toLocaleDateString([],{month:'short',day:'numeric'})})`:''}`}</span><strong>{e.title||'Untitled event'}</strong></summary><p>{snapshot.calendars.find(c=>c.id===e.calendarId)?.name}</p>{e.pendingMutationId&&<p className="local-note">{e.pendingError??(isSending(e.pendingMutationId)?'Syncing':pendingItems.find(item=>item.change.id===e.pendingMutationId)?.awaitingConfirmation?'Saved remotely · awaiting calendar confirmation':'Pending sync')}</p>}{!e.allDay&&<p>Ends {new Date(e.end).toLocaleString()}</p>}{e.location&&<p>{e.location}</p>}{e.description&&<p className="event-description">{e.description}</p>}<button disabled={!!e.pendingMutationId} onClick={()=>setEditing(e)}>Edit event</button> <button disabled={!!e.pendingMutationId} onClick={()=>setPreparing(e)}>Prepare for this event</button></details>)}
  </section>
 }

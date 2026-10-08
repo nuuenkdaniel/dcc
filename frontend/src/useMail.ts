@@ -1,75 +1,77 @@
 import {useCallback,useEffect,useRef,useState} from 'react'
 import {AUTH_REQUIRED_EVENT,protectedFetch} from './auth'
-export type MailMessage={data:{id:string;account:string;address:string;subject:string;sender:string;to:string;receivedAt:string;body:string;bodyNotice:string;unread:boolean;hasHtml?:boolean;attachments:{part:string;name:string;size:number}[]};analysis?:{important:boolean;summary:string;reason:string}|null;override:boolean|null}
-type Snapshot={messages:MailMessage[];accounts:{account:string;last_success:string|null;error:string|null}[];today:string}
-const blank:Snapshot={messages:[],accounts:[],today:''}
-function validated(value:unknown):Snapshot{if(!value||typeof value!=='object'||!Array.isArray((value as Snapshot).messages)||!Array.isArray((value as Snapshot).accounts)||typeof (value as Snapshot).today!=='string')throw Error('Invalid email snapshot');return value as Snapshot}
-async function storage(value?:Snapshot){return new Promise<Snapshot|undefined>((resolve,reject)=>{const r=indexedDB.open('daymark-mail',1);r.onupgradeneeded=()=>r.result.createObjectStore('cache');r.onerror=()=>reject(r.error);r.onsuccess=()=>{const db=r.result,tx=db.transaction('cache',value===undefined?'readonly':'readwrite'),op=value===undefined?tx.objectStore('cache').get('snapshot'):tx.objectStore('cache').put(value,'snapshot');tx.oncomplete=()=>{resolve(value??op.result);db.close()};tx.onerror=()=>{reject(tx.error);db.close()};tx.onabort=()=>{reject(tx.error);db.close()}}})}
+import {DEFAULT_MAIL_PAGE_KEY,LEGACY_MAIL_PAGE_KEY,migrateLegacyMail,patchMailOverride,readMailBody,readMailPage,writeMailBody,writeMailPage,type StoredMailPage} from './mailStorage'
+
+export type MailMessage={data:{id:string;account:string;address:string;subject:string;sender:string;to:string;receivedAt:string;body?:string;bodyNotice:string;unread:boolean;hasHtml?:boolean;attachments:{part:string;name:string;size:number}[]};analysis?:{important:boolean;summary:string;reason:string}|null;override:boolean|null}
+export type MailSnapshot={messages:MailMessage[];accounts:{account:string;last_success:string|null;error:string|null}[];today:string;briefing:MailMessage[]}
+export type MailFilters={account:string;search:string;important:boolean}
+export type MailBodyState={status:'idle'|'loading'|'ready'|'error';error?:string}
+type PagePayload={messages:MailMessage[];accounts?:MailSnapshot['accounts'];today?:string;briefing?:MailMessage[];nextCursor:string|null;total:number}
+const blank:MailSnapshot={messages:[],accounts:[],today:'',briefing:[]},defaultFilters:MailFilters={account:'all',search:'',important:false}
+const METADATA_TIMEOUT_MS=15_000,BODY_TIMEOUT_MS=15_000
+const BODY_MEMORY_MAX_ENTRIES=50,BODY_MEMORY_MAX_BYTES=5*1024*1024
 const timedSignal=(controller:AbortController,milliseconds:number)=>AbortSignal.any([controller.signal,AbortSignal.timeout(milliseconds)])
+const filterKey=({account,search,important}:MailFilters)=>`account=${account}&q=${search.trim()}&important=${important}`
+const dedupe=(messages:MailMessage[])=>{const seen=new Set<string>();return messages.filter(message=>!seen.has(message.data.id)&&Boolean(seen.add(message.data.id)))}
+function validMessages(value:unknown):value is MailMessage[]{return Array.isArray(value)&&value.every(message=>Boolean(message&&typeof message==='object'&&typeof (message as MailMessage).data?.id==='string'))}
+function validatePage(value:unknown):PagePayload{const page=value as Partial<PagePayload>;if(!value||typeof value!=='object'||!validMessages(page.messages)||!(page.nextCursor===null||typeof page.nextCursor==='string')||!Number.isFinite(page.total))throw Error('Invalid email page');if(page.accounts!==undefined&&!Array.isArray(page.accounts))throw Error('Invalid email accounts');if(page.briefing!==undefined&&!validMessages(page.briefing))throw Error('Invalid email briefing');return page as PagePayload}
+function pageUrl(filters:MailFilters,cursor?:string){const query=new URLSearchParams();if(filters.account!=='all')query.set('account',filters.account);if(filters.search.trim())query.set('q',filters.search.trim());if(filters.important)query.set('important','true');if(cursor)query.set('cursor',cursor);const suffix=query.toString();return '/api/v1/mail/page'+(suffix?'?'+suffix:'')}
+function localFilter(messages:MailMessage[],filters:MailFilters){const search=filters.search.trim().toLowerCase();return messages.filter(message=>(filters.account==='all'||message.data.account===filters.account)&&(!filters.important||isImportant(message))&&(!search||`${message.data.subject} ${message.data.sender}`.toLowerCase().includes(search)))}
+function withLegacyOverflow(stored:StoredMailPage,archive:StoredMailPage|undefined,currentFilters:MailFilters){if(!archive)return stored;const visibleIds=new Set(stored.messages.map(item=>item.data.id)),extra=dedupe([...(stored.overflow??[]),...localFilter([...archive.messages,...(archive.overflow??[])],currentFilters)]).filter(item=>!visibleIds.has(item.data.id));return {...stored,overflow:extra,total:Math.max(stored.total,stored.messages.length+extra.length)}}
+const pageSignature=(value:StoredMailPage)=>JSON.stringify({messages:value.messages,overflow:value.overflow??[],accounts:value.accounts,today:value.today,briefing:value.briefing,nextCursor:value.nextCursor,total:value.total})
 
 export function useMail(enabled=true){
- const [snapshot,setSnapshot]=useState<Snapshot>(blank),[message,setMessage]=useState('Loading email…'),[busy,setBusy]=useState(false)
- const working=useRef(false),activeKind=useRef<'automatic'|'manual'|null>(null),manualQueued=useRef(false),mounted=useRef(false),generation=useRef(0),lifecycle=useRef(0),automaticController=useRef<AbortController|null>(null),manualController=useRef<AbortController|null>(null),mutations=useRef(new Set<AbortController>())
- const refreshRef=useRef<(manual?:boolean)=>Promise<void>>(async()=>{})
- const restore=useRef<Promise<void>|null>(null),lastPersisted=useRef<string|null>(null),networkApplied=useRef(false)
- const ensureCache=useCallback(()=>{
-  if(!restore.current)restore.current=storage().then(value=>{if(!value)return;const data=validated(value),serialized=JSON.stringify(data);if(!networkApplied.current){lastPersisted.current=serialized;if(mounted.current)setSnapshot(data)}}).catch(()=>{if(mounted.current&&!networkApplied.current)setMessage('Device email cache unavailable. Open Inbox to refresh.')})
-  return restore.current
- },[])
- const refresh=useCallback(async(manual=false):Promise<void>=>{
-  if(working.current){if(manual){manualQueued.current=true;setBusy(true)}return}
-  working.current=true;activeKind.current=manual?'manual':'automatic';if(manual)setBusy(true)
-  const id=++generation.current,current=new AbortController()
-  if(manual)manualController.current=current;else automaticController.current=current
-  const active=()=>mounted.current&&generation.current===id&&!current.signal.aborted
+ const [snapshot,setSnapshot]=useState<MailSnapshot>(blank),[message,setMessage]=useState('Loading email…'),[busy,setBusy]=useState(false),[loadingMore,setLoadingMore]=useState(false),[total,setTotal]=useState(0),[nextCursor,setNextCursor]=useState<string|null>(null),[bodyStates,setBodyStates]=useState<Record<string,MailBodyState>>({}),[cachedOlderMessages,setCachedOlderMessages]=useState<MailMessage[]>([])
+ const mounted=useRef(false),lifecycle=useRef(0),generation=useRef(0),filters=useRef(defaultFilters),snapshotRef=useRef(snapshot),cursorRef=useRef<string|null>(null),overflow=useRef<MailMessage[]>([]),activeKind=useRef<'automatic'|'manual'|null>(null)
+ const controllers=useRef(new Set<AbortController>()),automaticControllers=useRef(new Set<AbortController>()),metadataRequests=useRef(new Map<string,{promise:Promise<PagePayload>;controller:AbortController;manual:boolean}>()),bodyRequests=useRef(new Map<string,Promise<string>>()),initialization=useRef<Promise<void>|null>(null),lastPersisted=useRef(new Map<string,string>()),bodyMemory=useRef(new Map<string,{body:string;bytes:number}>()),bodyMemoryBytes=useRef(0),mutationVersion=useRef(0),feedbackVersions=useRef(new Map<string,number>()),overrideMutations=useRef(new Map<string,{version:number;value:boolean|null}>())
+ useEffect(()=>{snapshotRef.current=snapshot},[snapshot])
+ const active=(id:number)=>mounted.current&&generation.current===id
+ const rememberBody=useCallback((id:string,body:string)=>{const bytes=new TextEncoder().encode(body).byteLength,entries=bodyMemory.current,previous=entries.get(id);if(previous){bodyMemoryBytes.current-=previous.bytes;entries.delete(id)}if(bytes>BODY_MEMORY_MAX_BYTES)return;entries.set(id,{body,bytes});bodyMemoryBytes.current+=bytes;while(entries.size>BODY_MEMORY_MAX_ENTRIES||bodyMemoryBytes.current>BODY_MEMORY_MAX_BYTES){const oldest=entries.entries().next().value as [string,{body:string;bytes:number}]|undefined;if(!oldest)break;entries.delete(oldest[0]);bodyMemoryBytes.current-=oldest[1].bytes}},[])
+ const prepareMessages=useCallback((messages:MailMessage[])=>messages.map(message=>{const override=overrideMutations.current.get(message.data.id),memory=bodyMemory.current.get(message.data.id);return override||memory?{...message,override:override?override.value:message.override,data:memory?{...message.data,body:memory.body}:message.data}:message}),[])
+ const applyStored=useCallback((stored:StoredMailPage)=>{const next={messages:prepareMessages(dedupe(stored.messages)),accounts:stored.accounts,today:stored.today,briefing:prepareMessages(stored.briefing??[])};snapshotRef.current=next;setSnapshot(next);overflow.current=prepareMessages(stored.overflow??[]);cursorRef.current=stored.nextCursor;setNextCursor(stored.nextCursor);setTotal(stored.total)},[prepareMessages])
+ const initialize=useCallback(()=>{if(!initialization.current)initialization.current=migrateLegacyMail().then(async()=>{const [stored,archive]=await Promise.all([readMailPage(DEFAULT_MAIL_PAGE_KEY),readMailPage(LEGACY_MAIL_PAGE_KEY)]);if(stored){lastPersisted.current.set(DEFAULT_MAIL_PAGE_KEY,pageSignature(stored));if(mounted.current&&generation.current===0)applyStored(withLegacyOverflow(stored,archive,defaultFilters))}}).catch(()=>{if(mounted.current)setMessage('Device email cache unavailable. Open Inbox to refresh.')});return initialization.current},[applyStored])
+ const requestPage=useCallback((currentFilters:MailFilters,cursor?:string,manual=false)=>{const url=pageUrl(currentFilters,cursor),existing=metadataRequests.current.get(url);if(existing){if(manual&&!existing.manual){existing.manual=true;automaticControllers.current.delete(existing.controller)}return existing.promise}const controller=new AbortController();controllers.current.add(controller);if(!manual)automaticControllers.current.add(controller);const entry={controller,manual,promise:Promise.resolve(null as unknown as PagePayload)};const request=protectedFetch(url,{signal:timedSignal(controller,METADATA_TIMEOUT_MS)}).then(async response=>{if(response.status===401)throw Object.assign(Error('auth'),{status:401});if(!response.ok)throw Error('page');return validatePage(await response.json())}).finally(()=>{controllers.current.delete(controller);automaticControllers.current.delete(controller);if(metadataRequests.current.get(url)===entry)metadataRequests.current.delete(url)});entry.promise=request;metadataRequests.current.set(url,entry);return request},[])
+ const cacheFallback=useCallback(async(currentFilters:MailFilters,id:number)=>{const key=filterKey(currentFilters),[exact,archive]=await Promise.all([readMailPage(key),readMailPage(LEGACY_MAIL_PAGE_KEY)]),preparedArchive=archive?{...archive,messages:prepareMessages(archive.messages),overflow:prepareMessages(archive.overflow??[]),briefing:prepareMessages(archive.briefing)}:undefined;let stored=exact;if(exact)lastPersisted.current.set(key,pageSignature(exact));if(!stored){const base=await readMailPage(DEFAULT_MAIL_PAGE_KEY);if(base){const matching=localFilter(prepareMessages([...base.messages,...(base.overflow??[]),...(preparedArchive?[...preparedArchive.messages,...(preparedArchive.overflow??[])]:[])]),currentFilters),unique=dedupe(matching);stored={...base,messages:unique.slice(0,100),overflow:unique.slice(100),nextCursor:null,total:unique.length}}}else stored=withLegacyOverflow(stored,preparedArchive,currentFilters);if(stored&&active(id))applyStored(stored)},[applyStored,prepareMessages])
+ const persistPage=useCallback(async(key:string,value:StoredMailPage)=>{const serialized=pageSignature(value);if(lastPersisted.current.get(key)===serialized)return;await writeMailPage(key,value);lastPersisted.current.set(key,serialized)},[])
+ const loadFirst=useCallback(async(currentFilters:MailFilters,manual=false)=>{
+  const id=++generation.current;filters.current=currentFilters;activeKind.current=manual?'manual':'automatic';if(manual){const existing=metadataRequests.current.get(pageUrl(currentFilters));if(existing&&!existing.manual){existing.manual=true;automaticControllers.current.delete(existing.controller)}}setBusy(manual);setLoadingMore(false);overflow.current=[];setCachedOlderMessages([])
   try{
-   const cacheReady=ensureCache()
-   if(manual){const request=await protectedFetch('/api/v1/mail/refresh',{method:'POST',signal:timedSignal(current,10_000)});if(!request.ok)throw Error()}
-   const request=protectedFetch('/api/v1/mail/snapshot',{signal:timedSignal(current,15_000)})
-   const [,response]=await Promise.all([cacheReady,request])
-   if(!active())return
-   if(response.status===401){setMessage('Sign in to sync email. Cached messages remain on this device.');return}
-   if(!response.ok)throw Error()
-   const data=validated(await response.json());if(!active())return
-   const serialized=JSON.stringify(data);networkApplied.current=true;setSnapshot(previous=>JSON.stringify(previous)===serialized?previous:data)
-   let durable=true
-   if(serialized!==lastPersisted.current){try{await storage(data);if(!active())return;lastPersisted.current=serialized}catch{durable=false}}
-   if(!active())return
-   if(!durable)setMessage('Email refreshed, but the device cache could not be saved. Keep this tab open to retain the latest view.')
-   else if(manual)setMessage('Mailbox sync requested. New messages appear as the worker finishes.')
-   else setMessage(data.accounts.some(account=>account.error)?'Some accounts could not sync; the last durable cache remains available.':'Email cache up to date. Mailboxes checked every 15 minutes.')
-  }catch{if(active())setMessage('Offline or email backend unavailable — showing cached messages.')}
-  finally{if(generation.current===id){working.current=false;activeKind.current=null;if(manual){if(manualController.current===current)manualController.current=null}else if(automaticController.current===current)automaticController.current=null;const queued=manualQueued.current&&mounted.current;manualQueued.current=false;if(mounted.current)setBusy(false);if(queued)queueMicrotask(()=>void refreshRef.current(true))}}
- },[ensureCache])
- useEffect(()=>{refreshRef.current=refresh},[refresh])
- const cancelAutomatic=useCallback(()=>{
-  if(activeKind.current!=='automatic')return
-  generation.current++;automaticController.current?.abort();automaticController.current=null;activeKind.current=null;working.current=false
-  const queued=manualQueued.current&&mounted.current;manualQueued.current=false
-  if(queued)queueMicrotask(()=>void refreshRef.current(true))
- },[])
- useEffect(()=>{
-  mounted.current=true;void ensureCache()
-  const cancel=()=>{generation.current++;lifecycle.current++;automaticController.current?.abort();manualController.current?.abort();automaticController.current=null;manualController.current=null;activeKind.current=null;for(const request of mutations.current)request.abort();mutations.current.clear();working.current=false;manualQueued.current=false;if(mounted.current)setBusy(false)}
-  window.addEventListener(AUTH_REQUIRED_EVENT,cancel)
-  return()=>{mounted.current=false;cancel();window.removeEventListener(AUTH_REQUIRED_EVENT,cancel)}
- },[ensureCache])
- useEffect(()=>{
-  if(!enabled)return
-  const run=()=>{if(document.visibilityState==='visible')void refresh();else cancelAutomatic()}
-  run();const timer=window.setInterval(run,30_000)
-  window.addEventListener('online',run);document.addEventListener('visibilitychange',run)
-  return()=>{window.clearInterval(timer);window.removeEventListener('online',run);document.removeEventListener('visibilitychange',run);cancelAutomatic()}
- },[enabled,refresh,cancelAutomatic])
- const feedback=async(id:string,important:boolean|null)=>{
-  const started=lifecycle.current,current=new AbortController();mutations.current.add(current)
-  try{const response=await protectedFetch('/api/v1/mail/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,important}),signal:timedSignal(current,10_000)});if(!response.ok)throw Error();if(!mounted.current||lifecycle.current!==started||current.signal.aborted)return;await refresh();if(mounted.current&&lifecycle.current===started&&!current.signal.aborted)setMessage('Importance preference saved. It takes priority over AI classification.')}
-  catch{if(mounted.current&&lifecycle.current===started&&!current.signal.aborted)setMessage('Could not save feedback. Reconnect and try again.')}
-  finally{mutations.current.delete(current)}
- }
- return {snapshot,message,busy,refresh,feedback}
+   await initialize();if(!active(id))return false
+   try{await cacheFallback(currentFilters,id)}catch{if(active(id))setMessage('Device email cache unavailable. Loading from the mail service…')}if(!active(id))return false
+   if(manual){const controller=new AbortController();controllers.current.add(controller);try{const response=await protectedFetch('/api/v1/mail/refresh',{method:'POST',signal:timedSignal(controller,10_000)});if(!response.ok)throw Error('refresh')}finally{controllers.current.delete(controller)}}
+   const page=await requestPage(currentFilters,undefined,manual);if(!active(id))return false
+   const messages=prepareMessages(dedupe(page.messages).slice(0,100)),next:MailSnapshot={messages,accounts:page.accounts??snapshotRef.current.accounts,today:page.today??snapshotRef.current.today,briefing:prepareMessages(page.briefing??snapshotRef.current.briefing)}
+   snapshotRef.current=next;setSnapshot(next);cursorRef.current=page.nextCursor;setNextCursor(page.nextCursor);setTotal(page.total)
+   try{const archive=await readMailPage(LEGACY_MAIL_PAGE_KEY);if(active(id)&&archive){const currentIds=new Set(messages.map(item=>item.data.id)),older=localFilter(prepareMessages(dedupe([...archive.messages,...(archive.overflow??[])])),currentFilters).filter(item=>!currentIds.has(item.data.id));setCachedOlderMessages(older)}}catch{/* Current server results remain usable without the archive. */}
+   let durable=true;try{await persistPage(filterKey(currentFilters),{...next,nextCursor:page.nextCursor,total:page.total})}catch{durable=false}if(!active(id))return false
+   setMessage(!durable?'Email loaded, but the device cache could not be saved.':next.accounts.some(account=>account.error)?'Some accounts could not sync; saved messages remain available.':manual?'Mailbox sync requested. New messages appear as the worker finishes.':'Email cache up to date. Mailboxes checked every 15 minutes.')
+   return true
+  }catch(error){if(active(id)){if((error as {status?:number}).status===401)setMessage('Sign in to sync email. Cached messages remain on this device.');else setMessage(currentFilters.search.trim()?'Offline — search is limited to messages saved on this device.':'Offline or email backend unavailable — showing saved messages.')}return false}finally{if(active(id)){activeKind.current=null;setBusy(false)}}
+ },[cacheFallback,initialize,persistPage,prepareMessages,requestPage])
+ const setFilters=useCallback(async(next:MailFilters)=>{const normalized={account:next.account,search:next.search.trim(),important:next.important};if(filterKey(normalized)===filterKey(filters.current)&&snapshotRef.current.messages.length)return;await loadFirst(normalized)},[loadFirst])
+ const refresh=useCallback(async(manual=false)=>loadFirst(filters.current,manual),[loadFirst])
+ const loadMore=useCallback(async()=>{
+  if(loadingMore)return
+  if(overflow.current.length){const additions=overflow.current.splice(0,100),messages=dedupe([...snapshotRef.current.messages,...additions]),next={...snapshotRef.current,messages};snapshotRef.current=next;setSnapshot(next);return}
+  const cursor=cursorRef.current;if(!cursor)return;const id=generation.current,currentFilters=filters.current;setLoadingMore(true)
+  try{const page=await requestPage(currentFilters,cursor);if(!active(id)||filterKey(currentFilters)!==filterKey(filters.current)||cursor!==cursorRef.current)return;const messages=prepareMessages(dedupe([...snapshotRef.current.messages,...page.messages])),next={...snapshotRef.current,messages,accounts:page.accounts??snapshotRef.current.accounts,today:page.today??snapshotRef.current.today,briefing:prepareMessages(page.briefing??snapshotRef.current.briefing)};snapshotRef.current=next;setSnapshot(next);setCachedOlderMessages(older=>older.filter(item=>!messages.some(current=>current.data.id===item.data.id)));cursorRef.current=page.nextCursor;setNextCursor(page.nextCursor);setTotal(page.total);try{await persistPage(filterKey(currentFilters),{...next,nextCursor:page.nextCursor,total:page.total})}catch{if(active(id))setMessage('More messages loaded, but the device cache could not be saved.')}}catch{if(active(id))setMessage('Could not load more messages. Check your connection and retry.')}finally{if(active(id))setLoadingMore(false)}
+ },[loadingMore,persistPage,prepareMessages,requestPage])
+ const loadBody=useCallback(async(id:string,retry=false)=>{
+  const ready=snapshotRef.current.messages.find(item=>item.data.id===id)?.data.body??cachedOlderMessages.find(item=>item.data.id===id)?.data.body;if(typeof ready==='string'&&!retry){rememberBody(id,ready);return ready}const memory=bodyMemory.current.get(id)?.body;if(memory!==undefined&&!retry)return memory
+  const existing=bodyRequests.current.get(id);if(existing)return existing
+  setBodyStates(states=>({...states,[id]:{status:'loading'}}))
+  const request=(async()=>{if(!retry){try{const cached=await readMailBody(id);if(cached!==undefined)return cached}catch{/* Continue online when device storage is unavailable. */}}const controller=new AbortController();controllers.current.add(controller);try{const response=await protectedFetch(`/api/v1/mail/message/${encodeURIComponent(id)}`,{signal:timedSignal(controller,BODY_TIMEOUT_MS)});if(!response.ok)throw Error('body');const value:unknown=await response.json();if(!value||typeof value!=='object'||typeof (value as {body?:unknown}).body!=='string')throw Error('body');const body=(value as {body:string}).body;try{await writeMailBody(id,body)}catch{/* The open message remains usable without durable storage. */}return body}finally{controllers.current.delete(controller)}})().then(body=>{rememberBody(id,body);if(mounted.current){const messages=snapshotRef.current.messages.map(item=>item.data.id===id?{...item,data:{...item.data,body}}:item),briefing=snapshotRef.current.briefing.map(item=>item.data.id===id?{...item,data:{...item.data,body}}:item),next={...snapshotRef.current,messages,briefing};snapshotRef.current=next;setSnapshot(next);setCachedOlderMessages(older=>older.map(item=>item.data.id===id?{...item,data:{...item.data,body}}:item));setBodyStates(states=>({...states,[id]:{status:'ready'}}))}return body}).catch(error=>{if(mounted.current)setBodyStates(states=>({...states,[id]:{status:'error',error:'Message body unavailable. Retry when connected.'}}));throw error}).finally(()=>{if(bodyRequests.current.get(id)===request)bodyRequests.current.delete(id)})
+  bodyRequests.current.set(id,request);return request
+ },[cachedOlderMessages,rememberBody])
+ const feedback=useCallback(async(id:string,important:boolean|null)=>{const started=lifecycle.current,version=++mutationVersion.current,controller=new AbortController();feedbackVersions.current.set(id,version);controllers.current.add(controller);try{const response=await protectedFetch('/api/v1/mail/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,important}),signal:timedSignal(controller,10_000)});if(!response.ok)throw Error();if(!mounted.current||lifecycle.current!==started||feedbackVersions.current.get(id)!==version)return;overrideMutations.current.set(id,{version,value:important});const patch=(items:MailMessage[])=>items.map(item=>item.data.id===id?{...item,override:important}:item),next={...snapshotRef.current,messages:patch(snapshotRef.current.messages),briefing:patch(snapshotRef.current.briefing)};snapshotRef.current=next;setSnapshot(next);setCachedOlderMessages(older=>patch(older));let durable=true;try{await patchMailOverride(id,important)}catch{durable=false}const refreshed=await loadFirst(filters.current);if(mounted.current&&lifecycle.current===started&&feedbackVersions.current.get(id)===version)setMessage(!refreshed?'Importance preference saved and shown, but mailbox metadata could not refresh.':!durable?'Importance preference saved and shown, but the device cache could not be updated.':'Importance preference saved. It takes priority over AI classification.')}catch{if(mounted.current&&lifecycle.current===started&&feedbackVersions.current.get(id)===version&&!controller.signal.aborted)setMessage('Could not save feedback. Reconnect and try again.')}finally{controllers.current.delete(controller)}},[loadFirst])
+ const cancelAutomatic=useCallback(()=>{const hadRequests=automaticControllers.current.size>0;for(const controller of automaticControllers.current)controller.abort();automaticControllers.current.clear();if(activeKind.current!=='manual'&&(hadRequests||activeKind.current==='automatic')){generation.current++;activeKind.current=null;setBusy(false);setLoadingMore(false)}},[])
+ const endLifecycle=useCallback(()=>{mounted.current=false;lifecycle.current++;generation.current++},[])
+ useEffect(()=>{const activeControllers=controllers.current,activeAutomaticControllers=automaticControllers.current,bodyPromises=bodyRequests.current;mounted.current=true;void initialize();return()=>{endLifecycle();for(const controller of activeControllers)controller.abort();activeControllers.clear();activeAutomaticControllers.clear();bodyPromises.clear()}},[endLifecycle,initialize])
+ useEffect(()=>{const cancel=()=>{lifecycle.current++;generation.current++;activeKind.current=null;for(const controller of controllers.current)controller.abort();controllers.current.clear();automaticControllers.current.clear();setBusy(false);setLoadingMore(false)};window.addEventListener(AUTH_REQUIRED_EVENT,cancel);return()=>window.removeEventListener(AUTH_REQUIRED_EVENT,cancel)},[])
+ useEffect(()=>{if(!enabled){cancelAutomatic();return}const run=()=>{if(document.visibilityState==='visible')void refresh();else cancelAutomatic()};run();const timer=window.setInterval(run,30_000);window.addEventListener('online',run);document.addEventListener('visibilitychange',run);return()=>{window.clearInterval(timer);window.removeEventListener('online',run);document.removeEventListener('visibilitychange',run);cancelAutomatic()}},[cancelAutomatic,enabled,refresh])
+ return {snapshot,message,busy,loadingMore,total,nextCursor,cachedOlderMessages,filters:filters.current,setFilters,refresh,loadMore,loadBody,bodyStates,feedback}
 }
 export type MailState=ReturnType<typeof useMail>
 export const accountLabel=(account:string)=>({personal:'Personal',school:'School',work:'Work'}[account]??account)
-export const isImportant=(m:MailMessage)=>m.override??m.analysis?.important??false
-export function receivedToday(m:MailMessage){return new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(m.data.receivedAt))===new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}
+export const isImportant=(message:MailMessage)=>message.override??message.analysis?.important??false
+export function receivedToday(message:MailMessage){return new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(message.data.receivedAt))===new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}

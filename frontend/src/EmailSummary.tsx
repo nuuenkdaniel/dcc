@@ -1,9 +1,9 @@
 import {useEffect,useState} from 'react'
-import {accountLabel,isImportant,receivedToday,type MailState} from './useMail'
+import {accountLabel,type MailState} from './useMail'
 import {protectedFetch} from './auth'
 export function EmailSummary({mail}:{mail:MailState}) {
- const rows=mail.snapshot.messages.filter(m=>receivedToday(m)&&isImportant(m))
- const pending=mail.snapshot.messages.filter(m=>receivedToday(m)&&!m.analysis&&m.override===null).length
+ const rows=mail.snapshot.briefing
+ const pending=rows.filter(m=>!m.analysis&&m.override===null).length
  return <section className="card daily-email" aria-label="Daily email briefing">
   <div className="section-heading"><div><p className="eyebrow">Daily briefing · Today</p><h2>Important emails <span className="brief-count">{rows.length}</span></h2></div><a className="brief-inbox-link" href="/inbox">Open inbox →</a></div>
   {rows.length===0?<p className="local-note">No important emails identified for today yet.</p>:<div className="brief-list">{rows.map(m=><article key={m.data.id} className="email-brief">

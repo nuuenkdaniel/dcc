@@ -2,7 +2,7 @@ import {ManualTaskSync} from './ManualTaskSync'
 import {Prices} from './Prices'
 import {useMail} from './useMail'
 import {EmailSummary} from './EmailSummary'
-import {usePlanner,studyCardCount,visiblePlanGroups} from './usePlanner'
+import {usePlanner,studyCardCount,visibleActionGroups,visiblePlanGroups} from './usePlanner'
 import {Projects,ActionCard,StudyCard,PlanControls} from './Projects'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
@@ -14,6 +14,8 @@ import { usePreferences } from './usePreferences'
 import { advanceFocusTimer, type FocusTimerState, type MiniTimer } from './focusTimer'
 import { LogoutAction } from './LogoutAction'
 import {AccessibleDialog} from './AccessibleDialog'
+import {applyTaskIntents,requestedTasks,taskIntents} from './taskStorage'
+import {validSharedTask} from './sharedTasks'
 
 type Task = { id: string; title: string; date: string; notes: string; completed: boolean; sample?: boolean; important?: boolean; deleted?: boolean }
 type PreviewView = 'home' | 'inbox' | 'pomodoro' | 'login' | 'settings' | 'projects' | 'prices'
@@ -42,19 +44,11 @@ const formatTime = (seconds: number) => `${String(Math.floor(seconds / 60)).padS
 const readTasks = (): { tasks: Task[]; error: boolean } => {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '[]')
-    if (!Array.isArray(parsed) || !parsed.every((item: unknown) => {
-      if (!item || typeof item !== 'object') return false
-      const task = item as Partial<Task>
-      return typeof task.id === 'string' && typeof task.title === 'string' && typeof task.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(task.date) && typeof task.notes === 'string' && typeof task.completed === 'boolean' && (task.deleted===undefined||typeof task.deleted==='boolean')
-    })) return { tasks: [], error: true }
+    if (!Array.isArray(parsed) || !parsed.every(validSharedTask) || new Set(parsed.map(task=>task.id)).size!==parsed.length) return { tasks: [], error: true }
     return { tasks: parsed, error: false }
   } catch {
     return { tasks: [], error: true }
   }
-}
-
-const writeTasks = (tasks: Task[]) => {
-  try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); return true } catch { return false }
 }
 
 function calendarDays(month: Date) {
@@ -315,12 +309,13 @@ export function Workspace() {
   const [month, setMonth] = useState(() => { const date = new Date(); date.setDate(1); return date })
   const [title, setTitle] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
-  const [storageWarning, setStorageWarning] = useState(false)
+  const [storageWarning, setStorageWarning] = useState('')
   const [showSampleData, setShowSampleData] = useState(false)
   const [taskFilter, setTaskFilter] = useState('All')
   const [taskSearch, setTaskSearch] = useState('')
   const [deletedTask, setDeletedTask] = useState<Task | null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const taskWriteGeneration=useRef(0)
 
   const navigate = (view: PreviewView) => {
     const path = VIEW_PATHS[view]
@@ -338,6 +333,7 @@ export function Workspace() {
     const refresh = (event: StorageEvent) => {
       if (event.key !== STORAGE_KEY && event.key !== null) return
       const result = readTasks()
+      taskWriteGeneration.current++
       setReadError(result.error)
       if (!result.error) setTasks(result.tasks)
     }
@@ -350,17 +346,28 @@ export function Workspace() {
   const curatedCount = studyCardCount(planner.actions.filter(a=>a.date===selectedDate&&!a.dismissed))
   const selectedTasks = displayedTasks.filter((task) => task.date === selectedDate)
   const planGroups = visiblePlanGroups(planner,selectedDate,taskFilter,taskSearch)
+  const unplacedActions=planner.actions.filter(action=>action.needsRescheduling&&!action.completed&&!action.dismissed)
+  const unplacedGroups=visibleActionGroups(planner,unplacedActions,taskFilter,taskSearch)
+  const unplacedCount=unplacedGroups.reduce((count,group)=>count+group.length,0)
   const visibleTasks = selectedTasks.filter(task => (!taskSearch || task.title.toLowerCase().includes(taskSearch.toLowerCase())) && (taskFilter === 'All' || (taskFilter === 'Open' && !task.completed) || (taskFilter === 'Completed' && task.completed) || (taskFilter === 'Important' && task.important))).sort((a, b) => Number(Boolean(b.important)) - Number(Boolean(a.important)))
-  const updateTasks = (next: Task[]) => {
-    if (readError) return
-    setTasks(next)
-    setStorageWarning(!writeTasks(next))
+  const updateTasks = async (next: Task[]) => {
+    if (readError) return false
+    const generation=++taskWriteGeneration.current
+    const previous=tasks,optimistic=requestedTasks(previous,next)
+    const intents=taskIntents(previous,next)
+    setTasks(optimistic)
+    if(!intents.length)return true
+    try{
+      const saved=await applyTaskIntents(intents);if(generation===taskWriteGeneration.current){setTasks(saved);setStorageWarning('')}return true
+    }catch(error){
+      if(generation===taskWriteGeneration.current){const current=readTasks();if(!current.error)setTasks(current.tasks);setStorageWarning(error instanceof Error?error.message:'Task write conflict; no saved tasks were overwritten.')}
+      return false
+    }
   }
   const addTask = () => {
     const clean = title.trim()
     if (!clean) return
-    updateTasks([...tasks, { id: `${Date.now()}-${Math.random()}`, title: clean, date: selectedDate, notes: '', completed: false }])
-    setTitle('')
+    void updateTasks([...tasks, { id: `${Date.now()}-${Math.random()}`, title: clean, date: selectedDate, notes: '', completed: false }]).then(saved=>{if(saved)setTitle('')})
   }
   const updateTask = (id: string, update: Partial<Task>) => updateTasks(tasks.map((task) => task.id === id ? { ...task, ...update } : task))
 
@@ -405,13 +412,13 @@ export function Workspace() {
                   <form className="task-form" onSubmit={(event) => { event.preventDefault(); addTask() }}><label htmlFor="task-title">Task title</label><div className="form-row"><input id="task-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Add a daily action…" /><button type="submit" disabled={readError}>Add task</button></div></form>
                   <div className="task-filters"><div className="filter-tabs">{['All', 'Open', 'Important', 'Completed'].map(filter => <button key={filter} aria-pressed={taskFilter === filter} onClick={() => setTaskFilter(filter)}>{filter}</button>)}</div><input aria-label="Search tasks" placeholder="Search tasks" value={taskSearch} onChange={event => setTaskSearch(event.target.value)} /></div>
                   <div className="task-list">{planGroups.map(group=>(group[0].preparationId||group[0].assignmentStep)?<StudyCard key={group[0].preparationId??group[0].projectId} actions={group} planner={planner}/>:<ActionCard key={group[0].id} action={group[0]} planner={planner}/>)}{visibleTasks.length === 0 && planGroups.length === 0 ? <div className="empty-state"><span className="empty-icon">○</span><p>{selectedTasks.length+curatedCount ? 'No matching tasks' : planner.loadState==='loading'?'Loading tasks…':planner.loadState==='signed-out'?'Sign in to load generated tasks':planner.loadState==='offline'?'Unable to refresh tasks — showing cached data':planner.loadState==='storage-error'?'Task storage needs attention':'No tasks for this day'}</p><small>Start with one clear, achievable step.</small></div> : visibleTasks.map((task) => <article className={`task-card ${task.completed ? 'completed' : ''} ${task.sample ? 'sample' : ''}`} key={task.id}><div className="task-summary"><input type="checkbox" checked={task.completed} disabled={task.sample} onChange={() => updateTask(task.id, { completed: !task.completed })} aria-label={`Complete ${task.title}`} /><button className="task-title" aria-expanded={expanded === task.id} onClick={() => setExpanded(expanded === task.id ? null : task.id)} aria-label={`${expanded === task.id ? 'Collapse' : 'Expand'} ${task.title}`}>{task.title}</button><span className="task-state">{task.sample ? 'Sample' : task.completed ? 'Completed' : task.important ? 'Important' : 'Open'}</span></div>{expanded === task.id && <div className="task-details"><div className="task-edit-grid"><label>Name<input aria-label={`${task.title} name`} value={task.title} disabled={task.sample || readError} onChange={event => { if (event.target.value.trim()) updateTask(task.id, { title: event.target.value }) }} /></label></div><label className="priority-toggle"><input type="checkbox" checked={Boolean(task.important)} disabled={task.sample || readError} onChange={event => updateTask(task.id, { important: event.target.checked })} />Important</label><textarea aria-label={`${task.title} notes`} value={task.notes} disabled={task.sample} placeholder="Add context or notes" onChange={(event) => updateTask(task.id, { notes: event.target.value })} /><button className="delete-task" disabled={task.sample || readError} onClick={() => { setDeletedTask(task); updateTasks(tasks.filter(item => item.id !== task.id)) }}>Delete task</button></div>}</article>)}</div>
-                  {deletedTask && <div className="undo-message" role="status">Task removed. <button onClick={() => { updateTasks([...tasks, deletedTask]); setDeletedTask(null) }}>Undo</button></div>}
+                  {deletedTask && <div className="undo-message" role="status">Task removed. <button onClick={() => { void updateTasks([...tasks, deletedTask]).then(saved=>{if(saved)setDeletedTask(null)}) }}>Undo</button></div>}
                   {showSampleData && <p className="sample-note">Sample cards are temporary and cannot change your saved tasks.</p>}
                   {readError && <p role="alert" className="storage-warning">Stored tasks could not be read. Editing is paused to protect existing data; recover browser storage before continuing.</p>}
-                  {storageWarning && <p className="storage-warning" role="alert">This browser could not save changes. Your tasks may be lost when you close this tab.</p>}
+                  {storageWarning && <p className="storage-warning" role="alert">{storageWarning}</p>}
                   {planner.loadState==='signed-out'&&<button onClick={()=>navigate('login')}>Sign in</button>}
                   {['offline','storage-error'].includes(planner.loadState)&&<button onClick={()=>void planner.sync()}>Retry task sync</button>}
-                  {planner.actions.some(a=>a.needsRescheduling&&!a.completed&&!a.dismissed)&&<section aria-label="Needs rescheduling"><h3>Needs rescheduling</h3><p>These unfinished tasks could not fit before their deadlines. They are not scheduled for the selected day.</p>{planner.actions.filter(a=>a.needsRescheduling&&!a.completed&&!a.dismissed).map(a=><ActionCard key={a.id} action={a} planner={planner}/>)}</section>}
+                   {unplacedActions.length>0&&<details className="rescheduling-details"><summary><span>Needs rescheduling</span><span className="rescheduling-count">{unplacedCount} {unplacedCount===1?'task':'tasks'}</span></summary><div className="rescheduling-content"><p>Unfinished tasks without a scheduled day. They stay saved until completed, dismissed, or rescheduled.</p>{unplacedGroups.length>0?<div className="rescheduling-list">{unplacedGroups.map(group=>(group[0].preparationId||group[0].assignmentStep)?<StudyCard key={group[0].preparationId??group[0].projectId} actions={group} planner={planner}/>:<ActionCard key={group[0].id} action={group[0]} planner={planner}/>)}</div>:<p className="rescheduling-empty">No unfinished tasks match the current filters.</p>}</div></details>}
                   <PlanControls planner={planner}/>
                 </section>
               </div>

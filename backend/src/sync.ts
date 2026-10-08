@@ -4,6 +4,7 @@ import {calendarClient,type CalendarConfig} from './caldav.js'
 import {parseExpandedEvents,type EventOccurrence} from './events.js'
 export type Snapshot={calendars:{id:string;name:string;url:string}[];events:EventOccurrence[];coverageStart?:string;coverageEnd?:string}
 export const sourceHash=(config:CalendarConfig)=>createHash('sha256').update(config.url+'\0'+config.username).digest('hex')
+export const refreshCoolingDown=(force:boolean,cooldownSeconds:number,state:{due:boolean;last_attempt?:string|Date|null},now=Date.now())=>force&&cooldownSeconds>0&&!state.due&&!!state.last_attempt&&now-new Date(state.last_attempt).getTime()<cooldownSeconds*1000
 export async function fetchSnapshot(config:CalendarConfig):Promise<Snapshot> {
  const client=calendarClient(config);await client.login()
  const calendars=(await client.fetchCalendars()).filter(c=>c.components?.includes('VEVENT'))
@@ -27,13 +28,12 @@ export async function runSync(pool:Pool,interval:number,source:string,fetcher:()
   locked=(await connection.query('SELECT pg_try_advisory_lock(817332) AS locked')).rows[0].locked
   if(!locked) return 'busy'
   const state=(await connection.query('SELECT *,next_run<=now() AS due FROM calendar_sync_state WHERE id=1')).rows[0]
-  if(force && cooldownSeconds>0 && state.last_attempt && Date.now()-new Date(state.last_attempt).getTime()<cooldownSeconds*1000) return 'waiting'
+  if(refreshCoolingDown(force,cooldownSeconds,state)) return 'waiting'
   if(!force && !state.due && state.source_hash===source) return 'waiting'
   await connection.query('UPDATE calendar_sync_state SET last_attempt=now() WHERE id=1')
   try {
    const snapshot=await fetcher()
    await connection.query(`UPDATE calendar_sync_state SET snapshot=$1,source_hash=$2,last_success=now(),error=NULL,failures=0,next_run=now()+$3*interval '1 second' WHERE id=1`,[JSON.stringify(snapshot),source,interval])
-   await connection.query('DELETE FROM app_sessions WHERE expires_at<now()')
    return 'synced'
   } catch(error) {
    const auth=error instanceof Error && error.message==='CALDAV_AUTH'

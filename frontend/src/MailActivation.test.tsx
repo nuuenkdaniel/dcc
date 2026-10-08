@@ -14,7 +14,7 @@ vi.mock('./useMail',()=>({
 
 beforeEach(()=>{
  window.history.replaceState({},'','/')
- mocks.useMail.mockReset().mockReturnValue({snapshot:{messages:[],accounts:[],today:''},message:'',busy:false,refresh:vi.fn(),feedback:vi.fn()})
+ mocks.useMail.mockReset().mockReturnValue({snapshot:{messages:[],accounts:[],today:'',briefing:[]},message:'',busy:false,total:0,cachedOlderMessages:[],bodyStates:{},setFilters:vi.fn(),loadMore:vi.fn(),loadBody:vi.fn(),refresh:vi.fn(),feedback:vi.fn()})
 })
 
 it('enables mail networking only where mail is rendered',()=>{

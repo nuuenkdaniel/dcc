@@ -23,7 +23,7 @@ test('local task editing, priority, search, delete and undo survive refresh', as
 })
 
 test('an inbox 401 returns to the required login without a local bypass', async ({ page }) => {
-  await page.route('**/api/v1/mail/snapshot', route => route.fulfill({status:401,json:{error:'Sign in required'}}))
+   await page.route('**/api/v1/mail/page*', route => route.fulfill({status:401,json:{error:'Sign in required'}}))
   await page.goto('http://127.0.0.1:5173/inbox')
   await expect(page).toHaveURL(/\/login\?next=%2Finbox$/)
   await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeEnabled()
