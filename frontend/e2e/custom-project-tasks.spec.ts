@@ -1,9 +1,10 @@
 import {test,expect} from './authenticated'
 
-async function expectCustomTaskButtonStyle(button:import('@playwright/test').Locator,kind:'primary'|'secondary'){
- const style=await button.evaluate(element=>{const value=getComputedStyle(element);return {background:value.backgroundColor,border:value.borderStyle,minHeight:value.minHeight,radius:value.borderRadius}})
+async function expectCustomTaskButtonStyle(button:import('@playwright/test').Locator,kind:'primary'|'secondary'|'danger'){
+ const style=await button.evaluate(element=>{const value=getComputedStyle(element);return {background:value.backgroundColor,color:value.color,border:value.borderStyle,minHeight:value.minHeight,radius:value.borderRadius}})
  expect(style).toMatchObject({
-  background:kind==='primary'?'rgb(156, 141, 232)':'rgb(32, 33, 56)',
+  background:kind==='primary'?'rgb(156, 141, 232)':kind==='secondary'?'rgb(32, 33, 56)':'rgba(0, 0, 0, 0)',
+  ...(kind==='danger'?{color:'rgb(217, 183, 192)'}:{}),
   border:'solid',
   minHeight:'42px',
   radius:'7px',
@@ -86,7 +87,7 @@ test('custom task manual, prompt, review, and edit actions use scoped project bu
  await edit.click()
  await expectCustomTaskButtonStyle(page.getByRole('button',{name:'Save changes',exact:true}),'primary')
  await expectCustomTaskButtonStyle(page.getByRole('button',{name:'Cancel',exact:true}),'secondary')
- await expectCustomTaskButtonStyle(page.getByRole('button',{name:'Dismiss task',exact:true}),'secondary')
+ await expectCustomTaskButtonStyle(page.getByRole('button',{name:'Dismiss task',exact:true}),'danger')
  await page.getByRole('button',{name:'Cancel',exact:true}).click()
 
  await ask.click()
