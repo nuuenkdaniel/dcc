@@ -45,10 +45,10 @@ export function Projects({planner:p}:{planner:Planner}){
     <label>Project status<select value={draft.status} onChange={event=>field({status:event.target.value})}><option value="active">Active</option><option value="complete">Complete</option><option value="archived">Archived</option></select></label>
    </div></details>
    <label>Instructions<textarea maxLength={12000} value={draft.description} onChange={event=>field({description:event.target.value})}/></label>
-   <label>Attach instructions<input type="file" accept=".pdf,.txt,.md" disabled={uploading} onChange={event=>{const file=event.target.files?.[0];if(file)void upload(file)}}/></label>
+   <label>Attach instructions<input className="project-file-input" type="file" accept=".pdf,.txt,.md" disabled={uploading} onChange={event=>{const file=event.target.files?.[0];if(file)void upload(file)}}/></label>
    {draft.resources?.map((resource,index)=><small key={`${resource.name}-${index}`}>{resource.name}</small>)}
    {uploadError&&<p role="alert">{uploadError}</p>}
-   <div className="project-buttons"><button type="submit">Save project</button><button type="button" onClick={()=>setDraft(null)}>Cancel</button></div>
+   <div className="project-buttons project-form-actions"><button className="project-form-save" type="submit">Save project</button><button className="project-form-cancel" type="button" onClick={()=>setDraft(null)}>Cancel</button></div>
   </form>}
   <div className="project-list">
    {p.projects.map(project=>{
