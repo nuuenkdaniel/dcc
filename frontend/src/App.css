@@ -2,6 +2,7 @@
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #e7e8f1; background: #10111d; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased;
   --bg: #10111d; --sidebar: #151627; --surface: #1a1b2b; --surface-2: #202138; --border: #2d2e47; --muted: #9193ac; --subtle: #a1a3ba; --accent: #9c8de8; --accent-soft: #2b2949; --green: #83c6a5;
+  --control-bg: #151625; --control-border: #383a58; --control-text: #f1f0f7; --danger-muted: #d9b7c0; --danger-border: #624852; --danger-bg: #2b2029;
 }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; background: var(--bg); }
@@ -212,6 +213,7 @@ nav { display: grid; gap: 5px; }
 .settings-section button:disabled { opacity:.5; cursor:not-allowed; }
 .settings-logout { display:flex; align-items:center; flex-wrap:wrap; gap:10px; }
 .settings-logout .logout-error { max-width:620px; color:#efb9c4; font-size:13px; line-height:1.5; }
+.settings-disabled-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; }
 .theme-options { display:flex; gap:10px; margin-bottom:22px; }
 .theme-options button[aria-pressed=true] { border-color:var(--accent); background:var(--accent-soft); }
 .settings-section .motion-option { display:flex; align-items:center; gap:10px; }
@@ -278,7 +280,6 @@ nav { display: grid; gap: 5px; }
 .schedule-panel .section-heading h2 { font-size:1.05rem; }
 .schedule-actions { display:flex; align-items:center; gap:8px; }
 .schedule-actions button, .schedule-actions a { font-size:12px; white-space:nowrap; }
-.schedule-actions button:last-child:not(:first-child) { border-color:transparent; padding-inline:4px; }
 .schedule-panel > .local-note { font-size:11px; line-height:1.6; margin:10px 0; }
 .schedule-panel > details > summary { color:var(--muted); }
 .schedule-panel > details:not(.schedule-event) { padding-bottom:12px; }
@@ -301,6 +302,16 @@ nav { display: grid; gap: 5px; }
 .project-editor textarea { min-height:90px; resize:vertical; }
 .project-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
 .project-buttons { display:flex; gap:12px; flex-wrap:wrap; }
+.project-editor input[type="file"]::file-selector-button { min-height:38px; margin-inline-end:12px; padding:8px 12px; border:1px solid var(--border); border-radius:6px; background:var(--surface-2); color:var(--accent); font:inherit; cursor:pointer; }
+.project-editor input[type="file"]:not(:disabled):hover::file-selector-button { border-color:var(--accent); background:var(--accent-soft); }
+.project-editor input[type="file"]:disabled { opacity:.55; cursor:not-allowed; }
+.project-form-actions,.project-card-footer,.project-task-form .project-buttons,.hermes-project-prompt .project-buttons { gap:12px; flex-wrap:wrap; }
+:is(.project-form-actions,.project-card-footer,.project-task-form .project-buttons,.hermes-project-prompt .project-buttons) button,.project-task-meta button,.dismiss-project-task { min-height:42px; padding:9px 16px; border:1px solid var(--border); border-radius:7px; background:var(--surface-2); color:inherit; font:inherit; font-weight:700; }
+.project-form-actions button.project-form-save,.project-card-footer button:first-child,.project-task-form .project-buttons button[type="submit"],.hermes-project-prompt button.project-primary-action { border-color:transparent; background:var(--accent); color:var(--bg); }
+.project-form-actions button.project-form-save:hover:not(:disabled),.project-card-footer button:first-child:hover:not(:disabled),.project-task-form .project-buttons button[type="submit"]:hover:not(:disabled),.hermes-project-prompt button.project-primary-action:hover:not(:disabled) { filter:brightness(1.08); }
+:is(.project-form-actions,.project-card-footer,.project-task-form .project-buttons,.hermes-project-prompt .project-buttons) button:not(:first-child):hover:not(:disabled),.project-task-meta button:hover:not(:disabled),.dismiss-project-task:hover:not(:disabled) { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
+:is(.project-form-actions,.project-card-footer,.project-task-form .project-buttons,.hermes-project-prompt .project-buttons) button:disabled,.project-task-meta button:disabled,.dismiss-project-task:disabled { opacity:.55; cursor:not-allowed; }
+:is(.project-form-actions,.project-card-footer,.project-task-form .project-buttons,.hermes-project-prompt .project-buttons) button:focus-visible,.project-task-meta button:focus-visible,.dismiss-project-task:focus-visible,.projects-view > .project-editor .project-file-input:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 .planner-status { color:var(--muted); font-size:12px; }
 .planner-status button,.curator-heading button,.action-editor button { background:transparent; color:var(--accent); border:1px solid var(--border); border-radius:7px; padding:8px 12px; cursor:pointer; }
 .planner-conflict pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow:auto; }
@@ -334,7 +345,7 @@ nav { display: grid; gap: 5px; }
 .project-badges span + span {background:var(--surface-2);color:var(--subtle);}
 .project-card .project-deadline {margin:0;font-size:12px;line-height:1.5;}
 .project-edit {flex:0 0 auto;min-height:34px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--accent);font-size:12px;}
-.project-edit:hover,.project-card-footer button:hover {background:var(--accent-soft);}
+.project-edit:hover {background:var(--accent-soft);}
 .project-progress {display:flex;flex-wrap:wrap;gap:8px 24px;padding:11px 22px;border-block:1px solid var(--border);background:var(--sidebar);color:var(--muted);font-size:12px;}
 .project-progress strong {color:var(--text);font-weight:600;}
 .generated-tasks,.project-info {font-size:13px;}
@@ -360,9 +371,21 @@ nav { display: grid; gap: 5px; }
 .project-card .project-info p {margin:0;max-width:85ch;white-space:pre-wrap;font-size:12px;line-height:1.55;}
 .project-info ul {margin:0;padding-left:18px;color:var(--muted);font-size:12px;}
 .project-card-footer {display:flex;justify-content:flex-end;padding:12px 22px;border-top:1px solid var(--border);}
-.project-card-footer button {min-height:34px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--accent);font-size:12px;}
-.project-card-footer button:disabled {opacity:.55;cursor:default;}
+.project-task-form,.hermes-project-prompt {margin:0;border-top:1px solid var(--border);background:var(--sidebar);padding:16px 22px;}
+.task-origin {display:inline-block;margin-top:3px;color:var(--accent);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;}
+.project-task-title {display:flex;align-items:center;gap:8px;}
+.project-task-title input {flex:0 0 auto;}
+.project-task-meta {display:grid;justify-items:end;gap:5px;}
+.custom-project-task {grid-template-columns:minmax(0,1fr) auto;}
+.custom-project-task > .project-task-form {grid-column:1/-1;width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:8px;}
+.dismiss-project-task {grid-column:1/-1;justify-self:start;color:var(--muted);}
+.hermes-project-prompt fieldset {min-width:0;margin:10px 0;padding:12px;border:1px solid var(--border);border-radius:8px;}
+.hermes-project-prompt legend label {display:flex;grid-template-columns:auto 1fr;align-items:center;gap:7px;}
+.hermes-project-prompt legend input {width:auto;}
+.suggestion-list {display:grid;gap:10px;}
 @media(max-width:480px) {
+ :is(.project-form-actions,.project-card-footer,.project-task-form .project-buttons,.hermes-project-prompt .project-buttons) {gap:10px;}
+ :is(.project-form-actions,.project-card-footer,.project-task-form .project-buttons,.hermes-project-prompt .project-buttons) button {flex:1 1 120px;}
  .projects-view .topbar {display:flex;align-items:flex-end;gap:12px;}
  .projects-view .topbar .secondary-action {min-height:38px;padding-inline:12px;}
  .project-card-header {padding:16px 14px 13px;gap:10px;}
@@ -372,7 +395,10 @@ nav { display: grid; gap: 5px; }
  .generated-task-row {grid-template-columns:minmax(0,1fr);gap:3px;}
  .generated-task-row > small {padding:0;white-space:normal;}
  .project-info > section,.project-info > p {padding-inline:14px;}
- .project-card-footer {padding:11px 14px;}
+  .project-card-footer {padding:11px 14px;}
+  .project-task-form,.hermes-project-prompt {padding:14px;}
+  .custom-project-task {grid-template-columns:minmax(0,1fr);}
+  .project-task-meta {justify-items:start;}
 }
 
 .preparation-panel { margin:16px 0; padding:16px; min-width:0; }
@@ -542,3 +568,43 @@ nav { display: grid; gap: 5px; }
 .sidebar.collapsed .sidebar-utilities { flex-direction:column; }
 @media (max-width:800px) { .sidebar-utilities { justify-content:center; } }
 @media (max-width:480px) { .sidebar-utilities { margin:0; padding:0; } }
+
+/* Shared form controls: project-editor is the reference. Navigation, calendar days,
+   compact pressed-state toggles, checkboxes, summaries and drag grips remain bespoke. */
+:is(.project-editor,.calendar-login,.settings-section,.price-card form,.mail-controls,.task-form,.task-filters,.login-card,.duration-settings,.mini-form) :is(input:not([type="checkbox"]):not([type="radio"]),select,textarea) {
+  min-height:42px; min-width:0; border:1px solid var(--control-border); border-radius:7px; background:var(--control-bg); color:var(--control-text); caret-color:var(--accent); font:inherit;
+}
+:is(.project-editor,.calendar-login,.settings-section,.price-card form,.mail-controls,.task-form,.task-filters,.login-card,.duration-settings,.mini-form) :is(input:not([type="checkbox"]):not([type="radio"]),select,textarea):focus-visible {
+  border-color:var(--accent); outline:2px solid color-mix(in srgb,var(--accent) 58%,transparent); outline-offset:2px;
+}
+:is(.project-editor,.calendar-login,.settings-section,.price-card form,.mail-controls,.task-form,.task-filters,.login-card,.duration-settings,.mini-form) :is(input,select,textarea):disabled {
+  opacity:.55; cursor:not-allowed;
+}
+:is(.project-editor,.calendar-login) textarea { min-height:90px; resize:vertical; }
+
+.primary-action.primary-action,.secondary-action.secondary-action,.danger-action.danger-action {
+  display:inline-flex; align-items:center; justify-content:center; min-height:42px; padding:9px 16px; border:1px solid var(--control-border); border-radius:7px; font:inherit; font-weight:700; line-height:1.25; text-decoration:none;
+}
+.primary-action.primary-action { border-color:transparent; background:var(--accent); color:#18162a; }
+.secondary-action.secondary-action { background:var(--surface-2); color:#d8d7e4; }
+.danger-action.danger-action { background:transparent; border-color:var(--danger-border); color:var(--danger-muted); }
+.primary-action.primary-action:hover:not(:disabled) { filter:brightness(1.08); }
+.secondary-action.secondary-action:hover:not(:disabled) { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
+.danger-action.danger-action:hover:not(:disabled) { background:var(--danger-bg); color:#ead2d8; }
+:is(.primary-action,.secondary-action,.danger-action):disabled { opacity:.5; cursor:not-allowed; }
+:is(.primary-action,.secondary-action,.danger-action):focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+
+.dialog-actions,.conflict-actions { display:flex; flex-wrap:wrap; gap:10px; }
+.dialog-actions > button,.conflict-actions > button { flex:1 1 150px; }
+.planner-conflict { margin-top:14px; padding:14px; border:1px solid var(--border); border-radius:8px; background:var(--sidebar); }
+.pending-calendar > div + div { margin-top:12px; padding-top:12px; border-top:1px solid var(--border); }
+.pending-calendar .danger-action { margin-top:8px; }
+.planner-details .conflict-actions { margin-top:10px; }
+.settings-logout > button { min-height:42px; padding:9px 14px; border:1px solid var(--danger-border); border-radius:7px; background:transparent; color:var(--danger-muted); font:inherit; font-weight:700; }
+.settings-logout > button:hover:not(:disabled) { background:var(--danger-bg); color:#ead2d8; }
+.settings-logout > button:disabled { opacity:.5; cursor:not-allowed; }
+
+@media(max-width:480px) {
+  .dialog-actions > button,.conflict-actions > button { flex-basis:100%; }
+  .preparation-panel > .secondary-action,.preparation-panel > .primary-action { width:100%; }
+}
