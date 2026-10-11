@@ -21,9 +21,18 @@ test('capabilities explicitly report unavailable services', async () => {
     assert.equal((await app.inject('/api/v1/daily-plan')).statusCode, 401)
   } finally { await app.close() }
 })
-test('configuration defaults and validation', () => {
-  assert.deepEqual(loadConfig({}), { host: '127.0.0.1', port: 3001, logLevel: 'info' })
+test('configuration defaults to the isolated development port', () => {
+  assert.deepEqual(loadConfig({}), { host: '127.0.0.1', port: 5301, logLevel: 'info' })
+})
+test('configuration supports explicit PORT overrides', () => {
+  for (const port of [3001, 5302, 65535]) {
+    assert.equal(loadConfig({ PORT: String(port) }).port, port)
+  }
+})
+test('configuration validates port and log level', () => {
   assert.throws(() => loadConfig({ PORT: 'invalid' }))
   assert.throws(() => loadConfig({ PORT: '0' }))
+  assert.throws(() => loadConfig({ PORT: '65536' }))
+  assert.throws(() => loadConfig({ PORT: '5301.5' }))
   assert.throws(() => loadConfig({ LOG_LEVEL: 'anything' }))
 })
