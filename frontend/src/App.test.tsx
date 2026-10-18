@@ -88,7 +88,7 @@ it('moves between months and returns to today', () => {
   expect(month.textContent).toBe(new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(new Date()))
 })
 
-it('creates, expands, completes, and restores a local task', () => {
+it('creates, expands, completes, and restores a local task', async () => {
   const { unmount } = render(<App />)
   fireEvent.change(screen.getByLabelText('Task title'), { target: { value: 'Read chapter notes' } })
   fireEvent.click(screen.getByRole('button', { name: 'Add task' }))
@@ -97,6 +97,8 @@ it('creates, expands, completes, and restores a local task', () => {
   expect(screen.getByPlaceholderText('Add context or notes')).toBeInTheDocument()
   fireEvent.click(screen.getByRole('checkbox', { name: 'Complete Read chapter notes' }))
   expect(screen.getByText('Completed', { selector: '.task-state' })).toBeInTheDocument()
+
+  await waitFor(()=>expect(JSON.parse(window.localStorage.getItem('productivity-app.tasks.v1')??'[]')).toEqual(expect.arrayContaining([expect.objectContaining({title:'Read chapter notes',completed:true})])))
 
   unmount()
   render(<App />)

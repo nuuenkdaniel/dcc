@@ -15,7 +15,7 @@ import { advanceFocusTimer, type FocusTimerState, type MiniTimer } from './focus
 import { LogoutAction } from './LogoutAction'
 import {AccessibleDialog} from './AccessibleDialog'
 import {applyTaskIntents,requestedTasks,taskIntents} from './taskStorage'
-import {validSharedTask} from './sharedTasks'
+import {equalSharedTask,mergeTasks,validSharedTask,type SharedTask} from './sharedTasks'
 
 type Task = { id: string; title: string; date: string; notes: string; completed: boolean; sample?: boolean; important?: boolean; deleted?: boolean }
 type PreviewView = 'home' | 'inbox' | 'pomodoro' | 'login' | 'settings' | 'projects' | 'prices'
@@ -316,6 +316,17 @@ export function Workspace() {
   const [deletedTask, setDeletedTask] = useState<Task | null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const taskWriteGeneration=useRef(0)
+  const committedTasks=useRef(initial.tasks)
+  const taskWrites=useRef<Promise<unknown>>(Promise.resolve())
+  // Order this page's writes without changing their external-storage preconditions.
+  const queueTaskWrite=<T,>(operation:()=>Promise<T>)=>{
+    const queued=taskWrites.current.then(async()=>{
+      try{return await operation()}
+      catch(error){const current=readTasks();if(!current.error)committedTasks.current=current.tasks;throw error}
+    })
+    taskWrites.current=queued.catch(()=>{})
+    return queued
+  }
 
   const navigate = (view: PreviewView) => {
     const path = VIEW_PATHS[view]
@@ -335,7 +346,7 @@ export function Workspace() {
       const result = readTasks()
       taskWriteGeneration.current++
       setReadError(result.error)
-      if (!result.error) setTasks(result.tasks)
+      if (!result.error) {committedTasks.current=result.tasks;setTasks(result.tasks)}
     }
     window.addEventListener('storage', refresh)
     return () => window.removeEventListener('storage', refresh)
@@ -358,12 +369,48 @@ export function Workspace() {
     setTasks(optimistic)
     if(!intents.length)return true
     try{
-      const saved=await applyTaskIntents(intents);if(generation===taskWriteGeneration.current){setTasks(saved);setStorageWarning('')}return true
+      const saved=await queueTaskWrite(async()=>{
+        const known=new Map(committedTasks.current.map(task=>[task.id,task]))
+        const guarded=intents.map(intent=>{
+          const current=known.get(intent.kind==='put'?intent.task.id:intent.id)
+          if(equalSharedTask(current,intent.expected))return intent
+          const intended=intent.kind==='put'?{...intent.expected,...intent.task}:{...intent.expected,deleted:intent.kind==='delete'}
+          // Only an already represented intent can use this page's newer saved
+          // snapshot. Still check that exact record under the Web Lock below.
+          if(current&&equalSharedTask(current,intended))return {...intent,expected:current}
+          throw Error('Tasks changed while syncing or editing. Your edit was not applied; review the saved task and retry.')
+        })
+        const saved=await applyTaskIntents(guarded);committedTasks.current=saved;return saved
+      });if(generation===taskWriteGeneration.current){setTasks(saved);setStorageWarning('')}return true
     }catch(error){
       if(generation===taskWriteGeneration.current){const current=readTasks();if(!current.error)setTasks(current.tasks);setStorageWarning(error instanceof Error?error.message:'Task write conflict; no saved tasks were overwritten.')}
       return false
     }
   }
+  const reconcileTasks=async(base:SharedTask[],remote:SharedTask[],signal:AbortSignal)=>{
+    const generation=taskWriteGeneration.current
+    try{
+      return await queueTaskWrite(async()=>{
+        if(signal.aborted)throw new DOMException('Sync cancelled','AbortError')
+        if(readError)throw Error('Task storage needs attention; saved tasks were retained.')
+        // Unlike a user intent, readback must be merged after pending local writes
+        // finish. Never treat a render's optimistic snapshot as saved storage.
+        const previous=committedTasks.current,combined=mergeTasks(base,previous,remote)
+        if(combined.conflicts.length)throw Error('Tasks changed while syncing. Local edits retained; sync again to review.')
+        const saved=await applyTaskIntents(taskIntents(previous,combined.tasks))
+        committedTasks.current=saved
+        if(generation===taskWriteGeneration.current)setTasks(current=>JSON.stringify(current)===JSON.stringify(saved)?current:saved)
+        return saved
+      })
+    }catch(error){
+      if(generation===taskWriteGeneration.current&&!(error instanceof DOMException&&error.name==='AbortError')){
+        const current=readTasks();if(!current.error)setTasks(current.tasks)
+        setStorageWarning(error instanceof Error?error.message:'Task reconciliation failed; saved tasks were retained.')
+      }
+      throw error
+    }
+  }
+  const readSavedTasks=()=>queueTaskWrite(async()=>committedTasks.current)
   const addTask = () => {
     const clean = title.trim()
     if (!clean) return
@@ -407,7 +454,7 @@ export function Workspace() {
                   <div className="calendar-grid">{days.map(({ date, day, current }) => <button key={date} className={`calendar-day ${current ? '' : 'outside'} ${date === selectedDate ? 'selected' : ''}`} onClick={() => {setFollowingToday(false);setSelectedDate(date)}} aria-pressed={date === selectedDate} aria-current={date === today() ? 'date' : undefined} aria-label={formatDay(date)}><span>{day}</span></button>)}</div>
                   <Schedule planner={planner} date={selectedDate} />
                 </section>
-                <section className="card tasks-card" aria-labelledby="tasks-heading"><ManualTaskSync tasks={tasks} onApply={updateTasks}/>
+                <section className="card tasks-card" aria-labelledby="tasks-heading"><ManualTaskSync tasks={tasks} readSavedTasks={readSavedTasks} onReconcile={reconcileTasks}/>
                   <div className="section-heading"><div><p className="eyebrow">{formatDay(selectedDate)}</p><h2 id="tasks-heading">Daily plan</h2></div><span className="task-count">{selectedTasks.length+curatedCount}</span></div>
                   <form className="task-form" onSubmit={(event) => { event.preventDefault(); addTask() }}><label htmlFor="task-title">Task title</label><div className="form-row"><input id="task-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Add a daily action…" /><button type="submit" disabled={readError}>Add task</button></div></form>
                   <div className="task-filters"><div className="filter-tabs">{['All', 'Open', 'Important', 'Completed'].map(filter => <button key={filter} aria-pressed={taskFilter === filter} onClick={() => setTaskFilter(filter)}>{filter}</button>)}</div><input aria-label="Search tasks" placeholder="Search tasks" value={taskSearch} onChange={event => setTaskSearch(event.target.value)} /></div>

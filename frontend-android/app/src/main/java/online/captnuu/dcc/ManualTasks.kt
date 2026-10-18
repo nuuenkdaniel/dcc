@@ -27,7 +27,7 @@ import kotlinx.coroutines.launch
  var conflict by remember{mutableStateOf(false)}
  val tasks=try { JSONArray(raw).objects() } catch (_:Exception){emptyList()}
  fun save(items:List<JSONObject>) {
-  val next=JSONArray(items).toString()
+  val next=try{check(items.size<=10000){"Task collection exceeds 10000 records."};JSONArray(items.map(::normalizeTask)).toString()}catch(e:Exception){error=e.message?:"Invalid tasks; saved tasks were retained.";return}
   if(preferences.edit().putString("tasks",next).commit()){raw=next;error=""}else error="Could not save local tasks."
  }
  fun sync(choice:String?=null){if(model==null||syncing)return;syncing=true
@@ -56,7 +56,7 @@ import kotlinx.coroutines.launch
    Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
     Checkbox(task.optBoolean("completed"),{done->save(tasks.map{if(it==task)JSONObject(it.toString()).put("completed",done) else it})},enabled=!syncing)
     TextButton(onClick={editing=task.toString()},modifier=Modifier.weight(1f),enabled=!syncing){Text((if(task.optBoolean("important"))"★ " else "")+task.optString("title"),style=MaterialTheme.typography.bodyMedium)}
-    TextButton(onClick={save(tasks.filter{it!=task})},enabled=!syncing){Text("Delete")}
+    TextButton(onClick={save(tasks.map{if(it==task)JSONObject(it.toString()).put("deleted",true) else it})},enabled=!syncing){Text("Delete")}
    }
   }
   Text("Tasks save on this phone immediately. Sync shares them with the web and other devices.",style=MaterialTheme.typography.bodySmall,modifier=Modifier.padding(bottom=8.dp))
