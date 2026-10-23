@@ -1,4 +1,4 @@
-import {render,screen,fireEvent,cleanup,waitFor} from '@testing-library/react'
+import {render,screen,fireEvent,cleanup,waitFor,within} from '@testing-library/react'
 import {afterEach,expect,test,vi} from 'vitest'
 import {Projects} from './Projects'
 import {formatPlanningMinutes,formatProjectDate} from './projectFormatting'
@@ -38,6 +38,90 @@ test('project editing retains progress and status controls',()=>{
 })
 
 const existingProject={id:'11111111-1111-4111-8111-111111111111',title:'Existing project',category:'work',description:'Notes',deadline:'',importance:2,remainingMinutes:90,progress:'',status:'active'}
+
+const archivedProject={...existingProject,id:'archived-project',title:'Archived work',status:'archived',progress:'Outline reviewed',resources:[{name:'Brief.txt',text:'Keep the brief'}],planSummary:'Previous plan'}
+const linkedAction={id:'linked-action',projectId:existingProject.id,title:'Generated step',date:'2026-10-10',minutes:30,notes:'Saved task notes',completed:true,dismissed:false}
+const archivePlanner=(overrides:Partial<Planner>={})=>({actions:[],projects:[existingProject,archivedProject],status:{},message:'',pending:0,disabled:false,syncing:false,save:vi.fn(()=>true),sync:vi.fn(),versionOf:vi.fn((id:string)=>id===archivedProject.id?17:5),...overrides} as unknown as Planner)
+
+test('archive disclosure is closed after the primary list and counts only archived projects',()=>{
+ const completed={...existingProject,id:'completed-project',title:'Completed work',status:'complete'}
+ const {container}=render(<Projects planner={archivePlanner({projects:[existingProject,completed,archivedProject]})}/> )
+ const primary=container.querySelector('.project-list')!
+ expect(within(primary as HTMLElement).getByRole('heading',{name:existingProject.title})).toBeInTheDocument()
+ expect(within(primary as HTMLElement).getByRole('heading',{name:completed.title})).toBeInTheDocument()
+ expect(within(primary as HTMLElement).queryByText(archivedProject.title)).toBeNull()
+ const summary=screen.getByText('Archived projects (1)',{exact:true})
+ const disclosure=summary.closest('details')!
+ expect(disclosure).not.toHaveAttribute('open')
+ expect(primary.nextElementSibling).toBe(disclosure)
+ fireEvent.click(summary)
+ expect(disclosure).toHaveAttribute('open')
+ expect(within(disclosure).getByRole('heading',{name:archivedProject.title})).toBeInTheDocument()
+})
+
+test('archive saves only the project status with its current optimistic version',()=>{
+ const project={...existingProject,resources:[{name:'Notes.txt',text:'Original instructions'}],progress:'In progress',planSummary:'Keep this plan'}
+ const action=Object.freeze({...linkedAction})
+ const planner=archivePlanner({projects:[project],actions:[action]})
+ const {container,rerender}=render(<Projects planner={planner}/>)
+ // Read the version at click time, rather than retaining an earlier render's version.
+ vi.mocked(planner.versionOf).mockReturnValue(9)
+ fireEvent.click(screen.getByRole('button',{name:'Archive project'}))
+ expect(planner.versionOf).toHaveBeenCalledWith(project.id)
+ expect(planner.save).toHaveBeenCalledExactlyOnceWith('project',{...project,status:'archived'},9)
+ expect(planner.actions[0]).toBe(action)
+ expect(action).toEqual(linkedAction)
+ planner.projects=[{...project,status:'archived'}]
+ rerender(<Projects planner={planner}/>)
+ expect(container.querySelector('.project-list')).not.toHaveTextContent(project.title)
+ expect(screen.getByText('Archived projects (1)')).toBeInTheDocument()
+})
+
+test('restore saves active with the archived project exact current version and returns it to the primary list',()=>{
+ const planner=archivePlanner({projects:[archivedProject]})
+ const {container,rerender}=render(<Projects planner={planner}/>)
+ fireEvent.click(screen.getByText('Archived projects (1)'))
+ vi.mocked(planner.versionOf).mockReturnValue(23)
+ fireEvent.click(screen.getByRole('button',{name:'Restore project'}))
+ expect(planner.versionOf).toHaveBeenCalledWith(archivedProject.id)
+ expect(planner.save).toHaveBeenCalledExactlyOnceWith('project',{...archivedProject,status:'active'},23)
+ planner.projects=[{...archivedProject,status:'active'}]
+ rerender(<Projects planner={planner}/>)
+ expect(container.querySelector('.project-list')).toHaveTextContent(archivedProject.title)
+ expect(screen.getByText('Archived projects (0)')).toBeInTheDocument()
+})
+
+test('archived cards retain task history and project details without Add task or Ask Hermes',()=>{
+ const planner=archivePlanner({projects:[archivedProject],actions:[{...linkedAction,projectId:archivedProject.id}]})
+ render(<Projects planner={planner}/>)
+ fireEvent.click(screen.getByText('Archived projects (1)'))
+ const card=screen.getByRole('heading',{name:archivedProject.title}).closest('article')!
+ expect(within(card).queryByRole('button',{name:'Add task'})).toBeNull()
+ expect(within(card).queryByRole('button',{name:'Ask Hermes'})).toBeNull()
+ fireEvent.click(within(card).getByText('Project tasks (1)'))
+ expect(within(card).getByText('Generated step')).toBeInTheDocument()
+ expect(within(card).getByText('1/1')).toBeInTheDocument()
+ fireEvent.click(within(card).getByText('Task details'))
+ expect(within(card).getByText('Saved task notes')).toBeInTheDocument()
+ fireEvent.click(within(card).getByText('Project details'))
+ for(const text of ['Notes','Brief.txt','Previous plan'])expect(within(card).getByText(text)).toBeInTheDocument()
+ expect(planner.save).not.toHaveBeenCalled()
+})
+
+test('empty archive remains discoverable with calm copy',()=>{
+ render(<Projects planner={archivePlanner({projects:[]})}/> )
+ const summary=screen.getByText('Archived projects (0)')
+ expect(summary.closest('details')).not.toHaveAttribute('open')
+ fireEvent.click(summary)
+ expect(screen.getByText('No archived projects yet.')).toBeInTheDocument()
+})
+
+test('archive and restore respect disabled planner controls',()=>{
+ render(<Projects planner={archivePlanner({disabled:true})}/> )
+ expect(screen.getByRole('button',{name:'Archive project'})).toBeDisabled()
+ fireEvent.click(screen.getByText('Archived projects (1)'))
+ expect(screen.getByRole('button',{name:'Restore project'})).toBeDisabled()
+})
 
 test('project footer creates one dated manual action through the planner queue',()=>{
  const save=vi.fn(()=>true)
