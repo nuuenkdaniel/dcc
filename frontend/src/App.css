@@ -344,8 +344,14 @@ nav { display: grid; gap: 5px; }
 .project-badges span {padding:3px 7px;border-radius:999px;background:var(--accent-soft);color:var(--accent);font-size:10px;line-height:1.4;text-transform:capitalize;}
 .project-badges span + span {background:var(--surface-2);color:var(--subtle);}
 .project-card .project-deadline {margin:0;font-size:12px;line-height:1.5;}
-.project-edit {flex:0 0 auto;min-height:34px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--accent);font-size:12px;}
+.project-card-actions {display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;}
+.project-edit {flex:0 0 auto;min-height:44px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--accent);font-size:12px;}
 .project-edit:hover {background:var(--accent-soft);}
+.project-edit:disabled {opacity:.55;cursor:not-allowed;}
+.project-edit:focus-visible,.archived-projects > summary:focus-visible {outline:2px solid var(--accent);outline-offset:3px;}
+.archived-projects {margin-top:20px;}
+.archived-projects > summary {min-height:44px;box-sizing:border-box;padding:13px 0;cursor:pointer;color:var(--muted);font-size:13px;font-weight:600;}
+.archived-projects > .project-list {margin-top:12px;}
 .project-progress {display:flex;flex-wrap:wrap;gap:8px 24px;padding:11px 22px;border-block:1px solid var(--border);background:var(--sidebar);color:var(--muted);font-size:12px;}
 .project-progress strong {color:var(--text);font-weight:600;}
 .generated-tasks,.project-info {font-size:13px;}
@@ -388,7 +394,7 @@ nav { display: grid; gap: 5px; }
  :is(.project-form-actions,.project-card-footer,.project-task-form .project-buttons,.hermes-project-prompt .project-buttons) button {flex:1 1 120px;}
  .projects-view .topbar {display:flex;align-items:flex-end;gap:12px;}
  .projects-view .topbar .secondary-action {min-height:38px;padding-inline:12px;}
- .project-card-header {padding:16px 14px 13px;gap:10px;}
+  .project-card-header {padding:16px 14px 13px;gap:10px;flex-wrap:wrap;}
  .project-progress {display:grid;gap:5px;padding:10px 14px;}
  .generated-tasks > summary,.project-info > summary {padding:12px 14px;}
  .generated-task-list {padding-inline:14px;}
