@@ -1,5 +1,6 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
+import {readFile} from 'node:fs/promises'
 import type {Pool} from 'pg'
 import {validateCommand,easternInstant,tellHermes} from '../src/tell-hermes.js'
 import {buildApp} from '../src/app.js'
@@ -31,7 +32,7 @@ test('calendar requires explicit target, real start and bounded duration; assign
 
 // Synthetic storage only. Transaction snapshots also test rollback of a failed
 // receipt update after an otherwise successful local insert.
-function fakePool(){
+function fakePool(calendars:unknown=[{id:'fake-calendar',name:'Fake'}]){
  type Row={kind:string;version:number;data:any}
  let rows=new Map<string,Row>(),backup:Map<string,Row>|undefined
  const calls:string[]=[]
@@ -41,7 +42,7 @@ function fakePool(){
   if(sql==='BEGIN')backup=structuredClone(rows)
   if(sql==='ROLLBACK'&&backup)rows=backup
   if(sql==='COMMIT')backup=undefined
-  if(sql.startsWith('SELECT snapshot'))return {rows:[{snapshot:{calendars:[{id:'fake-calendar',name:'Fake'}]}}]}
+   if(sql.startsWith('SELECT snapshot'))return {rows:[{snapshot:{calendars,events:[{title:'Private event'}],url:'https://private.invalid'} }]}
   if(sql.startsWith('SELECT data FROM planner_entities')){const row=rows.get(values[0]);return {rows:row?.kind==='hermes-command'?[structuredClone(row)]:[]}}
   if(sql.startsWith('SELECT version,data FROM planner_entities')){const row=rows.get(values[0]);return {rows:row?[structuredClone(row)]:[]}}
   if(sql.startsWith('INSERT INTO planner_entities')){
@@ -65,7 +66,7 @@ test('manual task executes once, survives retries and preserves collection metad
  const existing={id:'prior',title:'Prior',date:'2026-10-26',notes:'Keep',completed:false,deleted:true,custom:{keep:true}}
  fake.rows().set(collection,{kind:'manual-tasks',version:4,data:{tasks:[existing],custom:'collection metadata'}})
  let parses=0
- const options={pool:fake.pool,curator:async(input:unknown)=>{parses++;assert.deepEqual(input,{mode:'tell-hermes',prompt:submission.prompt,timezone:'America/New_York',referenceTime:'2026-10-26T23:30'});return task},now:()=>new Date('2026-10-27T03:30:00Z')}
+  const options={pool:fake.pool,curator:async(input:unknown)=>{parses++;assert.deepEqual(input,{mode:'tell-hermes',prompt:submission.prompt,timezone:'America/New_York',referenceTime:'2026-10-26T23:30',calendarNames:['Fake']});return task},now:()=>new Date('2026-10-27T03:30:00Z')}
  const result=await tellHermes(submission,options)
  assert.equal(result.code,200);assert.equal(result.origin,'hermes')
  assert.deepEqual(await tellHermes(submission,options),result)
@@ -156,4 +157,57 @@ test('calendar name must match exactly one cached calendar; unavailable writes n
  }
  const fake=fakePool()
  assert.equal((await tellHermes(submission,{pool:fake.pool,curator:async()=>({action:'create-calendar-event',title:'Review',calendar:'Fake',start:'2026-10-27T09:00',minutes:30,description:'',location:''})})).code,503)
+})
+
+const workEvent={action:'create-calendar-event',title:'Work meeting',calendar:'Work',start:'2026-10-26T11:00',minutes:30,description:'',location:''}
+test('work meeting intent supplies only cached names and exact Work output reaches safe writer',async()=>{
+ const fake=fakePool([{id:'private-work-id',name:'Work',url:'https://private.invalid',events:[{title:'Secret'}]},{id:'private-home-id',name:'Personal'}]),changes:unknown[]=[]
+ const prompt='Add a work meeting for 11am–11:30am today'
+ const result=await tellHermes({...submission,prompt},{pool:fake.pool,now:()=>new Date('2026-10-26T14:00:00Z'),curator:async input=>{
+  assert.deepEqual(input,{mode:'tell-hermes',prompt,timezone:'America/New_York',referenceTime:'2026-10-26T10:00',calendarNames:['Work','Personal']})
+  return workEvent
+ },calendarChange:async change=>{changes.push(change);return {code:200,saved:true}}})
+ assert.equal(result.code,200)
+ assert.deepEqual(changes,[{id:result.id,calendarId:'private-work-id',title:'Work meeting',start:'2026-10-26T15:00:00.000Z',end:'2026-10-26T15:30:00.000Z',allDay:false,description:'Hermes-created',location:''}])
+})
+
+test('absent or ambiguous calendar intent remains missing without any writer call',async()=>{
+ for(const [prompt,names] of [
+  ['Add a meeting for 11am–11:30am today',['Work']],
+  ['Add a work meeting for 11am–11:30am today',['Work','Work Meetings']],
+  ['Add a work meeting for 11am–11:30am today',['Work','Work']]
+ ] as const){
+  const fake=fakePool(names.map((name,id)=>({id:String(id),name})))
+  const result=await tellHermes({...submission,prompt},{pool:fake.pool,curator:async input=>{
+   assert.deepEqual((input as {calendarNames:string[]}).calendarNames,names)
+   return {action:'missing',fields:['calendar']}
+  },calendarChange:async()=>{throw Error('must not write')}})
+  assert.equal(result.code,422);assert.match(result.message,/calendar/)
+ }
+})
+
+test('duplicate names including case variants and non-exact parser output fail closed',async()=>{
+ for(const [names,calendar] of [[['Work','Work'],'Work'],[['Work','work'],'Work'],[['Work'],'work'],[['Work'],'Work Meetings']] as const){
+  const fake=fakePool(names.map((name,id)=>({id:String(id),name})))
+  const result=await tellHermes(submission,{pool:fake.pool,curator:async()=>({...workEvent,calendar}),calendarChange:async()=>{throw Error('must not write')}})
+  assert.equal(result.code,422);assert.equal(fake.calls.some(sql=>sql.startsWith('INSERT')),false)
+ }
+})
+
+test('calendar name context is bounded without hiding candidates by truncation or deduplication',async()=>{
+ for(const calendars of [Array.from({length:101},(_,id)=>({id:String(id),name:'Work'})),[{id:'long',name:'x'.repeat(241)}],null,[{id:'bad',name:42}]]){
+  const fake=fakePool(calendars)
+  const result=await tellHermes(submission,{pool:fake.pool,curator:async input=>{
+   assert.deepEqual((input as {calendarNames:string[]}).calendarNames,[])
+   return workEvent
+  },calendarChange:async()=>{throw Error('must not write')}})
+  assert.equal(result.code,422)
+ }
+})
+
+test('bridge prompt permits unique semantic calendar intent but forbids inference and near-match guessing',async()=>{
+ // Inspect source only: importing the bridge would read its token; no model is run.
+ const source=await readFile(new URL('../deploy/curator_bridge.py',import.meta.url),'utf8')
+ const prompt=source.split("TELL_HERMES_PROMPT = '''")[1]!.split("'''")[0]!
+ for(const rule of [/calendarNames/,/case-insensitive/,/word-boundary/,/exact supplied name/,/work meeting/,/duplicate/,/near-match/,/Never infer or default a calendar/,/missing.*calendar/])assert.match(prompt,rule)
 })
