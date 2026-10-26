@@ -8,6 +8,21 @@ vi.mock('./AuthGate',()=>({AuthGate:({children}:{children:ReactNode})=>children}
 
 afterEach(() => vi.useRealTimers())
 
+it('places the sole Hermes command below the Home header, never in the sidebar',()=>{
+ const {container}=render(<App/>)
+ const input=screen.getByPlaceholderText('Hermes'),form=input.closest('form')!
+ expect(input).toBeVisible()
+ expect(form.parentElement).toHaveAttribute('id','home')
+ expect(form.previousElementSibling).toHaveClass('topbar')
+ expect(form.nextElementSibling).toHaveClass('layout-grid')
+ expect(container.querySelector('.sidebar .tell-hermes')).toBeNull()
+ expect(container.querySelectorAll('.tell-hermes')).toHaveLength(1)
+ fireEvent.click(screen.getByRole('button',{name:'Collapse sidebar'}))
+ expect(input).toBeVisible()
+ fireEvent.click(screen.getByRole('button',{name:'Inbox'}))
+ expect(screen.queryByPlaceholderText('Hermes')).toBeNull()
+})
+
 it('selects the local day rather than UTC at night', () => {
   vi.useFakeTimers()
   vi.setSystemTime(new Date(2026, 9, 2, 22, 0, 0))
