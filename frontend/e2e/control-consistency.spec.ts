@@ -129,3 +129,39 @@ test('login controls use the same dark primary treatment at mobile width',async(
  await expect(page.getByText('Sign-in failed.',{exact:false})).toBeVisible()
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
 })
+
+
+test('Schedule controls remain contained at constrained, phone, and desktop widths',async({page},testInfo)=>{
+ await page.route('**/api/v1/calendar/snapshot',route=>route.fulfill({json:{calendars:[{id:'calendar',name:'Synthetic calendar'}],events:[],lastSuccess:new Date().toISOString()}}))
+ const viewports=[
+  {name:'constrained',width:1280,height:900},
+  {name:'phone',width:375,height:900},
+  {name:'desktop',width:1680,height:1000},
+ ]
+ for(const viewport of viewports){
+  await page.setViewportSize({width:viewport.width,height:viewport.height})
+  await page.goto('/')
+  const card=page.locator('.calendar-card')
+  const controls=page.locator('.schedule-actions')
+  await expect(controls.getByRole('button',{name:'Sync calendar',exact:true})).toBeVisible()
+  await expect(controls.getByRole('button',{name:'New event',exact:true})).toBeVisible()
+  const geometry=await controls.evaluate((element)=>{
+   const card=element.closest('.calendar-card')!.getBoundingClientRect()
+   const controls=element.getBoundingClientRect()
+   const buttons=[...element.querySelectorAll('button,a')].map(control=>{
+    const rect=control.getBoundingClientRect()
+    return {left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,height:rect.height}
+   })
+   return {card:{left:card.left,right:card.right},controls:{left:controls.left,right:controls.right},buttons,scrollWidth:document.documentElement.scrollWidth,innerWidth:window.innerWidth}
+  })
+  expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.innerWidth)
+  expect(geometry.controls.left).toBeGreaterThanOrEqual(geometry.card.left)
+  expect(geometry.controls.right).toBeLessThanOrEqual(geometry.card.right)
+  for(const button of geometry.buttons){
+   expect(button.left).toBeGreaterThanOrEqual(geometry.card.left)
+   expect(button.right).toBeLessThanOrEqual(geometry.card.right)
+   if(viewport.name==='phone')expect(button.height).toBeGreaterThanOrEqual(44)
+  }
+  await card.screenshot({path:testInfo.outputPath(`schedule-controls-${viewport.name}.png`)})
+ }
+})

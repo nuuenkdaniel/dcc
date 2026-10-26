@@ -276,10 +276,13 @@ nav { display: grid; gap: 5px; }
 #home .daily-email h2 { font-size:1.05rem; }
 #home .daily-email .eyebrow { font-size:10px; }
 #home .daily-email > p { margin:8px 0; font-size:13px; }
-.schedule-panel .section-heading { align-items:center; gap:10px; margin-bottom:12px; }
+.schedule-panel .section-heading { align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px; }
+.schedule-panel .section-heading > div:first-child { min-width:0; }
 .schedule-panel .section-heading h2 { font-size:1.05rem; }
-.schedule-actions { display:flex; align-items:center; gap:8px; }
+.schedule-actions { display:flex; flex:0 1 auto; min-width:0; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px; }
 .schedule-actions button, .schedule-actions a { font-size:12px; white-space:nowrap; }
+.schedule-actions .secondary-action.secondary-action { min-height:44px; }
+@media(max-width:640px) { .schedule-panel .section-heading { align-items:flex-start; } .schedule-actions { flex-basis:100%; justify-content:flex-start; } .schedule-actions button, .schedule-actions a, .schedule-actions .secondary-action { min-height:44px; } }
 .schedule-panel > .local-note { font-size:11px; line-height:1.6; margin:10px 0; }
 .schedule-panel > details > summary { color:var(--muted); }
 .schedule-panel > details:not(.schedule-event) { padding-bottom:12px; }
