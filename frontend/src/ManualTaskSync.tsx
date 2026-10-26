@@ -47,6 +47,7 @@ export function ManualTaskSync({tasks,readSavedTasks,onReconcile}:{tasks:SharedT
   }catch(e){if(mounted.current&&!(e instanceof DOMException&&e.name==='AbortError'))setMessage(e instanceof Error?e.message:'Offline; tasks retained.');return false}
  }
  const syncRef=useRef(sync);useLayoutEffect(()=>{syncRef.current=sync})
+ useEffect(()=>{const retry=()=>void syncRef.current();window.addEventListener('dcc-hermes-created',retry);return()=>window.removeEventListener('dcc-hermes-created',retry)},[])
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;pending.current=false;pendingChoice.current=undefined;activeController.current?.abort();activeController.current=null}},[])
  useEffect(()=>{void syncRef.current()},[tasks])
  useEffect(()=>{const retry=()=>void syncRef.current();const visible=()=>{if(document.visibilityState==='visible')retry()};window.addEventListener('online',retry);window.addEventListener('dcc-auth-changed',retry);document.addEventListener('visibilitychange',visible);const timer=setInterval(retry,30000);return()=>{clearInterval(timer);window.removeEventListener('online',retry);window.removeEventListener('dcc-auth-changed',retry);document.removeEventListener('visibilitychange',visible)}},[])

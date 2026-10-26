@@ -1,4 +1,4 @@
-import type {Pool} from 'pg'
+import type {Pool,PoolClient} from 'pg'
 import type {FastifyInstance} from 'fastify'
 export type ManualTask={id:string;title:string;date:string;notes:string;completed:boolean;important?:boolean;deleted?:boolean;[key:string]:unknown}
 const canonical=(value:unknown)=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item)
@@ -16,6 +16,15 @@ export function validManualTask(d:ManualTask){return !!d&&typeof d.id==='string'
 // Existing entity storage is UUID keyed; web legacy task IDs are not necessarily UUIDs.
 // Keep a single versioned task collection rather than rewriting local identifiers.
 const COLLECTION='ccbf2a93-9be3-45bd-b039-1019cdb8276f'
+// Caller owns the transaction; use the normal collection lock and retain every
+// existing record, tombstone and additive field.
+export async function appendHermesTask(c:PoolClient,task:ManualTask){
+ if(!validManualTask(task))throw Error('Invalid manual task')
+ await c.query('SELECT pg_advisory_xact_lock(817342)')
+ const old=await taskSnapshot(c as unknown as Pool),tasks:ManualTask[]=old.data.tasks??[]
+ if(tasks.length>=10000||tasks.some(t=>t.id===task.id))throw Error('Task collection cannot accept this task')
+ await c.query("INSERT INTO planner_entities(id,kind,data) VALUES($1,'manual-tasks',$2) ON CONFLICT(id) DO UPDATE SET data=$2,version=planner_entities.version+1",[COLLECTION,{...old.data,tasks:[...tasks,task]}])
+}
 export async function taskSnapshot(pool:Pool){const r=await pool.query('SELECT version,data FROM planner_entities WHERE id=$1 AND kind=$2',[COLLECTION,'manual-tasks']);return r.rows[0]??{version:0,data:{tasks:[]}}}
 const comparable=(tasks:ManualTask[])=>canonical(tasks.map(t=>({...t,important:!!t.important,deleted:!!t.deleted})))
 export async function saveTasks(pool:Pool,version:number,tasks:ManualTask[]){
