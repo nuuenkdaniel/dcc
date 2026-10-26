@@ -1,4 +1,5 @@
 import {ManualTaskSync} from './ManualTaskSync'
+import {TellHermes} from './TellHermes'
 import {Prices} from './Prices'
 import {useMail} from './useMail'
 import {EmailSummary} from './EmailSummary'
@@ -427,6 +428,7 @@ export function Workspace() {
         <button type="button" aria-label="Projects" title="Projects" className={`nav-item ${previewView === 'projects' ? 'active' : ''}`} onClick={()=>navigate('projects')}><span className="nav-icon">◫</span><span className="nav-label">Projects</span></button>
         <button type="button" aria-label="Price tracker" title="Price tracker" className={`nav-item ${previewView === 'prices' ? 'active' : ''}`} onClick={()=>navigate('prices')}><span className="nav-icon">◇</span><span className="nav-label">Prices</span></button>
       </nav>
+      <TellHermes onCreated={()=>{void planner.sync(true);window.dispatchEvent(new Event('dcc-hermes-created'))}}/>
       <div className="sidebar-utilities">
       <button type="button" className={`nav-item settings-nav ${previewView === 'settings' ? 'active' : ''}`} aria-label="Settings" title="Settings" onClick={() => navigate('settings')}><svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 3-1 2 3 3-1 1-3 3-1 1-3-2-2 1-3-3-2-3 1-2-3Z"/><circle cx="12" cy="11" r="3"/></svg><span className="nav-label">Settings</span></button>
       <button className="sidebar-toggle" type="button" aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!sidebarCollapsed} onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}>{sidebarCollapsed ? '›' : '‹'}</button>

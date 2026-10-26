@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState,useCallback} from 'react'
 import {protectedFetch} from './auth'
-export type Project={planSummary?:string;planError?:string;kind?:'assignment'|'project';resources?:{name:string;text:string}[];id:string;title:string;category:string;description:string;deadline:string;importance:number;remainingMinutes:number;progress:string;status:string}
+export type Project={origin?:'hermes';planSummary?:string;planError?:string;kind?:'assignment'|'project';resources?:{name:string;text:string}[];id:string;title:string;category:string;description:string;deadline:string;importance:number;remainingMinutes:number;progress:string;status:string}
 export type Exam={id:string;calendarId:string;uid:string;recurrenceId:string|null;start:string;allDay:boolean;title:string}
 export type Topic={id:string;title:string;notes:string;minutes:number}
 export type Preparation={id:string;title:string;event:Exam;startDate:string;status:string;topics:Topic[];progress:string}

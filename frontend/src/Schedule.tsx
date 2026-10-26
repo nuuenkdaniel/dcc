@@ -40,6 +40,7 @@ export function Schedule({date,planner}:{date:string;planner:Planner}){
   }catch{setStatus('Backend unavailable · showing cached schedule')}
  },[])
  const forceRefresh=useCallback((freshWrite=false)=>{if(!freshWrite&&Date.now()-lastForcedRefresh.current<2000)return false;lastForcedRefresh.current=Date.now();void refresh(true);return true},[refresh])
+ useEffect(()=>{const update=()=>void refresh();window.addEventListener('dcc-hermes-created',update);return()=>window.removeEventListener('dcc-hermes-created',update)},[refresh])
  useEffect(()=>{let active=true;void cache().then(value=>{if(value&&active)setSnapshot(value)}).catch(()=>{}).finally(()=>{if(active)forceRefresh()});const timer=window.setInterval(()=>{if(document.visibilityState==='visible')void refresh()},60000);const online=()=>void refresh();window.addEventListener('online',online);return()=>{active=false;clearInterval(timer);window.removeEventListener('online',online)}},[refresh,forceRefresh])
  const dayStart=new Date(`${date}T00:00:00`),dayEnd=new Date(dayStart);dayEnd.setDate(dayEnd.getDate()+1)
   const projected=projectCalendarChanges(snapshot.events,pendingItems) as Event[]

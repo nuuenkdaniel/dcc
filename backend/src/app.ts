@@ -1,4 +1,5 @@
 import {manualTaskRoutes} from './manual-tasks.js'
+import {tellHermes} from './tell-hermes.js'
 import {priceRoutes} from './prices.js'
 import {mailRoutes} from './mail.js'
 import {extractMaterial} from './study-material.js'
@@ -19,6 +20,14 @@ export function buildApp(options: { calendarRefresh?:()=>Promise<string>; planne
     capabilities: { dailyPlan: !!options.plannerPool, sync: !!options.calendarSnapshot, authentication: !!options.auth, email: !!options.plannerPool, calendar: !!options.calendarSnapshot },
   }))
   app.register(async scope => {
+    scope.post<{Body:{key:string;prompt:string}}>('/api/v1/hermes/commands',{bodyLimit:20000,config:{rateLimit:{max:12,timeWindow:'1 minute'}},preValidation:async(request,reply)=>{
+      // Reject before Fastify's default coercion/removal of additional fields.
+      const b=request.body
+      if(!b||typeof b!=='object'||Array.isArray(b)||Object.keys(b).sort().join(',')!=='key,prompt'||typeof b.key!=='string'||typeof b.prompt!=='string')return reply.code(400).send({message:'Use only a string submission key and command prompt.'})
+    },schema:{body:{type:'object',required:['key','prompt'],additionalProperties:false,properties:{key:{type:'string',minLength:16,maxLength:80,pattern:'^\\w[\\w-]+$'},prompt:{type:'string',minLength:1,maxLength:4000}}}}},async(request,reply)=>{
+      if(!options.plannerPool)return reply.code(503).send({message:'Planner unavailable. Nothing was created.'})
+      try{const result=await tellHermes(request.body,{pool:options.plannerPool,curator:options.curator,calendarChange:options.calendarChange});return reply.code(result.code).send(result)}catch{return reply.code(502).send({message:'Creation was not confirmed. Retry this same submission safely.'})}
+    })
     if(options.plannerPool){manualTaskRoutes(scope,options.plannerPool);mailRoutes(scope,options.plannerPool);priceRoutes(scope,options.plannerPool)}
     scope.get('/api/v1/planner/snapshot',async(_request,reply)=>options.plannerPool?plannerSnapshot(options.plannerPool):reply.code(503).send({error:'Planner unavailable'}))
     scope.post<{Body:{kind:string;version:number;data:Entity}}>('/api/v1/planner/entity',{schema:{body:{type:'object',required:['kind','version','data'],additionalProperties:false,properties:{kind:{enum:['project','action','preparation']},version:{type:'integer',minimum:0},data:{type:'object',required:['id','title'],properties:{id:{type:'string',format:'uuid'},title:{type:'string',minLength:1,maxLength:240}}}}}}},async(request,reply)=>{
