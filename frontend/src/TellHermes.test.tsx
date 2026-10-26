@@ -35,17 +35,70 @@ test('compact composer submits immediately without preview and reuses persisted 
  await waitFor(()=>expect(protectedFetch).toHaveBeenCalledTimes(2))
  expect(JSON.parse(String(vi.mocked(protectedFetch).mock.calls[1][1]?.body))).toEqual(body)
 })
-test('missing details retain input, corrected command gets a new key, uncertain retries reuse key',async()=>{
- vi.mocked(protectedFetch).mockResolvedValueOnce(new Response(JSON.stringify({message:'Missing required details: date. Nothing was created.'}),{status:422})).mockRejectedValueOnce(Error('fake timeout')).mockResolvedValueOnce(new Response(JSON.stringify({message:'Hermes-created task: Read.'})))
+test.each([
+ 'Missing required details: date, calendar. Nothing was created.',
+ 'Only creating a project/assignment, manual task, or calendar event is allowed. Nothing was created.'
+])('terminal no-write response clears only retry state and unchanged input gets a new key: %s',async message=>{
+ vi.mocked(protectedFetch).mockResolvedValueOnce(new Response(JSON.stringify({code:422,message}),{status:422})).mockRejectedValueOnce(Error('fake timeout')).mockResolvedValueOnce(new Response(JSON.stringify({message:'Created.'})))
+ localStorage.setItem('unrelated','keep')
  const created=vi.fn();render(<TellHermes onCreated={created}/>);enter();submit()
- await screen.findByText('Missing required details: date. Nothing was created.')
+ await screen.findByText(message)
  expect(command()).toHaveValue('Create a task called Read tomorrow')
  expect(created).not.toHaveBeenCalled()
- fireEvent.change(command(),{target:{value:'Create a task called Read on October 27'}});submit()
+ expect(localStorage.getItem('dcc.tell-hermes.submission.v1')).toBeNull()
+ expect(localStorage.getItem('unrelated')).toBe('keep')
+ submit()
  await screen.findByText('Creation was not confirmed. Keep this command unchanged and retry safely.')
- submit();await screen.findByText('Hermes-created task: Read.')
+ submit();await screen.findByText('Created.')
  const bodies=vi.mocked(protectedFetch).mock.calls.map(call=>JSON.parse(String(call[1]?.body)))
  expect(bodies[0].key).not.toBe(bodies[1].key);expect(bodies[1]).toEqual(bodies[2])
+ expect(bodies.every(body=>body.prompt==='Create a task called Read tomorrow')).toBe(true)
+ expect(created).toHaveBeenCalledOnce()
+})
+test.each([
+ [422,{code:422,message:'Calendar save not confirmed. Retry this same submission safely.'}],
+ [422,{message:'Missing required details: date. Nothing was created.'}],
+ [422,{code:422,message:'Missing required details: date.'}],
+ [422,{code:422,message:'Nothing was created.'}],
+ [422,{code:422,message:'Missing required details: date. Nothing was created.',id:'possibly-created'}],
+ [502,{code:422,message:'Missing required details: date. Nothing was created.'}],
+ [422,{code:502,message:'Missing required details: date. Nothing was created.'}]
+])('non-definitive response retains saved key across reload: %s %j',async(status,result)=>{
+ vi.mocked(protectedFetch).mockImplementation(async()=>new Response(JSON.stringify(result),{status}))
+ const created=vi.fn(),first=render(<TellHermes onCreated={created}/>);enter();submit()
+ await waitFor(()=>expect(command()).toBeEnabled())
+ const saved=localStorage.getItem('dcc.tell-hermes.submission.v1')
+ expect(saved).not.toBeNull()
+ first.unmount();render(<TellHermes onCreated={created}/>);submit()
+ await waitFor(()=>expect(protectedFetch).toHaveBeenCalledTimes(2))
+ expect(vi.mocked(protectedFetch).mock.calls.map(call=>JSON.parse(String(call[1]?.body)))).toEqual([JSON.parse(saved!),JSON.parse(saved!)])
+ expect(created).not.toHaveBeenCalled()
+})
+test('invalid JSON retains the exact key across reload and retry',async()=>{
+ vi.mocked(protectedFetch).mockImplementation(async()=>new Response('invalid JSON',{status:422}))
+ const first=render(<TellHermes onCreated={vi.fn()}/>);enter();submit()
+ await screen.findByText('Creation was not confirmed. Keep this command unchanged and retry safely.')
+ const saved=localStorage.getItem('dcc.tell-hermes.submission.v1')
+ first.unmount();render(<TellHermes onCreated={vi.fn()}/>);submit()
+ await screen.findByText('Creation was not confirmed. Keep this command unchanged and retry safely.')
+ expect(vi.mocked(protectedFetch).mock.calls.map(call=>JSON.parse(String(call[1]?.body)))).toEqual([JSON.parse(saved!),JSON.parse(saved!)])
+})
+test('failed retry-state removal retains both the in-memory and persisted key',async()=>{
+ const message='Missing required details: date. Nothing was created.'
+ vi.mocked(protectedFetch).mockImplementation(async()=>new Response(JSON.stringify({code:422,message}),{status:422}))
+ const remove=vi.spyOn(Storage.prototype,'removeItem').mockImplementation(()=>{throw Error('synthetic storage failure')})
+ try{
+  const created=vi.fn(),first=render(<TellHermes onCreated={created}/>);enter();submit()
+  await waitFor(()=>expect(remove).toHaveBeenCalledTimes(1))
+  await waitFor(()=>expect(command()).toBeEnabled())
+  const saved=localStorage.getItem('dcc.tell-hermes.submission.v1')
+  expect(saved).not.toBeNull();expect(command()).toHaveValue('Create a task called Read tomorrow')
+  submit();await waitFor(()=>expect(remove).toHaveBeenCalledTimes(2))
+  first.unmount();render(<TellHermes onCreated={created}/>);submit()
+  await waitFor(()=>expect(remove).toHaveBeenCalledTimes(3))
+  expect(vi.mocked(protectedFetch).mock.calls.map(call=>JSON.parse(String(call[1]?.body)))).toEqual(Array(3).fill(JSON.parse(saved!)))
+  expect(created).not.toHaveBeenCalled()
+ }finally{remove.mockRestore()}
 })
 test('unreadable saved retry state blocks sending instead of discarding it',()=>{
  localStorage.setItem('dcc.tell-hermes.submission.v1','broken')
