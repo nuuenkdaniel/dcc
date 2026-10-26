@@ -42,6 +42,10 @@ export function validateCommand(raw:unknown):Command{
 }
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex')
 function stableId(value:string){const h=hash(value);return `${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-a${h.slice(17,20)}-${h.slice(20,32)}`}
+function boundedCalendars(cached:unknown):{id:string;name:string}[]{
+ // Never truncate or deduplicate: hiding candidates could make intent seem unique.
+ return Array.isArray(cached)&&cached.length<=100&&cached.every(calendar=>calendar&&typeof calendar.name==='string'&&calendar.name.trim()&&calendar.name.length<=240)?cached:[]
+}
 export async function tellHermes(input:{key:string;prompt:string},options:TellOptions):Promise<Result>{
  if(!input||typeof input.key!=='string'||!/^\w[\w-]{15,79}$/.test(input.key)||typeof input.prompt!=='string'||!input.prompt.trim()||input.prompt.length>4000)return {code:400,message:'Provide a command of up to 4,000 characters and a stable submission key.'}
  const id=stableId('tell-receipt:'+input.key),fingerprint=hash(input.prompt),c=await options.pool.connect()
@@ -52,17 +56,20 @@ export async function tellHermes(input:{key:string;prompt:string},options:TellOp
   let receipt=old?.data as Receipt|undefined
   if(receipt&&receipt.fingerprint!==fingerprint)return {code:409,message:'Submission key already used for a different command.'}
   if(receipt?.result)return receipt.result
-  if(!receipt){
-   let command:Command
-   try{command=validateCommand(await (options.curator??callCurator)({mode:'tell-hermes',prompt:input.prompt,timezone:'America/New_York',referenceTime:formatter.format((options.now??(()=>new Date()))()).replace(' ','T')}))}
+   if(!receipt){
+    const state=(await c.query('SELECT snapshot FROM calendar_sync_state WHERE id=1')).rows[0]
+    const calendars=boundedCalendars(state?.snapshot?.calendars)
+    const calendarNames=calendars.map(calendar=>calendar.name)
+    let command:Command
+    try{command=validateCommand(await (options.curator??callCurator)({mode:'tell-hermes',prompt:input.prompt,timezone:'America/New_York',referenceTime:formatter.format((options.now??(()=>new Date()))()).replace(' ','T'),calendarNames}))}
    catch{return {code:502,message:'Hermes could not parse a safe command. Nothing was created; retry or add required details.'}}
    receipt={id,fingerprint,command,targetId:stableId('tell-target:'+input.key)}
    if(command.action==='create-calendar-event'){
     if(!options.calendarChange)return {code:503,message:'Calendar writes are not configured. Nothing was created.'}
-    const state=(await c.query('SELECT snapshot FROM calendar_sync_state WHERE id=1')).rows[0]
-    const calendars=(state?.snapshot?.calendars??[]) as {id:string;name:string}[]
-    const matches=calendars.filter(calendar=>calendar.name===command.calendar)
-    if(matches.length!==1)return {code:422,message:'Missing required details: specify one exact, unambiguous calendar name.'}
+     // Recheck the current cache after parsing, as before; only supplied names qualify.
+     const current=(await c.query('SELECT snapshot FROM calendar_sync_state WHERE id=1')).rows[0]
+     const matches=boundedCalendars(current?.snapshot?.calendars).filter(calendar=>calendar.name.toLowerCase()===command.calendar.toLowerCase())
+     if(!calendarNames.includes(command.calendar)||matches.length!==1||matches[0]!.name!==command.calendar)return {code:422,message:'Missing required details: specify one exact, unambiguous calendar name.'}
     const start=easternInstant(command.start)
     receipt.change={id:receipt.targetId,calendarId:matches[0]!.id,title:command.title,start,end:new Date(Date.parse(start)+command.minutes*60000).toISOString(),allDay:false,description:command.description?`Hermes-created\n${command.description}`:'Hermes-created',location:command.location}
    }
