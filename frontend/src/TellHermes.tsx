@@ -3,6 +3,10 @@ import {protectedFetch} from './auth'
 
 type Submission={key:string;prompt:string}
 const STORAGE='dcc.tell-hermes.submission.v1'
+function terminalNoWrite(result:{code?:number;message?:string}){
+ if(result.code!==422||Object.keys(result).sort().join(',')!=='code,message'||typeof result.message!=='string')return false
+ return /^Missing required details: (?:title|date|time|duration|calendar|deadline|kind)(?:, (?:title|date|time|duration|calendar|deadline|kind))*\. Nothing was created\.$/.test(result.message)||result.message==='Only creating a project/assignment, manual task, or calendar event is allowed. Nothing was created.'
+}
 function read():Submission|null{
  const raw=localStorage.getItem(STORAGE)
  if(!raw)return null
@@ -23,7 +27,11 @@ export function TellHermes({onCreated}:{onCreated:()=>void}){
    // Persist before sending; reloads and uncertain responses reuse this key.
    localStorage.setItem(STORAGE,JSON.stringify(next));submission.current=next
    const response=await protectedFetch('/api/v1/hermes/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(next),signal:AbortSignal.timeout(180000)})
-   const result=await response.json() as {message?:string;error?:string}
+   const result=await response.json() as {code?:number;message?:string;error?:string}
+   if(response.status===422&&terminalNoWrite(result)){
+    // Clear memory only after persistence succeeds so storage failures remain retryable.
+    localStorage.removeItem(STORAGE);submission.current=null
+   }
    setMessage(result.message??result.error??'Creation was not confirmed. Retry this same submission safely.')
    if(response.ok)onCreated()
   }catch{setMessage('Creation was not confirmed. Keep this command unchanged and retry safely.')}
