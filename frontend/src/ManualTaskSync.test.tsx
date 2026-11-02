@@ -144,3 +144,67 @@ it('an already represented completion still checks for an external write under i
  expect(screen.getByRole('alert')).toHaveTextContent(/Tasks changed in another tab/)
  expect(JSON.parse(localStorage.getItem(TASKS)!)).toEqual([external,s.incoming])
 })
+
+it('real App task-mode receipts refresh planner and manual completion without forcing a calendar refresh',async()=>{
+ // Unlike the default two-argument setup shim, support the browser's
+ // request(name, {signal}, callback) overload used by ManualTaskSync. Serialize
+ // per lock name so the real sync/storage path is exercised, not bypassed.
+ const queues=new Map<string,Promise<unknown>>()
+ const request=vi.fn((name:string,...args:unknown[])=>{
+  const callback=args.at(-1) as ()=>unknown
+  const options=args.length===2?args[0] as LockOptions:undefined
+  const next=(queues.get(name)??Promise.resolve()).then(()=>{
+   if(options?.signal?.aborted)throw new DOMException('Synthetic lock cancelled','AbortError')
+   return callback()
+  })
+  queues.set(name,next.catch(()=>undefined))
+  return next
+ })
+ Object.defineProperty(navigator,'locks',{configurable:true,value:{request}})
+ const now=new Date(),date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`
+ let server:SharedTask[]=[{id:'local',title:'Local task',date,notes:'',completed:false}],version=1
+ localStorage.setItem(TASKS,JSON.stringify(server))
+ const fetcher=vi.fn(async(input:RequestInfo|URL,options?:RequestInit)=>{
+  const path=String(input)
+  if(path==='/api/v1/hermes/capabilities')return response({taskActions:true})
+  if(path==='/api/v1/auth/session')return response({authenticated:true,configured:true})
+  if(path==='/api/v1/calendar/refresh')return response({status:'success'})
+  if(path==='/api/v1/calendar/snapshot')return response({calendars:[],events:[],lastSuccess:null})
+  if(path==='/api/v1/planner/snapshot')return response({projects:[],actions:[],preparations:[],status:{}})
+  if(path==='/api/v1/planner/manual-tasks'){
+   if(options?.method==='POST'){server=JSON.parse(String(options.body)).tasks;version++;return response({version})}
+   return response({version,data:{tasks:server}})
+  }
+  if(path==='/api/v1/hermes/task-actions'){
+   server=server.map(task=>({...task,completed:true}));version++
+   return response({message:'Receipts checked.',summary:{phase:'completed',outcome:'effects_recorded',effects:[{tool:'set_task_completed',state:'applied',id:'local',version}],pending:0}})
+  }
+  return {ok:false,status:503,json:async()=>({})} as Response
+ })
+ vi.stubGlobal('fetch',fetcher)
+ render(<App/>)
+ await screen.findByText('Tasks synced.')
+ expect(request).toHaveBeenCalledWith('daymark.manual-task-sync.v1',expect.objectContaining({signal:expect.any(AbortSignal)}),expect.any(Function))
+ expect(screen.getByRole('checkbox',{name:'Complete Local task'})).not.toBeChecked()
+ expect(JSON.parse(localStorage.getItem(BASE)!)).toEqual(server)
+ await screen.findByText('Projects and curated actions are up to date.')
+ await waitFor(()=>expect(fetcher.mock.calls.some(call=>String(call[0])==='/api/v1/calendar/snapshot')).toBe(true))
+ const count=(path:string)=>fetcher.mock.calls.filter(call=>String(call[0])===path).length
+ const calendar=count('/api/v1/calendar/refresh'),planner=count('/api/v1/planner/snapshot'),manual=count('/api/v1/planner/manual-tasks')
+ fireEvent.change(await screen.findByRole('combobox',{name:'Hermes mode'}),{target:{value:'tasks'}})
+ const input=screen.getByPlaceholderText('Hermes')
+ fireEvent.change(input,{target:{value:'Complete Local task'}})
+ fireEvent.submit(input.closest('form')!)
+ await screen.findByText('Task actions saved.')
+ await waitFor(()=>expect(screen.getByRole('checkbox',{name:'Complete Local task'})).toBeChecked())
+ expect(count('/api/v1/planner/snapshot')).toBeGreaterThan(planner)
+ expect(count('/api/v1/planner/manual-tasks')).toBeGreaterThan(manual)
+ expect(count('/api/v1/calendar/refresh')).toBe(calendar)
+ expect(count('/api/v1/hermes/task-actions')).toBe(1)
+ expect(fetcher.mock.calls.find(call=>String(call[0])==='/api/v1/hermes/capabilities')?.[1]?.credentials).toBe('same-origin')
+ const taskRequest=fetcher.mock.calls.find(call=>String(call[0])==='/api/v1/hermes/task-actions')!
+ expect(taskRequest[1]?.credentials).toBe('same-origin')
+ expect(Object.keys(JSON.parse(String(taskRequest[1]?.body))).sort()).toEqual(['key','prompt'])
+ expect(JSON.parse(localStorage.getItem(TASKS)!)[0].completed).toBe(true)
+ await waitFor(()=>expect(JSON.parse(localStorage.getItem(BASE)!)[0].completed).toBe(true))
+})

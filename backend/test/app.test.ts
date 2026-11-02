@@ -22,7 +22,7 @@ test('capabilities explicitly report unavailable services', async () => {
   } finally { await app.close() }
 })
 test('configuration defaults to the isolated development port', () => {
-  assert.deepEqual(loadConfig({}), { host: '127.0.0.1', port: 5301, logLevel: 'info' })
+  assert.deepEqual(loadConfig({}), { host: '127.0.0.1', port: 5301, logLevel: 'info', taskActionsEnabled:false })
 })
 test('configuration supports explicit PORT overrides', () => {
   for (const port of [3001, 5302, 65535]) {

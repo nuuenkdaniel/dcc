@@ -1,6 +1,6 @@
 import {migratePrices} from './prices.js'
 import {migrateMail} from './mail.js'
-import {migratePlanner} from './planner.js'
+import {migratePlanner,callCurator} from './planner.js'
 import { buildApp } from './app.js'
 import { loadConfig } from './config.js'
 import {Pool} from 'pg'
@@ -8,6 +8,7 @@ import {migrate,sessionStore} from './database.js'
 import {readCalendarConfig} from './caldav.js'
 import {sourceHash,runSync,fetchSnapshot} from './sync.js'
 import {applyChange} from './calendar-write.js'
+import {configuredTaskActions} from './mcp/task-actions.js'
 
 try { process.loadEnvFile('.env') } catch (error) {
   if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
@@ -19,7 +20,10 @@ const calendar=readCalendarConfig()
 const username=process.env.DAYMARK_USERNAME,password=process.env.DAYMARK_PASSWORD,origin=process.env.APP_ORIGIN
 if(origin && new URL(origin).origin!==origin) throw new Error('APP_ORIGIN must be an exact origin')
 const auth=pool && username && password && origin ? {username,password,origin,store:sessionStore(pool)}:undefined
-const app = buildApp({ ...(pool?{plannerPool:pool}:{}), logger: { level: config.logLevel }, ...(auth?{auth}:{}), ...(pool && calendar?{calendarRefresh:()=>runSync(pool,calendar.interval,sourceHash(calendar),()=>fetchSnapshot(calendar),true,30),calendarChange:(change)=>applyChange(pool,calendar,change),calendarSnapshot:async()=>{
+const taskActions=configuredTaskActions({enabled:config.taskActionsEnabled,pool,authConfigured:!!auth,
+  bridgeConfigured:!!process.env.HERMES_CURATOR_URL&&!!process.env.HERMES_CURATOR_TOKEN,
+  bridge:(input,signal)=>callCurator(input,{signal,timeoutMs:105000})})
+const app = buildApp({ ...(taskActions?{taskActions}:{}), ...(pool?{plannerPool:pool}:{}), logger: { level: config.logLevel }, ...(auth?{auth}:{}), ...(pool && calendar?{calendarRefresh:()=>runSync(pool,calendar.interval,sourceHash(calendar),()=>fetchSnapshot(calendar),true,30),calendarChange:(change)=>applyChange(pool,calendar,change),calendarSnapshot:async()=>{
  const row=(await pool.query('SELECT snapshot,last_success,error,source_hash FROM calendar_sync_state WHERE id=1')).rows[0]
  if(row.source_hash!==sourceHash(calendar)) return {calendars:[],events:[],lastSuccess:null,error:'Awaiting first sync'}
  return {...row.snapshot,lastSuccess:row.last_success,error:row.error}

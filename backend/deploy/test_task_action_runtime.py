@@ -1,0 +1,149 @@
+"""Synthetic-only tests: no network, credential files, DB or Hermes imports."""
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import sys
+import types
+import unittest
+from unittest.mock import Mock, patch
+
+import task_action_runtime as runtime
+
+TOKEN = 'a' * 64
+EXPIRY = 1120000
+
+
+class RelayTests(unittest.TestCase):
+    def connection(self, status=200, body=b'{"jsonrpc":"2.0","id":1,"result":{}}'):
+        response = types.SimpleNamespace(status=status, read=io.BytesIO(body).read)
+        return types.SimpleNamespace(request=Mock(), getresponse=Mock(return_value=response), close=Mock())
+
+    def test_fixed_tls_post_capability_header_only_and_no_cookie_or_origin(self):
+        connection = self.connection()
+        output = io.StringIO()
+        with patch.object(runtime.time, 'time', return_value=1000), \
+             patch.object(runtime.ssl, 'create_default_context', return_value='verified-default-context') as tls, \
+             patch.object(runtime.http.client, 'HTTPSConnection', return_value=connection) as https:
+            runtime.relay(TOKEN, EXPIRY, io.StringIO('{"jsonrpc":"2.0","id":1,"method":"ping"}\n'), output)
+        tls.assert_called_once_with()
+        https.assert_called_once_with('dcc.home.captnuu.online', 443, timeout=15, context='verified-default-context')
+        args, kwargs = connection.request.call_args
+        self.assertEqual(args, ('POST', '/api/v1/hermes/mcp-task-callback'))
+        self.assertEqual(kwargs['headers']['Authorization'], 'Bearer ' + TOKEN)
+        self.assertNotIn('Cookie', kwargs['headers']); self.assertNotIn('Origin', kwargs['headers'])
+        self.assertNotIn(TOKEN, kwargs['body'].decode())
+        self.assertNotIn(TOKEN, output.getvalue())
+        self.assertEqual(json.loads(output.getvalue())['id'], 1)
+
+    def test_redirect_error_expiry_large_input_and_wrong_response_id_fail_without_retry(self):
+        for status, body in [(302, b''), (403, b''), (200, b'{"jsonrpc":"2.0","id":"1","result":{}}')]:
+            connection = self.connection(status, body); factory = Mock(return_value=connection)
+            with patch.object(runtime.time, 'time', return_value=1000), self.assertRaises(ValueError):
+                runtime.relay(TOKEN, EXPIRY, io.StringIO('{"jsonrpc":"2.0","id":1,"method":"ping"}\n'), io.StringIO(), factory)
+            factory.assert_called_once_with(); connection.close.assert_called_once_with()
+        factory = Mock()
+        for line, expiry in [('x' * 65537, EXPIRY), ('{}\n', 1)]:
+            with patch.object(runtime.time, 'time', return_value=1000), self.assertRaises(ValueError):
+                runtime.relay(TOKEN, expiry, io.StringIO(line), io.StringIO(), factory)
+        factory.assert_not_called()
+
+    def test_notification_is_not_emitted_as_fake_response(self):
+        connection = self.connection(202)
+        output = io.StringIO()
+        with patch.object(runtime.time, 'time', return_value=1000):
+            runtime.relay(TOKEN, EXPIRY, io.StringIO('{"jsonrpc":"2.0","method":"notifications/initialized"}\n'), output, lambda: connection)
+        self.assertEqual(output.getvalue(), '')
+
+    def test_capability_removed_from_process_environment_before_runtime_imports(self):
+        with patch.dict(os.environ, {'DCC_TASK_CALLBACK_CAPABILITY': TOKEN, 'DCC_TASK_CALLBACK_EXPIRES_AT': str(EXPIRY)}, clear=True), \
+             patch.object(runtime.time, 'time', return_value=1000):
+            self.assertEqual(runtime.capability_environment(), (TOKEN, EXPIRY))
+            self.assertEqual(dict(os.environ), {})
+
+
+class RuntimeTests(unittest.TestCase):
+    def test_actual_bindings_use_filtered_subprocess_env_and_never_model_operation_keys(self):
+        names = ['mcp__dcc_task__' + name for name in sorted(runtime.TOOLS)]
+        schemas = [{'type':'function', 'function':{'name':name, 'parameters':{'type':'object','properties':{}}}} for name in names]
+        register = Mock(return_value=names); shutdown = Mock()
+        agent = types.SimpleNamespace(tools=schemas, valid_tool_names=set(names), run_conversation=Mock(return_value={}), close=Mock())
+        factory = Mock(return_value=agent)
+        modules = {
+            'tools': types.ModuleType('tools'),
+            'tools.mcp_tool_discovery': types.SimpleNamespace(register_mcp_servers=register),
+            'tools.mcp_tool_lifecycle': types.SimpleNamespace(shutdown_mcp_servers=shutdown),
+            'tools.registry': types.SimpleNamespace(registry=types.SimpleNamespace(get_toolset_for_tool=lambda _name:'mcp-dcc_task')),
+            'run_agent': types.SimpleNamespace(AIAgent=factory),
+        }
+        modules['tools'].__path__ = []
+        with patch.dict(sys.modules, modules), patch.object(runtime.time, 'time', return_value=1000):
+            runtime.run_action(TOKEN, EXPIRY, 'Synthetic authenticated task request')
+            config = register.call_args.args[0]['dcc_task']
+            self.assertEqual(config['env']['DCC_TASK_CALLBACK_CAPABILITY'], TOKEN)
+            self.assertNotIn(TOKEN, repr(config['args']))
+            self.assertEqual(config['sampling'], {'enabled':False})
+            self.assertEqual(config['tools']['include'], sorted(runtime.TOOLS))
+            options = factory.call_args.kwargs
+            self.assertEqual(options['enabled_toolsets'], ['mcp-dcc_task'])
+            self.assertEqual(options['max_iterations'], 4)
+            self.assertNotIn(TOKEN, repr(options))
+            agent.close.assert_called_once_with(); shutdown.assert_called_once_with(timeout=15.0)
+            agent.run_conversation.reset_mock()
+            agent.tools = [{'type':'function','function':{'name':'tool_call','parameters':{'type':'object','properties':{}}}}]
+            with self.assertRaises(ValueError):
+                runtime.run_action(TOKEN, EXPIRY, 'Synthetic')
+            agent.run_conversation.assert_not_called()
+
+
+class BridgeTests(unittest.TestCase):
+    def bridge(self):
+        # The existing bridge reads its token at import. Intercept that exact
+        # source read with a synthetic value; no private file is ever opened.
+        spec = importlib.util.spec_from_file_location('synthetic_curator_bridge', Path(__file__).with_name('curator_bridge.py'))
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {'DAYMARK_CURATOR_TOKEN_FILE':'/never-open'}, clear=True), \
+             patch.object(Path, 'read_text', return_value='synthetic-bridge-bearer'):
+            spec.loader.exec_module(module)
+        return module
+
+    def request(self, module, payload, bearer='synthetic-bridge-bearer'):
+        handler = object.__new__(module.Handler)
+        body = json.dumps(payload).encode()
+        handler.path = '/curate'
+        handler.headers = {'Authorization':'Bearer '+bearer, 'Content-Length':str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler.connection = types.SimpleNamespace(settimeout=Mock())
+        handler.respond = Mock()
+        handler.do_POST()
+        return handler.respond.call_args.args
+
+    def test_bridge_disabled_by_default_and_service_auth_does_not_become_callback_auth(self):
+        module = self.bridge()
+        with patch.dict(os.environ, {}, clear=True), patch.object(module.subprocess, 'run') as spawn:
+            self.assertEqual(self.request(module, {'mode':'task-action'})[0], 503)
+            self.assertEqual(self.request(module, {'mode':'task-action'}, 'wrong')[0], 401)
+            spawn.assert_not_called()
+
+    def test_bridge_passes_capability_only_in_env_and_leaves_legacy_parser_path_intact(self):
+        module = self.bridge()
+        with patch.dict(os.environ, {'DAYMARK_TASK_ACTIONS_ENABLED':'1'}, clear=True), \
+             patch.object(module.time, 'time', return_value=1000), \
+             patch.object(module.subprocess, 'run', return_value=types.SimpleNamespace(returncode=0, stdout='{"status":"finished"}')) as spawn:
+            payload = {'mode':'task-action','prompt':'Synthetic task request','callbackCapability':TOKEN,'expiresAt':EXPIRY}
+            self.assertEqual(self.request(module, payload), (200, {'status':'finished'}))
+            args, kwargs = spawn.call_args
+            self.assertEqual(args[0], ['/usr/bin/python3', str(Path(module.__file__).with_name('task_action_launcher.py'))])
+            self.assertNotIn(TOKEN, repr(args)); self.assertNotIn(TOKEN, kwargs['input'])
+            self.assertEqual(kwargs['env']['DCC_TASK_CALLBACK_CAPABILITY'], TOKEN)
+            self.assertEqual(kwargs['env']['HERMES_HOME'], '/root/.hermes/profiles/daymark-curator')
+            self.assertEqual(kwargs['timeout'], 105)
+            spawn.return_value = types.SimpleNamespace(returncode=0, stdout='{"action":"rejected"}')
+            self.assertEqual(self.request(module, {'mode':'tell-hermes','prompt':'Synthetic legacy command'})[0], 200)
+            self.assertIn('--max-turns', spawn.call_args.args[0])
+            self.assertNotIn('env', spawn.call_args.kwargs)
+
+
+if __name__ == '__main__':
+    unittest.main()

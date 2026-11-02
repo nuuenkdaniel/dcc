@@ -3,6 +3,7 @@ import { promisify } from 'node:util'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import cookie from '@fastify/cookie'
 import rateLimit from '@fastify/rate-limit'
+import {TASK_CALLBACK_PATH} from './mcp/task-actions.js'
 export interface SessionStore {
  put(id:string, identity:string, expires:number):Promise<void>
  has(id:string, identity:string):Promise<boolean>
@@ -13,7 +14,7 @@ export const SESSION_SECONDS=30*24*60*60
 const PUBLIC_API_ROUTES=new Set(['/api/v1/status','/api/v1/auth/session','/api/v1/auth/login','/api/v1/auth/logout'])
 const digest=(text:string)=>createHash('sha256').update(text).digest('hex')
 const derive=promisify(scrypt)
-export function registerAuth(app:FastifyInstance, config?:AuthConfig) {
+export function registerAuth(app:FastifyInstance, config?:AuthConfig, taskCallback?:{verify:(authorization:unknown)=>Promise<boolean>}) {
  app.register(cookie)
  app.register(rateLimit,{global:false})
  const salt=randomBytes(32)
@@ -23,8 +24,15 @@ export function registerAuth(app:FastifyInstance, config?:AuthConfig) {
   const token=request.cookies.daymark_session
   return !!config && !!token && /^[a-f0-9]{64}$/.test(token) && await config.store.has(digest(token),identity)
  }
- app.addHook('onRequest',async (request,reply)=>{
-  if(request.url.startsWith('/api/')) reply.header('Cache-Control','no-store')
+  app.addHook('onRequest',async (request,reply)=>{
+   if(request.url.startsWith('/api/')) reply.header('Cache-Control','no-store')
+   // Exact opt-in POST only. Neither a browser cookie nor the bridge service
+   // bearer authorizes this callback. No prefix/query/other-method exemption.
+   if(taskCallback&&request.method==='POST'&&request.url===TASK_CALLBACK_PATH){
+    if(!config)return reply.code(503).send({error:'Authentication is not configured'})
+    if(request.headers.cookie!==undefined||request.headers.origin!==undefined||!(await taskCallback.verify(request.headers.authorization)))return reply.code(403).send({error:'Task callback denied'})
+    return
+   }
   if(!['GET','HEAD','OPTIONS'].includes(request.method) && request.url.startsWith('/api/')) {
    if(!config) return reply.code(503).send({error:'Authentication is not configured'})
    if(request.headers.origin!==config.origin) return reply.code(403).send({error:'Origin not permitted'})

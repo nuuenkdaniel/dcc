@@ -1,4 +1,4 @@
-"""Loopback-only, authenticated adapter for the tool-free Daymark Hermes profile."""
+"""Loopback authenticated curator adapter; task MCP mode is explicitly opt-in."""
 import hmac
 import json
 import os
@@ -6,6 +6,7 @@ import subprocess
 import threading
 import re
 import sqlite3
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -71,6 +72,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.connection.settimeout(10)
             data = json.loads(self.rfile.read(size))
+            if type(data) is not dict:
+                raise ValueError('Invalid request')
         except (ValueError, OSError):
             self.respond(400, {'error': 'Invalid JSON'})
             return
@@ -94,10 +97,37 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, sqlite3.Error):
                 self.respond(400, {'error':'Session unavailable or too large; paste relevant study notes instead'})
             return
+        if data.get('mode') == 'task-action' and os.environ.get('DAYMARK_TASK_ACTIONS_ENABLED') != '1':
+            self.respond(503, {'error':'Task actions are disabled'})
+            return
         if not LOCK.acquire(blocking=False):
             self.respond(429, {'error': 'Curator busy'})
             return
         try:
+            if data.get('mode') == 'task-action':
+                # The existing bridge bearer admits this request only; the
+                # independent capability authenticates backend MCP callbacks.
+                capability = data.get('callbackCapability')
+                expiry = data.get('expiresAt')
+                prompt = data.get('prompt')
+                if (set(data) != {'mode','callbackCapability','expiresAt','prompt'}
+                        or type(capability) is not str or not re.fullmatch(r'[a-f0-9]{64}', capability)
+                        or type(expiry) is not int or not time.time()*1000 < expiry <= time.time()*1000+120000
+                        or type(prompt) is not str or not 0 < len(prompt) <= 4000):
+                    raise ValueError('Invalid task invocation')
+                env = os.environ.copy()
+                env['HERMES_HOME'] = '/root/.hermes/profiles/daymark-curator'
+                env['DCC_TASK_CALLBACK_CAPABILITY'] = capability
+                env['DCC_TASK_CALLBACK_EXPIRES_AT'] = str(expiry)
+                # System Python runs ONLY the stdlib wrapper. Hermes's official
+                # launcher supplies the isolated bootstrap/dependencies for action.
+                result = subprocess.run(['/usr/bin/python3', str(Path(__file__).with_name('task_action_launcher.py'))],
+                    input=json.dumps({'prompt':prompt}), text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    env=env, timeout=105, cwd='/root/.hermes/profiles/daymark-curator')
+                if result.returncode or json.loads(result.stdout) != {'status':'finished'}:
+                    raise ValueError('Task invocation unconfirmed')
+                self.respond(200, {'status':'finished'})
+                return
             result = subprocess.run([
                 '/root/.local/bin/hermes', '-p', 'daymark-curator', 'chat',
                 '--oneshot', '-Q', '--ignore-rules', '--provider', 'openai-codex',
@@ -111,7 +141,7 @@ class Handler(BaseHTTPRequestHandler):
             start, end = text.find('{'), text.rfind('}')
             parsed = json.loads(text[start:end + 1])
             self.respond(200, parsed)
-        except (ValueError, subprocess.TimeoutExpired):
+        except (ValueError, subprocess.TimeoutExpired, OSError):
             self.respond(502, {'error': 'Curator failed; previous plan is unchanged'})
         finally:
             LOCK.release()
