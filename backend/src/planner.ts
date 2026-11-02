@@ -53,10 +53,14 @@ export async function saveEntity(pool:Pool,kind:string,version:number,data:Entit
  }catch(e){await c.query('ROLLBACK');throw e}finally{c.release()}
 }
 export async function requestPlan(pool:Pool){await pool.query('UPDATE planner_runs SET requested=true,next_attempt=now() WHERE id=1')}
-export async function callCurator(input:unknown){
+export async function callCurator(input:unknown,options:{signal?:AbortSignal;timeoutMs?:number}={}){
  const url=process.env.HERMES_CURATOR_URL,token=process.env.HERMES_CURATOR_TOKEN
  if(!url||!token)throw new Error('Curator not configured')
- const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify(input),signal:AbortSignal.timeout(150000),redirect:'error'})
+  const timeout=options.timeoutMs??150000
+  if(!Number.isInteger(timeout)||timeout<1||timeout>150000)throw new Error('Invalid curator timeout')
+  const deadline=AbortSignal.timeout(timeout)
+  const signal=options.signal?AbortSignal.any([options.signal,deadline]):deadline
+  const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify(input),signal,redirect:'error'})
  if(!response.ok)throw new Error('Curator unavailable')
  return response.json() as Promise<unknown>
 }

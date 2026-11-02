@@ -294,6 +294,9 @@ nav { display: grid; gap: 5px; }
 .schedule-actions a:hover { background:var(--accent-soft); }
 
 .tell-hermes { min-width:0; margin:0 0 24px; }
+.tell-hermes-row { display:flex; align-items:center; gap:8px; min-width:0; }
+.tell-hermes-row input { flex:1; }
+.tell-hermes-row select { flex:0 0 auto; max-width:40%; min-height:44px; padding:8px; border:1px solid var(--control-border); border-radius:8px; background:var(--control-bg); color:var(--control-text); }
 .tell-hermes input { display:block; width:100%; min-width:0; min-height:44px; padding:10px 14px; border:1px solid var(--control-border); border-radius:8px; background:var(--control-bg); color:var(--control-text); }
 .tell-hermes input::placeholder { color:var(--muted); }
 .tell-hermes p { margin:8px 0 0; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }

@@ -1,41 +1,119 @@
-import {useRef,useState} from 'react'
+import {useEffect,useRef,useState} from 'react'
 import {protectedFetch} from './auth'
 
-type Submission={key:string;prompt:string}
+type Mode='legacy'|'tasks'
+type Submission={key:string;prompt:string;mode:Mode;settled:boolean}
 const STORAGE='dcc.tell-hermes.submission.v1'
-function terminalNoWrite(result:{code?:number;message?:string}){
+const record=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==='object'&&!Array.isArray(v)
+const exact=(v:Record<string,unknown>,keys:string[])=>Object.keys(v).sort().join(',')===[...keys].sort().join(',')
+function legacyApplied(v:Record<string,unknown>){
+  return exact(v,['code','message','id','kind','origin'])&&v.code===200&&v.origin==='hermes'&&typeof v.message==='string'&&typeof v.id==='string'&&/^[a-f0-9-]{36}$/.test(v.id)&&['task','project','assignment','event'].includes(String(v.kind))
+}
+function taskReceipt(v:Record<string,unknown>){
+  if(!exact(v,['message','summary'])||typeof v.message!=='string'||!record(v.summary))return null
+  const s=v.summary,completed=s.phase==='completed'
+  if(!exact(s,completed?['phase','outcome','effects','pending']:['phase','effects','pending'])||!['admitted','active','uncertain','completed'].includes(String(s.phase))||!Number.isInteger(s.pending)||Number(s.pending)<0||Number(s.pending)>12||!Array.isArray(s.effects)||s.effects.length>4)return null
+  let applied=0,failed=0,uncertain=0
+  for(const e of s.effects){
+    if(!record(e)||!['create_task','set_task_completed'].includes(String(e.tool)))return null
+    if(e.state==='applied'){
+      if(!exact(e,['tool','state','id','version'])||typeof e.id!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._@+%=-]{0,199}$(?![\s\S])/.test(e.id)||!Number.isSafeInteger(e.version)||Number(e.version)<1||Number(e.version)>2147483647)return null
+      applied++
+    }else{
+      if(!exact(e,['tool','state'])||!['conflict','rejected','uncertain'].includes(String(e.state)))return null
+      if(e.state==='uncertain')uncertain++;else failed++
+    }
+  }
+  if(Number(s.pending)<uncertain)return null
+  if(s.phase==='admitted'&&(s.effects.length||s.pending!==0))return null
+  if(completed){
+    if(s.pending!==0||uncertain)return null
+    const outcome=applied?(failed?'partial':'effects_recorded'):failed?'rejected':'no_effects_recorded'
+    if(s.outcome!==outcome)return null
+  }
+  const message=completed
+    ? applied?(failed?`Some task actions saved (${applied}); others conflicted or were rejected. Review tasks before a new request.`:'Task actions saved.'):failed?'No task writes were applied. The request was rejected or conflicted.':'No task writes were recorded. Edit the request to start a new intent.'
+    : `Task action ${s.phase==='uncertain'?'uncertain':'pending'}. Recorded saved effects: ${applied}. Retry unchanged to check receipts.`
+  return {applied,settled:completed,message}
+}
+function terminalNoWrite(result:Record<string,unknown>){
  if(result.code!==422||Object.keys(result).sort().join(',')!=='code,message'||typeof result.message!=='string')return false
  return /^Missing required details: (?:title|date|time|duration|calendar|deadline|kind)(?:, (?:title|date|time|duration|calendar|deadline|kind))*\. Nothing was created\.$/.test(result.message)||result.message==='Only creating a project/assignment, manual task, or calendar event is allowed. Nothing was created.'
 }
 function read():Submission|null{
  const raw=localStorage.getItem(STORAGE)
  if(!raw)return null
- const value=JSON.parse(raw) as Submission
- if(typeof value.key!=='string'||!/^\w[\w-]{15,79}$/.test(value.key)||typeof value.prompt!=='string'||value.prompt.length>4000)throw Error('Invalid saved submission')
- return value
+  const value:unknown=JSON.parse(raw)
+  if(!record(value)||Object.keys(value).some(k=>!['key','prompt','mode','settled'].includes(k))||typeof value.key!=='string'||!/^\w[\w-]{15,79}$/.test(value.key)||typeof value.prompt!=='string'||value.prompt.length>4000||value.mode!==undefined&&!['legacy','tasks'].includes(String(value.mode))||value.settled!==undefined&&typeof value.settled!=='boolean')throw Error('Invalid saved submission')
+  // Old entries are unresolved LEGACY attempts; never migrate their executor.
+  return {key:value.key,prompt:value.prompt,mode:value.mode===undefined?'legacy':value.mode as Mode,settled:value.settled===true}
 }
-export function TellHermes({onCreated}:{onCreated:()=>void}){
+export function TellHermes({onCreated}:{onCreated:(scope?:'tasks')=>void}){
  const [initial]=useState(()=>{try{return {submission:read(),error:false}}catch{return {submission:null,error:true}}})
- const [prompt,setPrompt]=useState(initial.submission?.prompt??'')
- const submission=useRef(initial.submission),inFlight=useRef(false)
- const [busy,setBusy]=useState(false),[message,setMessage]=useState(initial.error?'Saved Tell Hermes submission cannot be read. Sending is paused to protect retries.':'')
- const send=async()=>{
-  if(inFlight.current||initial.error||!prompt.trim())return
-  inFlight.current=true;setBusy(true);setMessage('Creating…')
-  try{
-   const next=submission.current?.prompt===prompt?submission.current:{key:crypto.randomUUID(),prompt}
+  const [prompt,setPrompt]=useState(initial.submission?.prompt??'')
+  const [mode,setMode]=useState<Mode>(initial.submission?.mode??'legacy')
+  const [saved,setSaved]=useState(initial.submission),[available,setAvailable]=useState(false)
+  const submission=useRef(initial.submission),inFlight=useRef(false),newIntent=useRef(false)
+  const [busy,setBusy]=useState(false),[message,setMessage]=useState(initial.error?'Saved Tell Hermes submission cannot be read. Sending is paused to protect retries.':'')
+  const locked=!!saved&&!saved.settled
+  useEffect(()=>{
+    if(initial.error)return
+    let alive=true,generation=0
+    const discover=async()=>{
+      const current=++generation
+      try{
+        const r=await protectedFetch('/api/v1/hermes/capabilities',{signal:AbortSignal.timeout(8000)})
+        const v:unknown=r.ok?await r.json():null
+        if(alive&&current===generation)setAvailable(record(v)&&exact(v,['taskActions'])&&v.taskActions===true)
+      }catch{if(alive&&current===generation)setAvailable(false)}
+    }
+    const signedOut=()=>{generation++;setAvailable(false)}
+    void discover()
+    window.addEventListener('dcc-auth-changed',discover);window.addEventListener('focus',discover);window.addEventListener('dcc-auth-required',signedOut)
+    return()=>{alive=false;generation++;window.removeEventListener('dcc-auth-changed',discover);window.removeEventListener('focus',discover);window.removeEventListener('dcc-auth-required',signedOut)}
+  },[initial.error])
+  const send=async()=>{
+   if(inFlight.current||initial.error||!prompt.trim()||mode==='tasks'&&!available)return
+   const prior=submission.current
+   if(prior&&!prior.settled&&(prior.prompt!==prompt||prior.mode!==mode))return
+   inFlight.current=true;setBusy(true);setMessage(mode==='tasks'?'Updating tasks…':'Creating…')
+   let confirmedEffects=false
+   try{
+    const persisted=read()
+    if(persisted&&!persisted.settled&&(persisted.key!==prior?.key||persisted.prompt!==prior?.prompt||persisted.mode!==prior?.mode))throw Error('Another saved request must be retained')
+    const key=prior&&prior.prompt===prompt&&prior.mode===mode&&!newIntent.current?prior.key:crypto.randomUUID()
+    const next:Submission={key,prompt,mode,settled:false}
    // Persist before sending; reloads and uncertain responses reuse this key.
-   localStorage.setItem(STORAGE,JSON.stringify(next));submission.current=next
-   const response=await protectedFetch('/api/v1/hermes/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(next),signal:AbortSignal.timeout(180000)})
-   const result=await response.json() as {code?:number;message?:string;error?:string}
-   if(response.status===422&&terminalNoWrite(result)){
+    localStorage.setItem(STORAGE,JSON.stringify(next));submission.current=next;setSaved(next);newIntent.current=false
+    const response=await protectedFetch(mode==='tasks'?'/api/v1/hermes/task-actions':'/api/v1/hermes/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,prompt}),signal:AbortSignal.timeout(180000)})
+    const result:unknown=await response.json()
+    if(!record(result))throw Error('Invalid receipt')
+    if(mode==='legacy'&&response.status===422&&terminalNoWrite(result)){
     // Clear memory only after persistence succeeds so storage failures remain retryable.
-    localStorage.removeItem(STORAGE);submission.current=null
-   }
-   setMessage(result.message??result.error??'Creation was not confirmed. Retry this same submission safely.')
-   if(response.ok)onCreated()
-  }catch{setMessage('Creation was not confirmed. Keep this command unchanged and retry safely.')}
+     localStorage.removeItem(STORAGE);submission.current=null;setSaved(null);setMessage(String(result.message));return
+    }
+    const task=mode==='tasks'&&response.status===200?taskReceipt(result):null
+    const legacy=mode==='legacy'&&response.status===200&&legacyApplied(result)
+    if(!task&&!legacy)throw Error('Unconfirmed receipt')
+    if(task?.applied){confirmedEffects=true;onCreated('tasks')}else if(legacy){confirmedEffects=true;onCreated()}
+    if(task?.settled||legacy){
+      const settled={...next,settled:true}
+      localStorage.setItem(STORAGE,JSON.stringify(settled));submission.current=settled;setSaved(settled)
+    }
+    setMessage(task?task.message:String(result.message))
+   }catch{setMessage(confirmedEffects?'Saved effects confirmed; retry state remains pinned. Retry this request unchanged.':mode==='tasks'?'Task action was not confirmed. Retry this task request unchanged.':'Creation was not confirmed. Keep this command unchanged and retry safely.')}
   finally{inFlight.current=false;setBusy(false)}
  }
- return <form className="tell-hermes" aria-busy={busy} onSubmit={event=>{event.preventDefault();void send()}}><label className="sr-only" htmlFor="tell-hermes-command">Create a project, assignment, task, or event</label><input id="tell-hermes-command" type="text" required maxLength={4000} disabled={busy||initial.error} value={prompt} onChange={event=>setPrompt(event.target.value)} placeholder="Hermes" aria-describedby="tell-hermes-status"/><p id="tell-hermes-status" role="status">{message}</p></form>
+  const changeMode=(next:string)=>{
+    if(inFlight.current||submission.current&&!submission.current.settled||next!=='legacy'&&next!=='tasks')return
+    setMode(next);newIntent.current=true;setMessage('')
+  }
+  return <form className="tell-hermes" aria-busy={busy} onSubmit={event=>{event.preventDefault();void send()}}>
+    <div className="tell-hermes-row">
+      {available&&<select aria-label="Hermes mode" value={mode} disabled={busy||initial.error||locked} onChange={event=>changeMode(event.target.value)}><option value="legacy">Create</option><option value="tasks">Task actions</option></select>}
+      <label className="sr-only" htmlFor="tell-hermes-command">{mode==='tasks'?'Read, create, or complete tasks':'Create a project, assignment, task, or event'}</label>
+      <input id="tell-hermes-command" type="text" required maxLength={4000} disabled={busy||initial.error||mode==='tasks'&&!available} readOnly={locked} value={prompt} onChange={event=>{if(!submission.current||submission.current.settled)setPrompt(event.target.value)}} placeholder="Hermes" aria-describedby="tell-hermes-status"/>
+    </div>
+    <p id="tell-hermes-status" role="status">{mode==='tasks'&&!available?'Saved task mode retained. Task actions are unavailable; retry when enabled.':message||(locked?'Saved request retained. Retry unchanged to check its receipt.':'')}</p>
+  </form>
 }
