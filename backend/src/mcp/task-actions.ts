@@ -2,25 +2,28 @@ import {createHash,randomBytes} from 'node:crypto'
 import type {Pool} from 'pg'
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js'
 import {JSONRPCMessageSchema,type JSONRPCMessage} from '@modelcontextprotocol/sdk/types.js'
-import {plainRecord} from './contracts.js'
-import {canonicalJson,ServiceTransport} from './service-transport.js'
+import {TOOLS,plainRecord,type ToolName} from './contracts.js'
+import {canonicalJson,ServiceTransport,type ServiceOptions} from './service-transport.js'
 import {SqlIntentStore} from './intent-store.js'
 import {RequestController,type NativeMcpRun} from './request-controller.js'
 
 export const TASK_ACTION_PATH='/api/v1/hermes/task-actions'
+export const ACTION_PATH='/api/v1/hermes/actions'
 export const TASK_CALLBACK_PATH='/api/v1/hermes/mcp-task-callback'
 export const TASK_CALLBACK_URL='https://dcc.home.captnuu.online'+TASK_CALLBACK_PATH
 const policy={executor:'mcp-action-v1' as const,allowedTools:['list_tasks','create_task','set_task_completed'] as const}
+export const PRODUCT_TOOLS=Object.freeze(Object.keys(TOOLS) as ToolName[])
+const productPolicy={executor:'mcp-action-v1' as const,allowedTools:PRODUCT_TOOLS}
 const digest=(text:string)=>createHash('sha256').update(text).digest('hex')
 export class TaskCallbackError extends Error {constructor(readonly status:number){super('Task callback unavailable')}}
-export type TaskBridgeInput={mode:'task-action';prompt:string;callbackCapability:string;expiresAt:number}
+export type TaskBridgeInput={mode:'task-action'|'product-action';prompt:string;callbackCapability:string;expiresAt:number}
 export type TaskBridge=(input:TaskBridgeInput,signal:AbortSignal)=>Promise<unknown>
 export const TASK_ACCOUNT_ACTOR='dcc-account'
 // Called once at API construction, never from request JSON or per request.
-export function configuredTaskActions(options:{enabled:boolean;pool:Pool|null;authConfigured:boolean;bridgeConfigured:boolean;bridge:TaskBridge}){
+export function configuredTaskActions(options:{enabled:boolean;pool:Pool|null;authConfigured:boolean;bridgeConfigured:boolean;bridge:TaskBridge;calendarSnapshot?:ServiceOptions['calendarSnapshot'];guardedCalendarWriter?:ServiceOptions['guardedCalendarWriter']}){
   if(!options.enabled)return undefined
   if(!options.pool||!options.authConfigured||!options.bridgeConfigured)throw new Error('Task actions require database, authentication and curator bridge configuration')
-  return new TaskActions({pool:options.pool,actorId:TASK_ACCOUNT_ACTOR,bridge:options.bridge})
+  return new TaskActions({pool:options.pool,actorId:TASK_ACCOUNT_ACTOR,bridge:options.bridge,calendarSnapshot:options.calendarSnapshot,guardedCalendarWriter:options.guardedCalendarWriter})
 }
 
 // A narrow stdio-over-POST relay, not a general HTTP API or resumable MCP HTTP
@@ -64,7 +67,7 @@ class CallbackSession {
       this.init=true
     }else if(!this.ready)throw new TaskCallbackError(409)
     if(message.method==='tools/call'){
-      if(!plainRecord(message.params)||!policy.allowedTools.includes(message.params.name as typeof policy.allowedTools[number]))throw new TaskCallbackError(403)
+      if(!plainRecord(message.params)||!this.run.allowedTools.includes(message.params.name as ToolName))throw new TaskCallbackError(403)
       // Never accept authority or correlation from model _meta. Stable owner +
       // typed JSON-RPC ID is bound durably by store.reserve before any service call.
       message.params={...message.params,_meta:{hostCallId:this.run.correlate(message.id)}}
@@ -93,10 +96,10 @@ export class TaskActions {
   private readonly entries=new Map<string,{expiresAt:number;session:CallbackSession;active:()=>Promise<boolean>}>()
   private readonly controller:RequestController
   private readonly now:()=>number
-  constructor(options:{pool:Pool;actorId:string;bridge:TaskBridge;now?:()=>number;issueCapability?:()=>string}){
+  constructor(options:{pool:Pool;actorId:string;bridge:TaskBridge;now?:()=>number;issueCapability?:()=>string;calendarSnapshot?:ServiceOptions['calendarSnapshot'];guardedCalendarWriter?:ServiceOptions['guardedCalendarWriter']}){
     this.now=options.now??Date.now
     this.controller=new RequestController({store:new SqlIntentStore(options.pool,options.actorId),
-      transport:new ServiceTransport({pool:options.pool,actorId:options.actorId}),now:this.now,
+      transport:new ServiceTransport({pool:options.pool,actorId:options.actorId,...(options.calendarSnapshot?{calendarSnapshot:options.calendarSnapshot}:{}),...(options.guardedCalendarWriter?{guardedCalendarWriter:options.guardedCalendarWriter}:{})}),now:this.now,
       nativeRunner:async run=>{
         if(this.entries.size>=8)throw new TaskCallbackError(429)
         // Generated only at invocation time, after authenticated admission/start.
@@ -110,7 +113,7 @@ export class TaskActions {
         run.signal.addEventListener('abort',revoke,{once:true})
         try{
           if(run.signal.aborted)throw new TaskCallbackError(403)
-          const result=await options.bridge({mode:'task-action',prompt:run.prompt,callbackCapability:token,expiresAt:run.expiresAt},run.signal)
+          const result=await options.bridge({mode:run.allowedTools.length===policy.allowedTools.length?'task-action':'product-action',prompt:run.prompt,callbackCapability:token,expiresAt:run.expiresAt},run.signal)
           // Lifecycle acknowledgment only. Model final data is never interpreted.
           if(!plainRecord(result)||Object.keys(result).join(',')!=='status'||result.status!=='finished')throw new TaskCallbackError(502)
         }finally{
@@ -119,6 +122,7 @@ export class TaskActions {
       }})
   }
   run(input:{key:string;prompt:string},signal?:AbortSignal){return this.controller.run(input,policy,signal)}
+  runProduct(input:{key:string;prompt:string},signal?:AbortSignal){return this.controller.run(input,productPolicy,signal)}
   private async entry(authorization:unknown){
     if(typeof authorization!=='string'||!/^Bearer [a-f0-9]{64}$(?![\s\S])/.test(authorization))return undefined
     const key=digest(authorization.slice(7)),entry=this.entries.get(key)

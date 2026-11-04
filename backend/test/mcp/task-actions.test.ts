@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import {Client} from '@modelcontextprotocol/sdk/client/index.js'
 import type {Transport} from '@modelcontextprotocol/sdk/shared/transport.js'
 import {buildApp} from '../../src/app.js'
-import {TaskActions,TASK_ACTION_PATH,TASK_CALLBACK_PATH,TASK_CALLBACK_URL,type TaskBridge} from '../../src/mcp/task-actions.js'
+import {TaskActions,TASK_ACTION_PATH,ACTION_PATH,TASK_CALLBACK_PATH,TASK_CALLBACK_URL,type TaskBridge} from '../../src/mcp/task-actions.js'
+import {TOOLS} from '../../src/mcp/contracts.js'
 import {COLLECTION} from '../../src/mcp/service-transport.js'
 import {SqlIntentStore} from '../../src/mcp/intent-store.js'
 import {IntentPool} from './intent-pool.js'
@@ -27,12 +28,12 @@ class TaskPool extends IntentPool {
     },release:client.release}
   }
 }
-async function fixture(exercise:(client:Client,callback:(body:unknown,extra?:Record<string,string>)=>Promise<any>)=>Promise<void>,now=()=>1000){
+async function fixture(exercise:(client:Client,callback:(body:unknown,extra?:Record<string,string>)=>Promise<any>)=>Promise<void>,now=()=>1000,path=TASK_ACTION_PATH){
   const db=new TaskPool(),sessions=new Set<string>()
   let app:ReturnType<typeof buildApp>,invocations=0,privateInput:unknown
   const bridge:TaskBridge=async(data)=>{
     invocations++;privateInput=data
-    assert.equal(data.mode,'task-action');assert.equal(data.callbackCapability,token)
+    assert.equal(data.mode,path===ACTION_PATH?'product-action':'task-action');assert.equal(data.callbackCapability,token)
     const callback=(body:unknown,extra:Record<string,string>={})=>app.inject({method:'POST',url:TASK_CALLBACK_PATH,headers:{authorization:'Bearer '+data.callbackCapability,...extra},payload:body as any})
     const client=new Client({name:'fake-Hermes-MCP',version:'1.0.0'})
     const wire:Transport={start:async()=>{},close:async()=>{wire.onclose?.()},send:async message=>{
@@ -49,7 +50,7 @@ async function fixture(exercise:(client:Client,callback:(body:unknown,extra?:Rec
   }}})
   const login=await app.inject({method:'POST',url:'/api/v1/auth/login',headers:{origin},payload:{username:'synthetic',password:'synthetic-only'}})
   const cookie=login.cookies.find(c=>c.name==='daymark_session')!.value
-  const submit=(body:unknown=input)=>app.inject({method:'POST',url:TASK_ACTION_PATH,headers:{origin},cookies:{daymark_session:cookie},payload:body as any})
+  const submit=(body:unknown=input)=>app.inject({method:'POST',url:path,headers:{origin},cookies:{daymark_session:cookie},payload:body as any})
   return {app,db,actions,submit,cookie,invocations:()=>invocations,privateInput:()=>privateInput}
 }
 
@@ -90,6 +91,51 @@ test('authenticated endpoint -> fake bridge -> official SDK MCP -> real service 
     const legacy=await h.app.inject({method:'POST',url:'/api/v1/hermes/commands',headers:{origin},cookies:{daymark_session:h.cookie},payload:input})
     assert.equal(legacy.statusCode,409,'existing Tell Hermes sees the MCP sentinel instead of parsing/writing')
   }finally{await h.app.close()}
+})
+
+test('unified action route preserves the same request-scoped SDK relay and exact catalog, with durable edit/readback/removal',async()=>{
+  const h=await fixture(async(client,callback)=>{
+    const first=await client.listTools()
+    assert.deepEqual(first.tools.map(t=>t.name).sort(),Object.keys(TOOLS).sort())
+    assert.deepEqual(await client.listTools(),first,'discovery schemas remain stable within an invocation')
+    for(const tool of first.tools){
+      assert.equal(tool.inputSchema.additionalProperties,false)
+      if(TOOLS[tool.name as keyof typeof TOOLS].write)assert.equal(Object.hasOwn(tool.inputSchema.properties??{},'operationKey'),false)
+    }
+    const created=result(await client.callTool({name:'create_task',arguments:{title:'Synthetic edit target',date:'2026-11-01',expectedVersion:0}}))
+    assert.equal(created.state,'applied')
+    const edited=result(await client.callTool({name:'update_task',arguments:{id:created.id,expectedVersion:created.version,title:'Synthetic edited'}}))
+    assert.equal(edited.state,'applied')
+    const removed=result(await client.callTool({name:'remove_task',arguments:{id:created.id,expectedVersion:edited.version}}))
+    assert.equal(removed.state,'applied')
+    const readback=result(await client.callTool({name:'list_tasks',arguments:read}))
+    assert.equal(readback.data.items[0].title,'Synthetic edited')
+    assert.equal(readback.data.items[0].deleted,true)
+    assert.equal((await callback({jsonrpc:'2.0',id:'forbidden',method:'tools/call',params:{name:'raw_http',arguments:{}}})).statusCode,403)
+  },()=>1000,ACTION_PATH)
+  try{
+    const first=await h.submit()
+    assert.equal(first.statusCode,200);assert.equal(first.json().summary.outcome,'effects_recorded')
+    assert.deepEqual((await h.submit()).json(),first.json())
+    assert.equal(h.invocations(),1)
+    assert.equal(first.json().summary.reads[0].tool,'list_tasks')
+  }finally{await h.app.close()}
+})
+
+test('unified SDK project create/archive/restore/status and exact-id readback use real service receipts',async()=>{
+  const h=await fixture(async(client)=>{
+    const created=result(await client.callTool({name:'create_project',arguments:{title:'Synthetic project',category:'personal',importance:2,remainingMinutes:0}}))
+    assert.equal(created.state,'applied')
+    const archived=result(await client.callTool({name:'archive_project',arguments:{id:created.id,expectedVersion:created.version}}))
+    assert.equal(archived.state,'applied')
+    const restored=result(await client.callTool({name:'restore_project',arguments:{id:created.id,expectedVersion:archived.version}}))
+    assert.equal(restored.state,'applied')
+    const completed=result(await client.callTool({name:'set_project_status',arguments:{id:created.id,expectedVersion:restored.version,status:'complete'}}))
+    assert.equal(completed.state,'applied')
+    const readback=result(await client.callTool({name:'list_projects',arguments:{id:created.id,limit:1}}))
+    assert.equal(readback.data.items.length,1);assert.equal(readback.data.items[0].status,'complete')
+  },()=>1000,ACTION_PATH)
+  try{const response=await h.submit();assert.equal(response.json().summary.outcome,'effects_recorded');assert.equal(h.db.requested,true)}finally{await h.app.close()}
 })
 
 test('exact callback exception never accepts browser auth, service bearer, query variants or sibling routes',async()=>{
@@ -189,4 +235,17 @@ test('cancellation revokes a capability even if the private bridge ignores abort
   assert.equal(summary.phase,'uncertain')
   assert.equal(await actions.verifyCallback('Bearer '+token),false)
   release()
+})
+
+test('a completed older product catalog replays its receipt without widening policy or restarting a model',async()=>{
+  const db=new TaskPool(),store=new SqlIntentStore(db.pool,'dcc-account')
+  const original=['list_tasks','create_task','set_task_completed','list_projects'] as const
+  await store.admit({...input,purpose:'action'},{executor:'mcp-action-v1',allowedTools:original})
+  const owner=(await store.start(input.key,1000)).owner!
+  await store.round(input.key,owner,1000);await store.finish(input.key,owner)
+  let invoked=0
+  const actions=new TaskActions({pool:db.pool,actorId:'dcc-account',now:()=>1001,bridge:async()=>{invoked++;return {status:'finished'}}})
+  const result=await actions.runProduct(input)
+  assert.equal(result.phase,'completed');assert.equal(result.outcome,'no_effects_recorded');assert.equal(invoked,0)
+  assert.deepEqual((await store.read(input.key)).allowedTools,original)
 })

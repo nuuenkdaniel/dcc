@@ -1,6 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto'
 import type {Pool,PoolClient} from 'pg'
-import {TOOLS,isTool,plainRecord,type Result} from './contracts.js'
+import {TOOLS,isTool,plainRecord,isCreation,type Result} from './contracts.js'
 import {canonicalJson} from './service-transport.js'
 import {validateServiceArguments,validServiceResult} from './service-contracts.js'
 import {REQUEST_INTENT_KIND,REQUEST_LIMITS,intentAddress,admitIntent,legacyReceiptEvidence,legacyFenceForIntent,startIntent,beginIntentRound,reserveIntentCall,recordIntentResult,interruptIntent,finishIntent,type IntentRecord,type IntentPolicy,type IntentDecision} from './request-intent.js'
@@ -21,7 +21,7 @@ function decode(row:Row,key:string,actorHash:string):IntentRecord {
   const d=row.data,{id,legacyReceiptId}=intentAddress(key)
   if(row.kind!==REQUEST_INTENT_KIND||row.id!==id||!Number.isSafeInteger(row.version)||row.version<1||!plainRecord(d))return fail('intent_conflict')
   const r=d as unknown as IntentRecord
-  if(r.version!==1||r.id!==id||r.legacyReceiptId!==legacyReceiptId||r.key!==key||r.actorHash!==actorHash||typeof r.promptHash!=='string'||!/^[a-f0-9]{64}$/.test(r.promptHash)||!['legacy-parser-v1','mcp-action-v1'].includes(r.executor)||!['admitted','active','uncertain','completed'].includes(r.phase)||!Array.isArray(r.allowedTools)||r.allowedTools.length>18||!r.allowedTools.every(isTool)||new Set(r.allowedTools).size!==r.allowedTools.length||!Number.isInteger(r.rounds)||r.rounds<0||r.rounds>REQUEST_LIMITS.maxRounds||!Array.isArray(r.calls)||r.calls.length>REQUEST_LIMITS.maxCalls)return fail('intent_conflict')
+  if(r.version!==1||r.id!==id||r.legacyReceiptId!==legacyReceiptId||r.key!==key||r.actorHash!==actorHash||typeof r.promptHash!=='string'||!/^[a-f0-9]{64}$/.test(r.promptHash)||!['legacy-parser-v1','mcp-action-v1'].includes(r.executor)||!['admitted','active','uncertain','completed'].includes(r.phase)||!Array.isArray(r.allowedTools)||r.allowedTools.length>Object.keys(TOOLS).length||!r.allowedTools.every(isTool)||new Set(r.allowedTools).size!==r.allowedTools.length||!Number.isInteger(r.rounds)||r.rounds<0||r.rounds>REQUEST_LIMITS.maxRounds||!Array.isArray(r.calls)||r.calls.length>REQUEST_LIMITS.maxCalls)return fail('intent_conflict')
   if(r.startedAt!==undefined&&(!Number.isSafeInteger(r.startedAt)||r.startedAt<0)||r.ownerId!==undefined&&(typeof r.ownerId!=='string'||!r.ownerId)||r.phase==='active'&&(r.startedAt===undefined||!r.ownerId))return fail('intent_conflict')
   if(r.outcome!==undefined&&!['legacy_receipt','no_effects_recorded','effects_recorded','partial','rejected'].includes(r.outcome)||r.phase==='admitted'&&(r.calls.length||r.rounds||r.startedAt!==undefined||r.ownerId!==undefined))return fail('intent_conflict')
   if(r.phase!=='completed'&&r.outcome!==undefined||r.calls.length&&r.rounds<1||r.executor==='mcp-action-v1'&&r.phase!=='admitted'&&(r.startedAt===undefined||!r.ownerId))return fail('intent_conflict')
@@ -34,7 +34,7 @@ function decode(row:Row,key:string,actorHash:string):IntentRecord {
     if(!validation.valid||call.fingerprint!==hash(canonicalJson(call.command))||call.result!==undefined&&!validServiceResult(call.command,call.result))return fail('intent_conflict')
     // Re-run host key/target derivation, not only schema validation.
     const input={...call.command.args}
-    if(TOOLS[call.command.tool].write){writes++;delete input.operationKey;if(['create_task','create_project','create_assignment','create_calendar_event'].includes(call.command.tool))delete input.id}
+    if(TOOLS[call.command.tool].write){writes++;delete input.operationKey;if(isCreation(call.command.tool))delete input.id}
     const replay=reserveIntentCall(r,call.id,call.command.tool,input,r.startedAt??0)
     if(!replay.ok)return fail('intent_conflict')
   }

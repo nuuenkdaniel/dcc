@@ -448,7 +448,7 @@ export function Workspace() {
           ) : (
             <section className="content" id="home">
               <header className="topbar"><div><p className="eyebrow">Personal workspace</p><h1>{preferencesState.preferences.name.trim() ? `${preferencesState.preferences.name.trim()}’s day` : 'Your day, at a glance.'}</h1></div><div className="date-chip">{formatDay(selectedDate)}</div></header>
-              <TellHermes onCreated={scope=>{void planner.sync(true);window.dispatchEvent(new Event(scope==='tasks'?'dcc-task-actions-applied':'dcc-hermes-created'))}}/>
+              <TellHermes onCreated={scope=>{if(scope!=='calendar')void planner.sync(true);window.dispatchEvent(new Event(scope==='tasks'?'dcc-task-actions-applied':scope==='projects'?'dcc-project-actions-applied':scope==='calendar'?'dcc-calendar-actions-saved':'dcc-hermes-created'))}}/>
               <div className="layout-grid">
                 <section className="card calendar-card" aria-labelledby="calendar-heading">
                   <div className="section-heading"><div><p className="eyebrow">Planning</p><h2 id="calendar-heading">{formatMonth(month)}</h2></div><div className="calendar-actions"><button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} aria-label="Previous month">←</button><button className="today-button" onClick={() => { const now = new Date(); now.setDate(1); setMonth(now); setFollowingToday(true);setSelectedDate(today()) }}>Today</button><button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} aria-label="Next month">→</button></div></div>

@@ -1,6 +1,7 @@
 import {Server} from '@modelcontextprotocol/sdk/server/index.js'
 import {CallToolRequestSchema,ListToolsRequestSchema,McpError,ErrorCode,type CallToolResult,type Tool} from '@modelcontextprotocol/sdk/types.js'
 import {isTool,type ToolName,type Result} from './contracts.js'
+import {fitsRelay,toolResponse} from './wire-budget.js'
 
 // Preserve unknown argument keys until domain validation. The SDK's default
 // record parser drops an own __proto__ key; its envelope validation still runs.
@@ -25,8 +26,8 @@ export function composeSdkServer(options:Composition):Server {
   server.setRequestHandler(callSchema,async request=>{
     if(!isTool(request.params.name))throw new McpError(ErrorCode.InvalidParams,'Unknown tool')
     const result=await options.dispatch(request.params.name,request.params.arguments,request.params._meta)
-    const envelope={source:options.source,result}
-    const response:CallToolResult={content:[{type:'text',text:JSON.stringify(envelope)}],structuredContent:envelope,isError:!['ok','applied','saved'].includes(result.state)}
+    if(!fitsRelay(result,options.source))throw new McpError(ErrorCode.InternalError,'Response exceeds relay budget')
+    const response:CallToolResult=toolResponse(result,options.source)
     return response
   })
   return server

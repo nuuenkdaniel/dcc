@@ -18,6 +18,7 @@ export class FakeTransport implements Transport {
   }
   private eventKey(calendarId:string,eventId:string){return JSON.stringify([calendarId,eventId])}
   async execute(command:Command):Promise<Result> {
+    if(command.tool.includes('preparation')||['list_daily_actions','create_daily_action','update_daily_action','search_inbox','get_inbox_message','list_prices','get_calendar_series'].includes(command.tool))return {state:'rejected',code:'transport_unconfigured'}
     const validated=validateArguments(command.tool,command.args)
     if(!validated.valid)return {state:'rejected',code:validated.code}
     const {tool}=command,args=validated.args

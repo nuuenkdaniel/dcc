@@ -9,7 +9,7 @@ import {plannerSnapshot,saveEntity,requestPlan,callCurator,previewCustomProjectT
 import Fastify from 'fastify'
 import type { EventChange } from './calendar-write.js'
 import { registerAuth, type AuthConfig } from './auth.js'
-import {TASK_ACTION_PATH,TASK_CALLBACK_PATH,TaskActions,TaskCallbackError} from './mcp/task-actions.js'
+import {ACTION_PATH,TASK_ACTION_PATH,TASK_CALLBACK_PATH,TaskActions,TaskCallbackError} from './mcp/task-actions.js'
 
 // Construction is separate from listening so tests require no network port.
 export function buildApp(options: { taskActions?:TaskActions; calendarRefresh?:()=>Promise<string>; plannerPool?:Pool; curator?:(input:unknown)=>Promise<unknown>; logger?: boolean | { level: string }; auth?: AuthConfig; calendarSnapshot?:()=>Promise<unknown>; calendarChange?:(change:EventChange)=>Promise<{code:number;error?:string;saved?:boolean}> } = {}) {
@@ -23,6 +23,7 @@ export function buildApp(options: { taskActions?:TaskActions; calendarRefresh?:(
   app.register(async scope => {
     // Authenticated discovery only: no capability, actor, bridge URL or secret.
     scope.get('/api/v1/hermes/capabilities',async()=>({taskActions:!!options.taskActions&&!!options.auth}))
+    scope.get('/api/v1/hermes/action-capabilities',async()=>({productActions:!!options.taskActions&&!!options.auth}))
     if(options.taskActions){
       scope.post(TASK_CALLBACK_PATH,{bodyLimit:65536,logLevel:'silent',config:{rateLimit:{max:128,timeWindow:'1 minute'}}},async(request,reply)=>{
         if(request.url!==TASK_CALLBACK_PATH||request.headers.cookie!==undefined||request.headers.origin!==undefined)return reply.code(403).send({error:'Task callback denied'})
@@ -31,7 +32,7 @@ export function buildApp(options: { taskActions?:TaskActions; calendarRefresh?:(
           return response===undefined?reply.code(202).send():reply.send(response)
         }catch(error){return reply.code(error instanceof TaskCallbackError?error.status:502).send({error:'Task callback unavailable'})}
       })
-      scope.post<{Body:{key:string;prompt:string}}>(TASK_ACTION_PATH,{bodyLimit:20000,logLevel:'silent',config:{rateLimit:{max:6,timeWindow:'1 minute'}},preValidation:async(request,reply)=>{
+      for(const actionPath of [TASK_ACTION_PATH,ACTION_PATH])scope.post<{Body:{key:string;prompt:string}}>(actionPath,{bodyLimit:20000,logLevel:'silent',config:{rateLimit:{max:6,timeWindow:'1 minute'}},preValidation:async(request,reply)=>{
         const b=request.body
         if(!b||typeof b!=='object'||Array.isArray(b)||Object.keys(b).sort().join(',')!=='key,prompt'||typeof b.key!=='string'||typeof b.prompt!=='string'||!/^\w[\w-]{15,79}$(?![\s\S])/.test(b.key)||!b.prompt.trim()||b.prompt.length>4000)return reply.code(400).send({message:'Use only a submission key and task request.'})
       }},async(request,reply)=>{
@@ -40,7 +41,7 @@ export function buildApp(options: { taskActions?:TaskActions; calendarRefresh?:(
         const onClose=()=>{if(!reply.raw.writableEnded)stop()}
         reply.raw.once('close',onClose)
         try{
-          const summary=await options.taskActions!.run(request.body,abort.signal)
+          const summary=await (actionPath===ACTION_PATH?options.taskActions!.runProduct(request.body,abort.signal):options.taskActions!.run(request.body,abort.signal))
           // HTTP success means the UI should refresh authoritative snapshots,
           // NOT that every natural-language goal or pending effect is complete.
           return {message:summary.phase==='completed'?'Task action receipts checked.':'Task action may be pending. Retry this same submission for receipts.',summary}
