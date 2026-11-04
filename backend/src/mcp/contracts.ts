@@ -1,5 +1,5 @@
 // Offline domain contracts and shared field-schema metadata. No runtime routes.
-export type Scalar=string|number|boolean
+export type Scalar=string|number|boolean|string[]
 export type Arguments=Record<string,Scalar>
 export type Rule={check:(value:unknown)=>boolean;schema:Record<string,unknown>;optional?:true}
 const rule=(check:Rule['check'],schema:Record<string,unknown>={}):Rule=>({check,schema})
@@ -59,10 +59,25 @@ export const TOOLS={
   create_calendar_event:{write:true,capability:'calendars:write',fields:{...write,id,calendarId:id,scope:enumeration('single'),...eventFields}},
   update_calendar_event:{write:true,capability:'calendars:write',fields:{...eventEdit,...eventFields}},
   cancel_calendar_event:{write:true,capability:'calendars:write',fields:eventEdit},
+  list_daily_actions:{write:false,capability:'planner:read',fields:{...page,id:optional(id),from:date,to:date}},
+  create_daily_action:{write:true,capability:'planner:write',fields:{...write,id,projectId:id,title,date,notes,minutes:integer(5,180)}},
+  update_daily_action:{write:true,capability:'planner:write',fields:{...edit,title:optional(title),notes:optional(notes),minutes:optional(integer(5,180)),date:optional(date),completed:optional(boolean),dismissed:optional(boolean),feedback:optional(enumeration('','comfortable','review'))},patch:['title','notes','minutes','date','completed','dismissed','feedback']},
+  list_preparations:{write:false,capability:'planner:read',fields:{...page,id:optional(id)}},
+  update_preparation:{write:true,capability:'planner:write',fields:{...edit,title:optional(title),startDate:optional(date),status:optional(enumeration('active','paused')),progress:optional(notes)},patch:['title','startDate','status','progress']},
+  update_preparation_topic:{write:true,capability:'planner:write',fields:{...edit,topicId:id,title:optional(title),notes:optional(notes),minutes:optional(integer(5,1800))},patch:['title','notes','minutes']},
+  create_preparation:{write:true,capability:'planner:write',fields:{...write,id,calendarId:id,eventId:id,title,startDate:date,progress:notes,topicTitle:title,topicNotes:notes,topicMinutes:integer(5,1800)}},
+  relink_preparation:{write:true,capability:'planner:write',fields:{...edit,calendarId:id,eventId:id}},
+  insert_preparation_topic:{write:true,capability:'planner:write',fields:{...edit,title,notes,minutes:integer(5,1800),position:optional(integer(0,60))}},
+  remove_preparation_topic:{write:true,capability:'planner:write',fields:{...edit,topicId:id}},
+  search_inbox:{write:false,capability:'inbox:read',fields:{...page,query:text(200),account:enumeration('all','personal','school','work'),importantOnly:boolean}},
+  get_inbox_message:{write:false,capability:'inbox:read',fields:{id,offset:integer(0,1000000),limit:integer(1,10000)}},
+  list_prices:{write:false,capability:'prices:read',fields:page},
+  get_calendar_series:{write:false,capability:'calendars:read',fields:{calendarId:id,eventId:id}},
 } satisfies Record<string,Definition>
 export type ToolName=keyof typeof TOOLS
 export type Command={tool:ToolName;args:Arguments}
 export function isTool(value:unknown):value is ToolName {return typeof value==='string'&&Object.hasOwn(TOOLS,value)}
+export const isCreation=(tool:ToolName)=>['create_task','create_project','create_assignment','create_calendar_event','create_daily_action','create_preparation'].includes(tool)
 
 // Never invoke accessors or accept inherited/symbol/non-enumerable payload fields.
 export function plainRecord(value:unknown):value is Record<string,unknown> {
@@ -87,7 +102,7 @@ export function validateArguments(name:string,value:unknown):Validation {
   if(!matches(value,definition.fields))return {valid:false,code:'invalid_arguments'}
   const args={...value} as Arguments
   if(definition.patch&&!definition.patch.some(key=>Object.hasOwn(args,key)))return {valid:false,code:'invalid_arguments'}
-  if(name==='list_tasks'&&!interval(args.from,args.to,LIMITS.taskWindowDays))return {valid:false,code:'invalid_arguments'}
+  if((name==='list_tasks'||name==='list_daily_actions')&&!interval(args.from,args.to,LIMITS.taskWindowDays))return {valid:false,code:'invalid_arguments'}
   if(name==='list_calendar_events'&&!interval(args.from,args.to,LIMITS.eventWindowDays))return {valid:false,code:'invalid_arguments'}
   if(name==='create_calendar_event'||name==='update_calendar_event'){
     const check=args.allDay?validDate:validInstant

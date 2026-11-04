@@ -3,7 +3,7 @@ import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js'
 import type {Tool} from '@modelcontextprotocol/sdk/types.js'
 import type {Server} from '@modelcontextprotocol/sdk/server/index.js'
 import {createHash} from 'node:crypto'
-import {TOOLS,plainRecord,type Result} from './contracts.js'
+import {TOOLS,plainRecord,isCreation,type Result,type ToolName} from './contracts.js'
 import {Dispatcher} from './dispatcher.js'
 import {SqlIntentStore,IntentStoreError} from './intent-store.js'
 import {ServiceTransport} from './service-transport.js'
@@ -14,23 +14,30 @@ import {REQUEST_LIMITS,requestContext,type IntentRecord,type IntentPolicy} from 
 // A testable in-process port, NOT a Hermes CLI output format or transport adapter.
 export type ModelRound={calls:{id:string;tool:string;arguments:Record<string,unknown>}[];done:boolean;final?:unknown}
 export type ModelRunner=(input:{prompt:string;round:number;tools:Tool[];results:{id:string;result:Result}[];signal:AbortSignal})=>Promise<ModelRound>
-export type NativeMcpRun={server:Server;prompt:string;signal:AbortSignal;expiresAt:number;correlate:(id:string|number)=>string;active:()=>Promise<boolean>}
+export type NativeMcpRun={server:Server;prompt:string;allowedTools:readonly ToolName[];signal:AbortSignal;expiresAt:number;correlate:(id:string|number)=>string;active:()=>Promise<boolean>}
 export type NativeMcpRunner=(input:NativeMcpRun)=>Promise<void>
-export type IntentSummary={phase:IntentRecord['phase'];outcome?:IntentRecord['outcome'];effects:{tool:string;state:string;id?:string;version?:number;confirmation?:'snapshot_pending'}[];pending:number}
+export type IntentSummary={phase:IntentRecord['phase'];outcome?:IntentRecord['outcome'];effects:{tool:string;state:string;id?:string;version?:number;confirmation?:'snapshot_pending'}[];pending:number;reads?:{tool:string;data:unknown}[];readsTruncated?:true}
 // Fixed projections only: never echo prompt, payload, policy, owner, model prose,
 // read projections or arbitrary error text into the authoritative UI result.
 export function summarizeIntent(record:IntentRecord):IntentSummary {
+  const allReads=record.calls.filter(c=>!TOOLS[c.command.tool].write&&c.result?.state==='ok').map(c=>({tool:c.command.tool,data:(c.result as Extract<Result,{state:'ok'}>).data}))
+  const reads:typeof allReads=[];let bytes=0
+  for(const read of [...allReads].reverse()){
+    const size=Buffer.byteLength(JSON.stringify(read),'utf8')
+    if(bytes+size<=1200000){reads.unshift(read);bytes+=size}
+  }
   return {phase:record.phase,...(record.outcome?{outcome:record.outcome}:{}),effects:record.calls.filter(c=>TOOLS[c.command.tool].write&&c.result).map(c=>{
     const r=c.result!
     return {tool:c.command.tool,state:r.state,...(r.state==='applied'&&'version' in r?{id:r.id,version:r.version}:{}),...(r.state==='saved'?{confirmation:'snapshot_pending' as const}:{})}
-  }),pending:record.calls.filter(c=>!c.result||c.result.state==='uncertain').length}
+  }),pending:record.calls.filter(c=>!c.result||c.result.state==='uncertain').length,
+    ...(record.allowedTools.length>3?{reads,...(reads.length<allReads.length?{readsTruncated:true as const}:{})}:{})}
 }
-function requestTools(record:IntentRecord):Tool[]{
+export function requestTools(record:Pick<IntentRecord,'allowedTools'>):Tool[]{
   return serviceToolDefinitions().filter(t=>record.allowedTools.includes(t.name as IntentRecord['allowedTools'][number])).map(tool=>{
     const t=structuredClone(tool),properties=t.inputSchema.properties??{}
     if(TOOLS[t.name as keyof typeof TOOLS].write){
       delete properties.operationKey
-      if(['create_task','create_project','create_assignment','create_calendar_event'].includes(t.name))delete properties.id
+      if(isCreation(t.name as ToolName))delete properties.id
     }
     t.inputSchema.properties=properties
     if(t.inputSchema.required)t.inputSchema.required=t.inputSchema.required.filter(k=>Object.hasOwn(properties,k))
@@ -61,7 +68,10 @@ export class RequestController {
       if(nativeRunner)throw new IntentStoreError('executor_conflict')
       return summarizeIntent(admitted)
     }
-    if(nativeRunner&&(admitted.allowedTools.length!==policy.allowedTools.length||admitted.allowedTools.some(tool=>!policy.allowedTools.includes(tool))))throw new IntentStoreError('executor_conflict')
+    if(nativeRunner&&(admitted.allowedTools.length!==policy.allowedTools.length||admitted.allowedTools.some(tool=>!policy.allowedTools.includes(tool)))){
+      if(admitted.phase!=='admitted'&&admitted.allowedTools.every(tool=>policy.allowedTools.includes(tool)))return this.recover(input.key)
+      throw new IntentStoreError('executor_conflict')
+    }
     if(signal?.aborted)return this.recover(input.key)
     const claim=await store.start(input.key,now())
     if(!claim.owner||claim.directive!=='start_model'){
@@ -103,7 +113,7 @@ export class RequestController {
           // Persisted call.id binds this transport ID within this ONE owner. A
           // restarted/reconnected invocation never receives a replacement owner.
           correlate:id=>'rpc_'+createHash('sha256').update(JSON.stringify([owner,typeof id,id])).digest('hex'),
-          active:async()=>{
+          allowedTools:Object.freeze([...claim.record.allowedTools]),active:async()=>{
             if(abort.signal.aborted||now()>=deadline)return false
             const r=await store.read(input.key)
             return r.phase==='active'&&r.ownerId===owner

@@ -7,7 +7,7 @@ import {Pool} from 'pg'
 import {migrate,sessionStore} from './database.js'
 import {readCalendarConfig} from './caldav.js'
 import {sourceHash,runSync,fetchSnapshot} from './sync.js'
-import {applyChange} from './calendar-write.js'
+import {applyChange,createScopedCalendarWriter} from './calendar-write.js'
 import {configuredTaskActions} from './mcp/task-actions.js'
 
 try { process.loadEnvFile('.env') } catch (error) {
@@ -21,6 +21,11 @@ const username=process.env.DAYMARK_USERNAME,password=process.env.DAYMARK_PASSWOR
 if(origin && new URL(origin).origin!==origin) throw new Error('APP_ORIGIN must be an exact origin')
 const auth=pool && username && password && origin ? {username,password,origin,store:sessionStore(pool)}:undefined
 const taskActions=configuredTaskActions({enabled:config.taskActionsEnabled,pool,authConfigured:!!auth,
+  ...(pool&&calendar?{guardedCalendarWriter:createScopedCalendarWriter(pool,calendar),calendarSnapshot:async()=>{
+    const row=(await pool.query('SELECT snapshot,source_hash FROM calendar_sync_state WHERE id=1')).rows[0]
+    if(!row||row.source_hash!==sourceHash(calendar))return {calendars:[],events:[]}
+    return row.snapshot
+  }}:{}),
   bridgeConfigured:!!process.env.HERMES_CURATOR_URL&&!!process.env.HERMES_CURATOR_TOKEN,
   bridge:(input,signal)=>callCurator(input,{signal,timeoutMs:105000})})
 const app = buildApp({ ...(taskActions?{taskActions}:{}), ...(pool?{plannerPool:pool}:{}), logger: { level: config.logLevel }, ...(auth?{auth}:{}), ...(pool && calendar?{calendarRefresh:()=>runSync(pool,calendar.interval,sourceHash(calendar),()=>fetchSnapshot(calendar),true,30),calendarChange:(change)=>applyChange(pool,calendar,change),calendarSnapshot:async()=>{

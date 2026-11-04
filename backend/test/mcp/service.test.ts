@@ -101,7 +101,7 @@ test('collection versions, unknown collection/task metadata, recurrence and tomb
   assert.equal(db.rows.get(project.id)?.data.status,'active')
   assert.equal(db.requested,false,'standalone tasks never queue planning')
   assert.deepEqual(await make(db).dispatch('update_task',{operationKey:'service_stale_key_001',id:task.id,expectedVersion:7,title:'Stale'},context),{state:'conflict',code:'revision_mismatch'})
-  assert.deepEqual(await make(db).dispatch('remove_task',{operationKey:'service_recurring_01',id:recurring.id,expectedVersion:8},context),{state:'rejected',code:'unsupported_recurrence'})
+  assert.deepEqual(await make(db).dispatch('remove_task',{operationKey:'service_recurring_01',id:recurring.id,expectedVersion:8},context),{state:'conflict',code:'deleted'})
   assert.deepEqual(await make(db).dispatch('remove_task',{operationKey:'service_remove_key_01',id:task.id,expectedVersion:8},context),{state:'applied',id:task.id,version:9})
   assert.equal(tasks(db).data.tasks[0].deleted,true)
   const read=await make(db).dispatch('list_tasks',{from:'2026-11-01',to:'2026-11-02',limit:10},context)
@@ -111,7 +111,8 @@ test('collection versions, unknown collection/task metadata, recurrence and tomb
     assert.ok(data.items.every(item=>item.version===9))
     assert.ok(data.items.some(item=>item.id===task.id&&item.deleted===true))
     assert.ok(data.items.some(item=>item.id===recurring.id&&item.recurring===true))
-    assert.ok(data.items.every(item=>!Object.hasOwn(item,'custom')&&!Object.hasOwn(item,'recurrence')))
+    assert.ok(data.items.every(item=>!Object.hasOwn(item,'custom')))
+    assert.deepEqual(data.items.find(item=>item.id===recurring.id)?.recurrence,recurrence)
   }
 })
 

@@ -73,10 +73,11 @@ def resolve_runtime():
 
 def main():
     try:
-        if sys.argv[1:] not in ([], ['--preflight']):
+        probe = sys.argv[1:2] == ['--product-probe']
+        if not probe and sys.argv[1:] not in ([], ['--preflight'], ['--read-context-server']):
             raise LauncherError('Unsupported launcher arguments')
         script = Path(__file__).resolve().with_name('task_action_runtime.py')
-        if not script.is_file():
+        if not script.is_file() or not script.with_name('read_context_runtime.py').is_file():
             raise LauncherError('Runtime script missing')
         argv = runtime_command(resolve_runtime(), script)
         if not Path(argv[0]).is_file() or not os.access(argv[0], os.X_OK):
@@ -84,6 +85,10 @@ def main():
         if sys.argv[1:] == ['--preflight']:
             print('{"status":"runtime_ready"}')
             return 0
+        if sys.argv[1:] == ['--read-context-server']:
+            argv.append('--read-context-server')
+        if probe:
+            argv.extend(sys.argv[1:])
         # Inherit private env and untouched stdin. No token/prompt in argv.
         os.execv(argv[0], argv)
         raise LauncherError('Runtime exec returned')

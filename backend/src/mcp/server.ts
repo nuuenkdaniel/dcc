@@ -29,6 +29,20 @@ const descriptions:Record<ToolName,string>={
   create_calendar_event:'Create one nonrecurring calendar event, distinct from a checklist task. Requires exact ID, operation key, explicit single scope and <=31 day interval.',
   update_calendar_event:'Edit one nonrecurring event with explicit single scope, strong expected ETag, operation key and full <=31 day interval. Recurring sources reject.',
   cancel_calendar_event:'Cancel one nonrecurring event with explicit single scope, strong expected ETag and operation key. Recurring sources reject.',
+  list_daily_actions:'Bounded daily planner actions; service composition only.',
+  create_daily_action:'Create a manual project action; never a generated action. Service composition only.',
+  update_daily_action:'Versioned daily action patch, preserving parent/source identity. Service composition only.',
+  list_preparations:'Bounded preparation plans; service composition only.',
+  update_preparation:'Versioned preparation fields; service composition only.',
+  update_preparation_topic:'Versioned existing preparation topic patch; service composition only.',
+  create_preparation:'Create a linked preparation with one initial topic; service composition only.',
+  relink_preparation:'Relink a preparation to an existing cached event, retaining topics/history; service composition only.',
+  insert_preparation_topic:'Insert one topic with a backend-owned identity; service composition only.',
+  remove_preparation_topic:'Remove one topic without deleting action history; at least one topic must remain. Service composition only.',
+  search_inbox:'Bounded cached inbox search, no provider access. Service composition only.',
+  get_inbox_message:'Bounded cached plain-text body slice. Service composition only.',
+  list_prices:'Bounded cached price summaries without URLs. Service composition only.',
+  get_calendar_series:'Guarded authoritative series details. Service composition only.',
 }
 
 // A trusted process launch selects context; no tool argument, _meta field, client

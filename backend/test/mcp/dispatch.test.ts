@@ -184,6 +184,20 @@ test('every tool has an exact allowlist and the registry exposes no generic exec
     create_calendar_event:event,
     update_calendar_event:{...eventFields,eventId:id,expectedEtag:'"fake-1"'},
     cancel_calendar_event:{operationKey:event.operationKey,calendarId:event.calendarId,eventId:id,expectedEtag:'"fake-1"',scope:'single'},
+    list_daily_actions:read,
+    create_daily_action:{operationKey:task.operationKey,id:'Daily_A',projectId:project.id,title:'Synthetic action',date:'2026-11-01',notes:'',minutes:30},
+    update_daily_action:{operationKey:task.operationKey,id:'Daily_A',expectedVersion:1,completed:true},
+    list_preparations:{limit:1},
+    update_preparation:{operationKey:task.operationKey,id:'Preparation_A',expectedVersion:1,status:'paused'},
+    update_preparation_topic:{operationKey:task.operationKey,id:'Preparation_A',topicId:'Topic_A',expectedVersion:1,title:'Edit'},
+    create_preparation:{operationKey:task.operationKey,id:'Preparation_A',calendarId:event.calendarId,eventId:id,title:'Study',startDate:'2026-10-01',progress:'',topicTitle:'Topic',topicNotes:'',topicMinutes:30},
+    relink_preparation:{operationKey:task.operationKey,id:'Preparation_A',expectedVersion:1,calendarId:event.calendarId,eventId:id},
+    insert_preparation_topic:{operationKey:task.operationKey,id:'Preparation_A',expectedVersion:1,title:'Topic',notes:'',minutes:30},
+    remove_preparation_topic:{operationKey:task.operationKey,id:'Preparation_A',expectedVersion:1,topicId:'Topic_A'},
+    search_inbox:{limit:1,query:'synthetic',account:'all',importantOnly:false},
+    get_inbox_message:{id:'Cached_Message',offset:0,limit:100},
+    list_prices:{limit:1},
+    get_calendar_series:{calendarId:event.calendarId,eventId:id},
   }
   assert.deepEqual(Object.keys(TOOLS).sort(),Object.keys(valid).sort())
   for(const [name,args] of Object.entries(valid)){

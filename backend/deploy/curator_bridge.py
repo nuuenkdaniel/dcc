@@ -7,6 +7,7 @@ import threading
 import re
 import sqlite3
 import time
+import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -97,14 +98,14 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, sqlite3.Error):
                 self.respond(400, {'error':'Session unavailable or too large; paste relevant study notes instead'})
             return
-        if data.get('mode') == 'task-action' and os.environ.get('DAYMARK_TASK_ACTIONS_ENABLED') != '1':
+        if data.get('mode') in ('task-action','product-action') and os.environ.get('DAYMARK_TASK_ACTIONS_ENABLED') != '1':
             self.respond(503, {'error':'Task actions are disabled'})
             return
         if not LOCK.acquire(blocking=False):
             self.respond(429, {'error': 'Curator busy'})
             return
         try:
-            if data.get('mode') == 'task-action':
+            if data.get('mode') in ('task-action','product-action'):
                 # The existing bridge bearer admits this request only; the
                 # independent capability authenticates backend MCP callbacks.
                 capability = data.get('callbackCapability')
@@ -122,24 +123,27 @@ class Handler(BaseHTTPRequestHandler):
                 # System Python runs ONLY the stdlib wrapper. Hermes's official
                 # launcher supplies the isolated bootstrap/dependencies for action.
                 result = subprocess.run(['/usr/bin/python3', str(Path(__file__).with_name('task_action_launcher.py'))],
-                    input=json.dumps({'prompt':prompt}), text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    input=json.dumps({'prompt':prompt, 'catalog':'product-v1' if data['mode']=='product-action' else 'tasks-v1'}), text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                     env=env, timeout=105, cwd='/root/.hermes/profiles/daymark-curator')
                 if result.returncode or json.loads(result.stdout) != {'status':'finished'}:
                     raise ValueError('Task invocation unconfirmed')
                 self.respond(200, {'status':'finished'})
                 return
-            result = subprocess.run([
-                '/root/.local/bin/hermes', '-p', 'daymark-curator', 'chat',
-                '--oneshot', '-Q', '--ignore-rules', '--provider', 'openai-codex',
-                '--model', 'gpt-5.6-luna', '--max-turns', '1', '--run-budget', '120',
-                '--query-file', '-'
-            ], input=(TELL_HERMES_PROMPT if data.get('mode') == 'tell-hermes' else MAIL_PROMPT if data.get('mode') == 'mail-classify' else ASSIGNMENT_PROMPT if data.get('mode') == 'assignment' else EXTRACT_PROMPT if data.get('mode') == 'extract' else CUSTOM_PROJECT_TASKS_PROMPT if data.get('mode') == 'custom-project-tasks' else PROMPT) + json.dumps(data), text=True, capture_output=True,
-                timeout=135, cwd='/root/.hermes/profiles/daymark-curator')
+            instruction = TELL_HERMES_PROMPT if data.get('mode') == 'tell-hermes' else MAIL_PROMPT if data.get('mode') == 'mail-classify' else ASSIGNMENT_PROMPT if data.get('mode') == 'assignment' else EXTRACT_PROMPT if data.get('mode') == 'extract' else CUSTOM_PROJECT_TASKS_PROMPT if data.get('mode') == 'custom-project-tasks' else PROMPT
+            env = os.environ.copy()
+            env['HERMES_HOME'] = '/root/.hermes/profiles/daymark-curator'
+            # The bridge owns cleanup even if the runtime hits its subprocess
+            # timeout. No supplied context is retained as a persistent grant.
+            with tempfile.TemporaryDirectory(prefix='dcc-read-context-') as directory:
+                env['DCC_HELPER_DIRECTORY']=directory
+                result = subprocess.run(['/usr/bin/python3',str(Path(__file__).with_name('task_action_launcher.py'))],
+                    input=json.dumps({'readHelper':{'instruction':instruction,'context':data}},ensure_ascii=False),text=True,
+                    stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env=env,timeout=105,cwd='/root/.hermes/profiles/daymark-curator')
             if result.returncode:
                 raise ValueError('Provider failed')
-            text = result.stdout.strip()
-            start, end = text.find('{'), text.rfind('}')
-            parsed = json.loads(text[start:end + 1])
+            parsed = json.loads(result.stdout)
+            if type(parsed) is not dict:
+                raise ValueError('Unconfirmed helper proposal')
             self.respond(200, parsed)
         except (ValueError, subprocess.TimeoutExpired, OSError):
             self.respond(502, {'error': 'Curator failed; previous plan is unchanged'})

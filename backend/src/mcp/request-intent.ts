@@ -1,7 +1,7 @@
 // Pure request policy/reducer. NO auth, storage, runtime, transport or execution.
 // Caller must commit each transition atomically BEFORE following its directive.
 import {createHash} from 'node:crypto'
-import {TOOLS,isTool,plainRecord,type ToolName,type Command,type Result} from './contracts.js'
+import {TOOLS,isTool,plainRecord,isCreation,type ToolName,type Command,type Result} from './contracts.js'
 import {validateServiceArguments,validServiceResult} from './service-contracts.js'
 import type {Context} from './dispatcher.js'
 
@@ -41,7 +41,7 @@ const timely=(r:IntentRecord,now:number)=>Number.isSafeInteger(now)&&r.startedAt
 export function admitIntent(prior:IntentRecord|undefined,request:IntentAdmission,policy:IntentPolicy,legacy?:LegacyEvidence):Decision {
   if(request.purpose!=='action')return deny('forbidden')
   if(typeof request.actorId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,199}$(?![\s\S])/.test(request.actorId)||typeof request.key!=='string'||!/^\w[\w-]{15,79}$(?![\s\S])/.test(request.key)||typeof request.prompt!=='string'||!request.prompt.trim()||request.prompt.length>4000)return deny('invalid_arguments')
-  if(!['legacy-parser-v1','mcp-action-v1'].includes(policy.executor)||!Array.isArray(policy.allowedTools)||policy.allowedTools.length>18||!policy.allowedTools.every(isTool)||new Set(policy.allowedTools).size!==policy.allowedTools.length)return deny('invalid_arguments')
+  if(!['legacy-parser-v1','mcp-action-v1'].includes(policy.executor)||!Array.isArray(policy.allowedTools)||policy.allowedTools.length>Object.keys(TOOLS).length||!policy.allowedTools.every(isTool)||new Set(policy.allowedTools).size!==policy.allowedTools.length)return deny('invalid_arguments')
   const promptHash=hash(request.prompt),actorHash=hash(request.actorId)
   const {id,legacyReceiptId}=intentAddress(request.key)
   // Exact same ID formula as tell-hermes.ts, to let its existing receipt fence
@@ -95,11 +95,12 @@ export function reserveIntentCall(record:IntentRecord,callId:string,tool:unknown
   if(record.executor!=='mcp-action-v1'||!isTool(tool)||!record.allowedTools.includes(tool))return deny('forbidden')
   if(typeof callId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$(?![\s\S])/.test(callId)||!plainRecord(input))return deny('invalid_arguments')
   const args={...input},writing=TOOLS[tool].write
-  const creating=['create_task','create_project','create_assignment','create_calendar_event'].includes(tool)
+  const creating=isCreation(tool)
   if(writing){
     if(Object.hasOwn(args,'operationKey')||creating&&Object.hasOwn(args,'id'))return deny('invalid_arguments')
     args.operationKey='dcc_op_'+uuid('dcc-request-operation-v1:'+record.id+'\0'+callId)
     if(creating)args.id=uuid('dcc-request-target-v1:'+record.id+'\0'+callId)
+    if(tool==='create_task'&&typeof args.templateId==='string'&&typeof args.sourceDate==='string')args.id=`occ.${args.templateId}.${args.sourceDate}`
   }
   const validation=validateServiceArguments(tool,args)
   if(!validation.valid)return deny(validation.code)
