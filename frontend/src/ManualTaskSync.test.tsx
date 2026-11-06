@@ -3,8 +3,9 @@ import {act,fireEvent,render,screen,waitFor} from '@testing-library/react'
 import {afterEach,beforeEach,expect,it,vi} from 'vitest'
 import App from './App'
 import type {SharedTask} from './sharedTasks'
+import {SyntheticWorkspaceSession} from './test/WorkspaceSession'
 
-vi.mock('./AuthGate',()=>({AuthGate:({children}:{children:ReactNode})=>children}))
+vi.mock('./AuthGate',()=>({AuthGate:({children}:{children:ReactNode})=><SyntheticWorkspaceSession>{children}</SyntheticWorkspaceSession>}))
 const TASKS='productivity-app.tasks.v1',BASE='dcc.manual-tasks.base.v1'
 const response=(data:unknown)=>({ok:true,status:200,json:async()=>data}) as Response
 const deferred=<T,>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(done=>{resolve=done});return {promise,resolve}}

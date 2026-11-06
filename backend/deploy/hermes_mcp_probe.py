@@ -12,6 +12,9 @@ from pathlib import Path
 import re
 import sys
 from types import SimpleNamespace
+from runpy import run_path
+agent_policy = run_path(str(Path(__file__).with_name('dcc_model_policy.py')))['agent_policy']
+inference_context = run_path(str(Path(__file__).with_name('dcc_model_policy.py')))['inference_context']
 
 
 TOOLS = {"list_tasks", "create_task", "set_task_completed"}
@@ -190,10 +193,9 @@ class InstalledRuntime:
     def create_agent(self, toolsets, callback, start_callback):
         from run_agent import AIAgent
         return AIAgent(
-            provider="openai-codex", requested_provider="openai-codex",
-            model="gpt-5.6-luna", enabled_toolsets=toolsets,
+            **agent_policy(), enabled_toolsets=toolsets,
             max_iterations=6, run_budget_seconds=90.0, quiet_mode=True,
-            ephemeral_system_prompt="Only execute the isolated synthetic MCP probe. No other actions.",
+            ephemeral_system_prompt=inference_context()+" Only execute the isolated synthetic MCP probe. No other actions.",
             skip_context_files=True, skip_memory=True, skip_background_review=True,
             session_db=None, tool_complete_callback=callback,
             tool_start_callback=start_callback,

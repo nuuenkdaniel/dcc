@@ -6,6 +6,7 @@ import {TOOLS,plainRecord,type ToolName} from './contracts.js'
 import {canonicalJson,ServiceTransport,type ServiceOptions} from './service-transport.js'
 import {SqlIntentStore} from './intent-store.js'
 import {RequestController,type NativeMcpRun} from './request-controller.js'
+import {BrowserTimerBridge} from './browser-timer.js'
 
 export const TASK_ACTION_PATH='/api/v1/hermes/task-actions'
 export const ACTION_PATH='/api/v1/hermes/actions'
@@ -93,13 +94,14 @@ class CallbackSession {
 }
 
 export class TaskActions {
+  private readonly timerBridge=new BrowserTimerBridge()
   private readonly entries=new Map<string,{expiresAt:number;session:CallbackSession;active:()=>Promise<boolean>}>()
   private readonly controller:RequestController
   private readonly now:()=>number
   constructor(options:{pool:Pool;actorId:string;bridge:TaskBridge;now?:()=>number;issueCapability?:()=>string;calendarSnapshot?:ServiceOptions['calendarSnapshot'];guardedCalendarWriter?:ServiceOptions['guardedCalendarWriter']}){
     this.now=options.now??Date.now
     this.controller=new RequestController({store:new SqlIntentStore(options.pool,options.actorId),
-      transport:new ServiceTransport({pool:options.pool,actorId:options.actorId,...(options.calendarSnapshot?{calendarSnapshot:options.calendarSnapshot}:{}),...(options.guardedCalendarWriter?{guardedCalendarWriter:options.guardedCalendarWriter}:{})}),now:this.now,
+      transport:new ServiceTransport({pool:options.pool,actorId:options.actorId,browserTimer:this.timerBridge,...(options.calendarSnapshot?{calendarSnapshot:options.calendarSnapshot}:{}),...(options.guardedCalendarWriter?{guardedCalendarWriter:options.guardedCalendarWriter}:{})}),now:this.now,
       nativeRunner:async run=>{
         if(this.entries.size>=8)throw new TaskCallbackError(429)
         // Generated only at invocation time, after authenticated admission/start.
@@ -122,7 +124,9 @@ export class TaskActions {
       }})
   }
   run(input:{key:string;prompt:string},signal?:AbortSignal){return this.controller.run(input,policy,signal)}
-  runProduct(input:{key:string;prompt:string},signal?:AbortSignal){return this.controller.run(input,productPolicy,signal)}
+  runProduct(input:{key:string;prompt:string;tabId?:string},signal?:AbortSignal){return this.controller.run(input,productPolicy,signal)}
+  pollTimer(key:string,tabId:string){return this.timerBridge.poll(key,tabId)}
+  ackTimer(key:string,tabId:string,ack:unknown){return this.timerBridge.ack(key,tabId,ack)}
   private async entry(authorization:unknown){
     if(typeof authorization!=='string'||!/^Bearer [a-f0-9]{64}$(?![\s\S])/.test(authorization))return undefined
     const key=digest(authorization.slice(7)),entry=this.entries.get(key)

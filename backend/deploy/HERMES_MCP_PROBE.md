@@ -57,7 +57,7 @@ tool_executor.py's four-argument callback, and mcp_tool_handlers.py's JSON rende
 There are no remaining placeholder bindings or pending generic API questions.
 
 After parent review, model mode uses the verified AIAgent constructor:
-openai-codex / gpt-5.6-luna, max_iterations=6, run_budget_seconds=90, ephemeral
+openai-codex / exact gpt-6-luna from adjacent dcc_model_policy.py (no fallback), max_iterations=6, run_budget_seconds=90, ephemeral
 instructions, skipped context/memory/background review, session_db=None, quiet mode.
 Existing auth is inherited only through the parent's explicitly approved launch;
 the harness does not inspect or copy it. Agent final output is discarded. Passing

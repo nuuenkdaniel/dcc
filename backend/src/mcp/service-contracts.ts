@@ -3,6 +3,7 @@ import {TOOLS,isTool,matches,plainRecord,validateArguments,validResult,validEnti
 import {schemaForDefinition} from './schemas.js'
 import {validManualTask} from '../manual-tasks.js'
 import {EXTENDED_READS,validExtendedRead} from './product-projections.js'
+import {validTimerSnapshot} from './browser-timer.js'
 
 const field=(check:Rule['check'],schema:Rule['schema']):Rule=>({check,schema})
 const integer=(min:number,max:number)=>field(v=>typeof v==='number'&&Number.isInteger(v)&&v>=min&&v<=max,{type:'integer',minimum:min,maximum:max})
@@ -90,6 +91,13 @@ export function validateServiceArguments(tool:unknown,input:unknown):{valid:true
     return {valid:true,args:{...input} as Arguments}
   }
   if(input.expectedVersion!==undefined&&!version.check(input.expectedVersion))return {valid:false,code:'invalid_arguments'}
+  if(tool==='control_focus_timer'){
+    if(input.phase!==undefined&&input.action!=='start'||['focusMinutes','breakMinutes'].some(k=>input[k]!==undefined)&&input.action!=='configure'||input.action==='configure'&&input.focusMinutes===undefined&&input.breakMinutes===undefined)return {valid:false,code:'invalid_arguments'}
+  }
+  if(tool==='edit_focus_queue'){
+    const fields=input.action==='add'?['name','minutes']:input.action==='remove'?['miniId']:['miniId','beforeId']
+    if(fields.some(k=>input[k]===undefined)||['name','minutes','miniId','beforeId'].some(k=>input[k]!==undefined&&!fields.includes(k)))return {valid:false,code:'invalid_arguments'}
+  }
   if(tool==='list_projects')return input.id!==undefined&&input.offset!==undefined&&input.offset!==0?{valid:false,code:'invalid_arguments'}:{valid:true,args:{...input} as Arguments}
   if(TOOLS[tool].write&&tool.includes('calendar_event')){
     if(input.scope==='series'&&input.recurrenceId!==undefined||input.scope==='single'&&['rrule','rdates','exdates','clearRecurrence','exceptionPolicy'].some(k=>input[k]!==undefined)||tool==='create_calendar_event'&&input.recurrenceId!==undefined||tool==='create_calendar_event'&&input.scope==='series'&&input.rrule===undefined&&!(Array.isArray(input.rdates)&&input.rdates.length))return {valid:false,code:'unsupported_recurrence'}
@@ -122,6 +130,8 @@ const exact=(value:unknown,keys:string[])=>plainRecord(value)&&Object.keys(value
 // task versions, real project enum/fields, and recurrence unknown on cached events.
 export function validServiceResult(command:Command,value:unknown):value is Result {
   if(!plainRecord(value))return false
+  if(command.tool==='request_clarification')return validResult(command,value)
+  if(command.tool==='get_focus_timer'&&value.state==='ok')return exact(value,['state','data'])&&validTimerSnapshot(value.data)
   if(value.state==='saved')return TOOLS[command.tool].write&&command.tool.includes('calendar_event')&&validSavedResult(value,String(command.args.operationKey))
   if(command.tool==='get_operation_status'&&value.state==='ok'&&plainRecord(value.data)&&value.data.status==='saved')return exact(value,['state','data'])&&exact(value.data,['operationKey','status','result'])&&value.data.operationKey===command.args.operationKey&&validSavedResult(value.data.result,String(command.args.operationKey))
   if(value.state!=='ok'&&value.state!=='applied')return validResult(command,value)
@@ -174,8 +184,10 @@ export function serviceToolDefinitions():Tool[] {
     const schema=schemaForDefinition(name,SERVICE_TOOLS[name])
     schema.description='DCC service contract: standalone task expectedVersion is the whole collection version (create requires zero or current version). Projects use real planner fields/status; mutations queue planning. Source calendar recurrence must be authoritative, never a caller claim. Actor binding is trusted-source-only, not an argument.'
     if(name==='create_task')Object.assign(schema.properties?.expectedVersion??{},{description:'Expected version of the entire manual-tasks collection, including zero for absent collection.'})
+    if(name==='request_clarification')schema.description+=' Request an exact server-generated question for missing calendar/duration/event time, ambiguous project/calendar/relative date, or a DST gap/fold. Supply only the matching reason, never question/success prose. At most three unique questions per invocation; stop writing after asking. Questions do not establish effects or resolve uncertain receipts. The user answers by editing a fresh intent.'
     if(name==='list_calendars')schema.description+=' writable reflects the configured guarded writer, not a guarantee that the provider will permit a write.'
     if(name==='list_preparations')schema.description+=' One plan/page. Topic notes are 512-character slices with nextNotesOffset; use exact plan id, topicId and notesOffset for later slices. Do not overwrite unseen text.'
+    if(['get_focus_timer','control_focus_timer','edit_focus_queue'].includes(name))schema.description+=' Originating browser tab only. Read get_focus_timer for expectedVersion before writes. Browser ACK is required; unavailable/uncertain is never a claimed start. control actions start/pause/resume/reset/configure preserve elapsed progress unless reset is explicit; phase selects focus/break only on start. edit_focus_queue add requires name/minutes; remove requires miniId; move requires miniId/beforeId and a reset/idle queue. No generic frontend code or backend timer session.'
     return {name,inputSchema:schema,description:projectWrite?'DCC project/assignment mutation: queues planning in planner_runs; background workers may generate/reschedule actions. Archive persists status=archived; restore sets active. Explicit category, importance and remainingMinutes are required on create.':name.includes('task')?'DCC standalone manual checklist collection. expectedVersion is the COLLECTION version. Weekly templates use recurrenceFrequency, recurrenceWeekday, recurrenceStartDate and recurrencePaused. Occurrence IDs/source metadata remain immutable; complete/reopen changes only completion, remove/skip retains a tombstone. No generated actions or project linkage.':name.includes('calendar_event')?'DCC guarded calendar mutation. Scope must be explicit. Read get_calendar_series before series edits; rdates/exdates replace complete lists with dates or UTC instants matching allDay. Recurring date-type conversion rejects. clearRecurrence rejects exceptions unless exceptionPolicy=discard explicitly authorizes removing them. New named timezone requires timezoneSourceEventId in this calendar with that VTIMEZONE; no arbitrary zone definitions. Conditional ETags and immutable retries; saved means snapshot_pending, not refreshed identity.':name.includes('preparation')?'DCC versioned preparation operations. Read plan/topics before changes. Create links exact cached calendarId/eventId and includes one initial topic (topicTitle/topicNotes/topicMinutes); insert generates a new topic ID and optionally accepts zero-based position. Remove retains history and requires at least one remaining topic. Relink preserves topics and history. All mutations queue planning atomically; no helper inference grants.':'DCC bounded safe projection; operation receipts are actor-scoped but this is not authentication or data isolation. Calendar saved status includes completion without provider reads.',annotations:{readOnlyHint:!TOOLS[name].write,destructiveHint:TOOLS[name].write,openWorldHint:true},execution:{taskSupport:'forbidden'}}
   })
 }

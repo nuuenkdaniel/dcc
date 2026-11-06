@@ -11,6 +11,7 @@ export type Mode=typeof MODES[number]
 const reads=['tasks:read','projects:read','calendars:read','operations:read'] as const
 const writes=['tasks:write','projects:write','calendars:write'] as const
 const descriptions:Record<ToolName,string>={
+  request_clarification:'Request a bounded server-generated question for missing or ambiguous details. Not an applied effect. Production invocation journal only; unavailable in this offline transport.',
   list_calendars:'List bounded calendar summaries; never calendar URLs or credentials.',
   list_calendar_events:'List one calendar within a <=31 day UTC interval (exclusive end), bounded page.',
   list_tasks:'List dated checklist tasks including tombstones, within a <=93 day date interval (exclusive end). Not calendar events.',
@@ -43,6 +44,9 @@ const descriptions:Record<ToolName,string>={
   get_inbox_message:'Bounded cached plain-text body slice. Service composition only.',
   list_prices:'Bounded cached price summaries without URLs. Service composition only.',
   get_calendar_series:'Guarded authoritative series details. Service composition only.',
+  get_focus_timer:'Read current originating-browser timer; unavailable without browser acknowledgment.',
+  control_focus_timer:'Control originating-tab timer only after read/version CAS. Browser acknowledgment establishes applied, not model prose. Start/resume never reset progress. Configure accepts explicit durations only.',
+  edit_focus_queue:'Add/remove/move originating-tab mini timers with version CAS. Browser owns execution and receipt; no arbitrary frontend commands.',
 }
 
 // A trusted process launch selects context; no tool argument, _meta field, client

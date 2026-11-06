@@ -12,8 +12,14 @@ test('discovery schemas derive required fields and strict allowlists from domain
     assert.deepEqual(Object.keys(schema.properties??{}).sort(),Object.keys(fields).sort())
     assert.equal(schema.additionalProperties,false)
     const validate=provider.getValidator(schema)
-    assert.equal(validate({}).valid,false,name)
-    assert.equal(validate({url:'https://example.invalid'}).valid,false,name)
+    const required=Object.entries(fields).filter(([,field])=>!field.optional).map(([key])=>key)
+    assert.deepEqual([...(schema.required??[])].sort(),required.sort(),name)
+    assert.equal(validate({}).valid,required.length===0,name)
+    for(const value of [{url:'https://example.invalid'},{unknown:true},null,[],{limit:'1'}]){
+      const before=structuredClone(value)
+      assert.equal(validate(value).valid,false,name)
+      assert.deepEqual(value,before,'no unknown-field removal or coercion: '+name)
+    }
   }
   const validate=provider.getValidator(inputSchema('create_task'))
   const task={operationKey:'schema_synthetic_task_01',id:'Legacy.Task_AbC%2F',title:'Synthetic item',date:'2026-11-01'}

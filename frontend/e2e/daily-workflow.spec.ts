@@ -14,6 +14,7 @@ test('local task editing, priority, search, delete and undo survive refresh', as
   await page.reload()
   await page.getByRole('button', { name: 'Important', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Expand Practice questions', exact: true })).toBeVisible()
+  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('productivity-app.tasks.v1')??'[]').map((task:{title:string;notes:string;important?:boolean;deleted?:boolean})=>({title:task.title,notes:task.notes,important:task.important,deleted:task.deleted})))).toEqual([{title:'Practice questions',notes:'Review mistakes',important:true,deleted:false}])
   await page.getByLabel('Search tasks').fill('missing')
   await expect(page.getByText('No matching tasks')).toBeVisible()
   await page.getByLabel('Search tasks').clear()

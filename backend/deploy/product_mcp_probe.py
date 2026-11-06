@@ -10,12 +10,25 @@ import json
 from pathlib import Path
 import re
 import sys
+from runpy import run_path
+agent_policy = run_path(str(Path(__file__).with_name('dcc_model_policy.py')))['agent_policy']
+inference_context = run_path(str(Path(__file__).with_name('dcc_model_policy.py')))['inference_context']
 
 _spec=importlib.util.spec_from_file_location('dcc_product_probe_runtime',Path(__file__).with_name('task_action_runtime.py'))
 _runtime=importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_runtime)
 PRODUCT_TOOLS=_runtime.PRODUCT_TOOLS
 quiet_runtime=_runtime.quiet_runtime
+CLARIFICATION_QUESTIONS={
+    'missing_calendar':'Which calendar should I use?',
+    'missing_duration':'How many minutes should this take?',
+    'missing_event_time':'What date and start time should the event use?',
+    'ambiguous_project':'Which project or assignment do you mean? Please give its exact name or ID.',
+    'ambiguous_calendar':'Which calendar do you mean? Please give its exact name or ID.',
+    'ambiguous_relative_date':'What exact date (including year) do you mean?',
+    'dst_gap':'That local time does not exist because the clocks move forward. What valid local time should I use?',
+    'dst_fold':'That local time occurs twice when the clocks move back. Which UTC offset or occurrence do you mean?',
+}
 
 # Only known service refusal codes may be interpreted from an adapter error.
 # This is not a parser for arbitrary error prose or a second product executor.
@@ -168,6 +181,10 @@ class ReceiptTracker:
             raise ProbeFailure('service_refusal' if state in ('rejected','conflict') else 'receipt',result['code'] if state in ('rejected','conflict') else 'unconfirmed_or_denied',tool)
         if state=='ok' and (set(result)!={'state','data'} or type(result['data']) is not dict):
             raise ProbeFailure('receipt','invalid_read',tool)
+        if tool=='request_clarification':
+            reason=arguments.get('reason')
+            if set(arguments)!={'reason'} or type(reason) is not str or reason not in CLARIFICATION_QUESTIONS or result!={'state':'ok','data':{'reason':reason,'question':CLARIFICATION_QUESTIONS[reason]}}:
+                raise ProbeFailure('receipt','invalid_clarification',tool)
         if state=='ok' and tool in ('list_tasks','list_projects'):
             if tool=='list_tasks' and task_read_issue(arguments) is not None:
                 raise ProbeFailure('receipt','successful_invalid_read',tool)
@@ -196,6 +213,7 @@ class ReceiptTracker:
         self.observed[tool]=result
 
 PHASES = {
+    'clarification': ('A synthetic event request omits its duration. Call request_clarification with missing_duration, then stop. Do not guess a duration or perform any write. Final prose is not a clarification receipt.', {'request_clarification'}),
     'tasks-projects': ('First list_tasks with from 2026-11-01, to 2026-11-04 (exclusive), limit 100, offset 0. Use this exact bounded date window for every task read; never request an entire year. Create a synthetic task on 2026-11-02 using the authoritative collectionVersion; complete that same created task using its latest collection version, then list_tasks again in the same window and verify it is completed. Create one synthetic personal project with importance 2 and remainingMinutes 0, then list_projects by its exact returned id. Correct a typed invalid read before continuing; after a revision conflict read the latest version before retrying. Do not mutate anything else.', {'create_task','set_task_completed','list_tasks','create_project','list_projects'}),
     'calendar': ('List calendars and events for Calendar_A within 2026-11-01 through 2026-11-03 UTC. Read get_calendar_series for snapshot-event-id. Create one synthetic UTC timed nonrecurring event in Calendar_A from 2026-11-02T10:00:00Z to 2026-11-02T11:00:00Z with explicit single scope. A saved snapshot_pending result is not refreshed event identity. Do not edit existing events.', {'list_calendars','list_calendar_events','get_calendar_series','create_calendar_event'}),
     'cached-reads': ('Read list_daily_actions from 2026-11-01 through 2026-11-04 and list_preparations. Search cached inbox for Synthetic, account all, importantOnly false; get cached body for synthetic-mail offset 0 limit 100. Read list_prices. Do not write anything.', {'list_daily_actions','list_preparations','search_inbox','get_inbox_message','list_prices'}),
@@ -256,11 +274,11 @@ def run_probe(argv, phase, model=False):
                 if diagnostic is None:
                     diagnostic=error.diagnostic if isinstance(error,ProbeFailure) else {'stage':'callback','code':'invalid_callback_or_schema'}
 
-        agent = AIAgent(provider='openai-codex',requested_provider='openai-codex',model='gpt-5.6-luna',
+        agent = AIAgent(**agent_policy(),
             enabled_toolsets=['mcp-dcc_product_probe'],max_iterations=8,run_budget_seconds=90.0,quiet_mode=True,
             skip_context_files=True,skip_memory=True,skip_background_review=True,session_db=None,
             tool_start_callback=check,tool_complete_callback=completed,
-            ephemeral_system_prompt='Isolated SYNTHETIC acceptance. Only use the exact product MCP catalog. Read current versions before writes; backend owns IDs/operation keys. Maximum twelve calls/four writes. No real services or user data are present. Do not claim effects from prose.')
+            ephemeral_system_prompt=inference_context()+' Isolated SYNTHETIC acceptance. Only use the exact product MCP catalog. Read current versions before writes; backend owns IDs/operation keys. Maximum twelve calls/four writes. Use request_clarification for missing/ambiguous details or DST gaps/folds; questions are not effects, and no further writes follow a question. No real services or user data are present. Do not claim effects from prose.')
         baseline=snapshot();check()
         agent.run_conversation(user_message=PHASES[phase][0]);check()
         if invalid:
@@ -271,6 +289,8 @@ def run_probe(argv, phase, model=False):
             raise failure
         if tracker.pending or not PHASES[phase][1].issubset(observed):
             raise ProbeFailure('acceptance','missing_receipts_or_unrecovered_conflict')
+        if phase=='clarification' and (set(observed)!={'request_clarification'} or observed['request_clarification']!={'state':'ok','data':{'reason':'missing_duration','question':CLARIFICATION_QUESTIONS['missing_duration']}}):
+            raise ProbeFailure('acceptance','clarification_not_exclusive','request_clarification')
         if phase=='tasks-projects':
             task=observed['set_task_completed']
             if task['id']!=observed['create_task']['id']:

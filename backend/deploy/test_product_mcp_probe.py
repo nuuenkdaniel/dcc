@@ -17,6 +17,16 @@ def native_error_callback(result, source='dcc-service'):
 
 
 class ProductProbeTests(unittest.TestCase):
+    def test_clarification_requires_exact_reason_question_and_never_applied_prose(self):
+        for reason,question in probe.CLARIFICATION_QUESTIONS.items():
+            tracker=probe.ReceiptTracker()
+            def record(result):
+                tracker.record('mcp__dcc_product_probe__request_clarification',{'reason':reason},json.dumps({'result':{'source':'dcc-service','result':result}}))
+            record({'state':'ok','data':{'reason':reason,'question':question}})
+            self.assertEqual(tracker.observed['request_clarification']['state'],'ok')
+            for result in [{'state':'ok','data':{'reason':reason,'question':'Everything applied'}},{'state':'applied','id':'invented','version':1}]:
+                with self.assertRaises(probe.ProbeFailure):record(result)
+
     def test_read_diagnostic_matches_required_fields_limits_dates_and_window_boundaries(self):
         valid={'from':'2026-11-01','to':'2026-11-04','limit':100,'offset':0}
         self.assertIsNone(probe.task_read_issue(valid))
@@ -157,7 +167,7 @@ class ProductProbeTests(unittest.TestCase):
         modules['tools'].__path__=[]
         with patch.dict(sys.modules,modules):
             result=probe.run_probe(['/synthetic/node'],'cached-reads',True)
-            self.assertTrue(result['journey_pass']);self.assertEqual(result['catalog_count'],32)
+            self.assertTrue(result['journey_pass']);self.assertEqual(result['catalog_count'],36)
             self.assertEqual(register.call_args.args[0]['dcc_product_probe']['tools']['include'],sorted(probe.PRODUCT_TOOLS))
             self.assertEqual(options['max_iterations'],8)
             agent.run_conversation=Mock(return_value={'final':'all done'})

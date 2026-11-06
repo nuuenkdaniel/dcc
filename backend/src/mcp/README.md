@@ -5,7 +5,7 @@ Fresh web composer requests use `/api/v1/hermes/actions`. The fixed HTTPS callba
 and bootstrapped Hermes launcher are described in [TASK-ACTIONS.md](TASK-ACTIONS.md).
 This is implemented source wiring, not a claim of deployment or live acceptance.
 
-## Exact product catalog (32 tools)
+## Exact product catalog (35 tools)
 
 - `list_tasks`, `create_task`, `update_task`, `set_task_completed`, `remove_task`
 - `list_projects`, `create_project`, `create_assignment`, `update_project`,
@@ -18,6 +18,18 @@ This is implemented source wiring, not a claim of deployment or live acceptance.
 - `create_preparation`, `relink_preparation`, `insert_preparation_topic`,
   `remove_preparation_topic`
 - `search_inbox`, `get_inbox_message`, `list_prices`, `get_calendar_series`
+- `get_focus_timer`, `control_focus_timer`, `edit_focus_queue`
+
+All DCC inference and QA constructors share the source-owned adjacent
+`backend/deploy/dcc_model_policy.py`: exact `gpt-6-luna`, no fallback. This is not
+an OpenCode worker-model change. Installed provider acceptance is a parent gate.
+
+Timer tools rendezvous with the authenticated originating browser tab through
+`/api/v1/hermes/timer-bridge`. The request persists its tab binding; browser nonce
+ACKs, not model assertions, establish effects. Local timer state and replay receipts
+share one sessionStorage document; Web Locks exclude cloned-tab receivers. Backend
+restarts/lost rendezvous remain uncertain, never auto-replay. See
+[../../RELIABILITY.md](../../RELIABILITY.md) for pending acceptance and limits.
 
 Node and Python select exact catalogs and check invocation-local schema stability.
 No generic route, shell, SQL, HTTP, credential or provider-administration tool exists.
@@ -98,7 +110,7 @@ cap. Continuation advances only by returned rows; no row or field is truncated.
 Production and installed product probes share catalog/schema validation. Helper
 stdio uses the installed request-handler API, not unavailable tool decorators.
 New regressions require parent execution; these source repairs are not acceptance
-or deployment proof. Installed helper read→proposal, all 32-tool discovery, repaired
+or deployment proof. Installed helper read→proposal, all 35-tool discovery, repaired
 task/project readback, named-zone/recurrence and preparation journeys remain gates.
 
 ```sh

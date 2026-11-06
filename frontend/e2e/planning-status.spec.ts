@@ -9,7 +9,8 @@ test('planning separates historical explanation from sync and keeps controls sty
  await expect(page.getByText('Earlier budget estimate',{exact:true})).toBeVisible()
  await expect(page.locator('.planner-history time')).toHaveAttribute('dateTime','2026-10-03T14:00:00Z')
  await expect(page.getByText('Historical context, not a live capacity check.',{exact:false})).toBeVisible()
- await expect(page.getByRole('button',{name:'Replan today',exact:true})).toHaveCSS('border-radius','6px')
+ // Shared secondary-action rule in App.css intentionally overrides the older 6px planner rule.
+ await expect(page.getByRole('button',{name:'Replan today',exact:true})).toHaveCSS('border-radius','7px')
  await page.getByRole('button',{name:'Replan today',exact:true}).click();await expect(page.getByRole('button',{name:'Planning queued…'})).toBeDisabled()
  await page.setViewportSize({width:375,height:950});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
  await page.locator('.planner-details').filter({hasText:'Daily planning'}).screenshot({path:'test-results/planning-status-mobile.png'})

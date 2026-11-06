@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto'
+import {clarification,isClarificationReason} from './clarification.js'
 import type {Pool,PoolClient} from 'pg'
 import {validManualTask,type ManualTask} from '../manual-tasks.js'
 import type {EventChange} from '../calendar-write.js'
@@ -10,11 +11,12 @@ import type {Transport,Context} from './dispatcher.js'
 import {readProductCache} from './cache-reads.js'
 import {mutatePlannerEntity} from './planner-operations.js'
 import {boundedPage} from './wire-budget.js'
+import {BrowserTimerBridge,isTimerTool} from './browser-timer.js'
 
 export const COLLECTION='ccbf2a93-9be3-45bd-b039-1019cdb8276f'
 export const RECEIPT_KIND='dcc-mcp-operation-v1'
 type Row={id:string;kind:string;version:number;data:Record<string,unknown>}
-type Receipt={v:1;actorHash:string;key:string;fingerprint:string;tool:Command['tool'];state:Result['state'];result:Result;change?:EventChange;writerPayloadJson?:string;writerPayloadHash?:string;guardedWriterVersion?:1;calendarCommand?:Command}
+type Receipt={v:1;actorHash:string;key:string;fingerprint:string;tool:Command['tool'];state:Result['state'];result:Result;change?:EventChange;writerPayloadJson?:string;writerPayloadHash?:string;guardedWriterVersion?:1;calendarCommand?:Command;browserTimerVersion?:1}
 export type ServiceOptions={
   pool:Pool
   // Trusted authenticated caller binding, never accepted from tool arguments.
@@ -23,6 +25,7 @@ export type ServiceOptions={
   calendarSnapshot?:()=>Promise<Snapshot>
   calendarWriter?:(change:EventChange)=>Promise<{code:number;saved?:boolean}>
   guardedCalendarWriter?:NonRecurringCalendarWriter
+  browserTimer?:BrowserTimerBridge
 }
 export const canonicalJson=(value:unknown):string=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item)
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex')
@@ -70,6 +73,7 @@ export class ServiceTransport implements Transport {
     const validation=validateServiceArguments(command.tool,command.args)
     if(!validation.valid)return rejected(validation.code)
     const frozen:Command={tool:command.tool,args:validation.args},key=String(frozen.args.operationKey)
+    if(isTimerTool(command.tool)){try{return await this.timerCommand(frozen,context,false)}catch{return {state:'uncertain',operationKey:key}}}
     try{
       const row=await this.row(this.options.pool,this.receiptId(key))
       if(!row)return undefined
@@ -103,11 +107,50 @@ export class ServiceTransport implements Transport {
     const validation=validateServiceArguments(input.tool,input.args)
     if(!validation.valid)return rejected(validation.code)
     const command:Command={tool:input.tool,args:validation.args}
+    if(command.tool==='request_clarification'){
+      if(context.purpose!=='action'||!isClarificationReason(command.args.reason))return rejected('forbidden')
+      return {state:'ok',data:clarification(command.args.reason)}
+    }
     try {
-      const result=TOOLS[command.tool].write?await this.write(command):await this.read(command)
+      const result=isTimerTool(command.tool)?await this.timerCommand(command,context,true):TOOLS[command.tool].write?await this.write(command):await this.read(command)
       if(!validServiceResult(command,result))throw Error('Invalid projected result')
       return result
     }catch{return TOOLS[command.tool].write?{state:'uncertain',operationKey:String(command.args.operationKey)}:rejected('transport_failure')}
+  }
+  private async timerCommand(command:Command,context:Context,dispatch:boolean):Promise<Result>{
+    if(!this.options.browserTimer)return rejected('transport_unconfigured')
+    if(command.tool==='get_focus_timer')return this.options.browserTimer.execute(command,context)
+    const key=String(command.args.operationKey),id=this.receiptId(key),fingerprint=hash(canonicalJson(command)),uncertain:Result={state:'uncertain',operationKey:key}
+    const c=await this.options.pool.connect();let fresh=false
+    try{
+      await c.query('BEGIN');await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,817344))',[id])
+      const row=await this.row(c,id,true)
+      if(row){
+        const receipt=this.receipt(row,key)
+        if(receipt.fingerprint!==fingerprint||receipt.tool!==command.tool){await c.query('COMMIT');return conflict('operation_key_mismatch')}
+        if(receipt.browserTimerVersion!==1)throw Error('Wrong timer receipt version')
+        if(receipt.state!=='uncertain'){if(!validServiceResult(command,receipt.result))throw Error('Invalid timer receipt');await c.query('COMMIT');return receipt.result}
+      }else if(dispatch){
+        await this.insert(c,id,RECEIPT_KIND,{v:1,actorHash:this.actorHash,key,fingerprint,tool:command.tool,state:'uncertain',result:uncertain,browserTimerVersion:1});fresh=true
+      }
+      await c.query('COMMIT')
+    }catch(error){try{await c.query('ROLLBACK')}catch{/* Preserve uncertainty. */}throw error}finally{c.release()}
+    // A reserved/restarted command is reconciliation-only, never another dispatch.
+    const result=fresh?await this.options.browserTimer.execute(command,context):await this.options.browserTimer.recover(command,context)
+    if(result.state==='uncertain')return result
+    if(!validServiceResult(command,result))throw Error('Invalid browser acknowledgment')
+    const completion=await this.options.pool.connect()
+    try{
+      await completion.query('BEGIN');await completion.query('SELECT pg_advisory_xact_lock(hashtextextended($1,817344))',[id])
+      const row=await this.row(completion,id,true)
+      if(!row)throw Error('Missing timer receipt')
+      const current=this.receipt(row,key)
+      if(current.fingerprint!==fingerprint||current.browserTimerVersion!==1)throw Error('Timer receipt changed')
+      const terminal=current.state==='uncertain'?result:current.result
+      if(!validServiceResult(command,terminal))throw Error('Invalid terminal timer receipt')
+      if(current.state==='uncertain')await this.update(completion,row,{...current,state:terminal.state,result:terminal})
+      await completion.query('COMMIT');return terminal
+    }catch(error){try{await completion.query('ROLLBACK')}catch{/* Never re-execute. */}throw error}finally{completion.release()}
   }
   private async read(command:Command):Promise<Result>{
     const cached=await readProductCache(this.options.pool,command)

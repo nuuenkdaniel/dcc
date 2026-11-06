@@ -2,6 +2,7 @@ import { test, expect } from './authenticated'
 
 test('drag and keyboard reorder determine focus order', async ({ page }) => {
   await page.goto('http://127.0.0.1:5173/pomodoro')
+  await expect(page.getByRole('button',{name:'Start session',exact:true})).toBeEnabled()
   await page.getByRole('button', { name: 'Timer settings' }).click()
   for (const name of ['Read', 'Practice', 'Review']) {
     await page.getByLabel('Mini timer name', { exact: true }).fill(name)

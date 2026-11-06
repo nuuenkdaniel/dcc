@@ -45,8 +45,9 @@ test('shared controls stay themed and operable across primary routes',async({pag
  await page.getByRole('button',{name:'Save email rules',exact:true}).click()
  await expect(page.getByRole('status').filter({hasText:'Saved.'})).toBeVisible()
 
- await page.goto('/pomodoro')
- await page.setViewportSize({width:375,height:900})
+  await page.goto('/pomodoro')
+  await page.setViewportSize({width:375,height:900})
+  await expect(page.getByRole('button',{name:'Start session',exact:true})).toBeEnabled()
  await page.getByRole('button',{name:'Timer settings'}).click()
  await expectThemed(page,'.timer-dialog input')
  await expectThemed(page,'.timer-dialog .dialog-done')

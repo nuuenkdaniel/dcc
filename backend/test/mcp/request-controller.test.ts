@@ -17,6 +17,24 @@ function setup(runner:ModelRunner,now=()=>1000){
   const journal=new IntentPool(),effects=new ServicePool(),store=new SqlIntentStore(journal.pool,'actor-A'),transport=new ServiceTransport({pool:effects.pool,actorId:'actor-A'})
   return {journal,effects,store,transport,controller:new RequestController({store,transport,runner,now})}
 }
+test('typed clarification is journaled separately from effects, survives retry and ignores final prose',async()=>{
+  let invocations=0
+  const h=setup(async()=>{invocations++;return {calls:[{id:'question',tool:'request_clarification',arguments:{reason:'missing_duration'}}],done:true,final:'Everything was applied'}})
+  const clarificationPolicy={executor:'mcp-action-v1' as const,allowedTools:['request_clarification'] as const}
+  const result=await h.controller.run(input,clarificationPolicy)
+  assert.equal(result.phase,'completed');assert.equal(result.outcome,'no_effects_recorded')
+  assert.deepEqual(result.effects,[]);assert.deepEqual(result.clarifications,[{reason:'missing_duration',question:'How many minutes should this take?'}])
+  assert.equal(h.effects.rows.size,0)
+  assert.deepEqual(await h.controller.run(input,clarificationPolicy),result);assert.equal(invocations,1)
+})
+test('clarification after a known write retains its receipt; further guessed writes are fenced',async()=>{
+  const h=setup(async()=>({calls:[{id:'write1',tool:'create_task',arguments:args},{id:'question',tool:'request_clarification',arguments:{reason:'missing_calendar'}},{id:'guess',tool:'create_task',arguments:{...args,title:'Must not run'}}],done:true}))
+  const result=await h.controller.run(input,{executor:'mcp-action-v1',allowedTools:['create_task','request_clarification']})
+  assert.equal(result.phase,'uncertain')
+  assert.deepEqual(result.effects.map(e=>e.state),['applied'])
+  assert.deepEqual(result.clarifications,[{reason:'missing_calendar',question:'Which calendar should I use?'}])
+  assert.equal(h.effects.rows.get(COLLECTION)!.data.tasks.length,1)
+})
 
 test('host bounded runner uses official SDK/service reads and planned writes, ignoring model-final claims',async()=>{
   let rounds=0

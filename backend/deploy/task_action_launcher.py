@@ -77,7 +77,7 @@ def main():
         if not probe and sys.argv[1:] not in ([], ['--preflight'], ['--read-context-server']):
             raise LauncherError('Unsupported launcher arguments')
         script = Path(__file__).resolve().with_name('task_action_runtime.py')
-        if not script.is_file() or not script.with_name('read_context_runtime.py').is_file():
+        if not script.is_file() or not script.with_name('read_context_runtime.py').is_file() or not script.with_name('dcc_model_policy.py').is_file():
             raise LauncherError('Runtime script missing')
         argv = runtime_command(resolve_runtime(), script)
         if not Path(argv[0]).is_file() or not os.access(argv[0], os.X_OK):

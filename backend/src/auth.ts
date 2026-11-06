@@ -19,7 +19,11 @@ export function registerAuth(app:FastifyInstance, config?:AuthConfig, taskCallba
  app.register(rateLimit,{global:false})
  const salt=randomBytes(32)
  const expected=config ? scryptSync(config.password,salt,64):null
- const identity=config ? digest(config.username+'\0'+config.password):''
+  const identity=config ? digest(config.username+'\0'+config.password):''
+  // Public workspace label, NOT a session credential or password-derived verifier.
+  // Stable across logins/password rotation; a configured account-name change
+  // changes this label. Return it only after authenticating the session/login.
+  const workspaceOwner=config?digest('dcc-workspace-owner-v1\0'+config.username):''
  const authenticated=async (request:FastifyRequest)=>{
   const token=request.cookies.daymark_session
   return !!config && !!token && /^[a-f0-9]{64}$/.test(token) && await config.store.has(digest(token),identity)
@@ -40,7 +44,7 @@ export function registerAuth(app:FastifyInstance, config?:AuthConfig, taskCallba
   const path=request.url.split('?',1)[0]??request.url
   if(path.startsWith('/api/v1/')&&!PUBLIC_API_ROUTES.has(path)&&!(await authenticated(request))) return reply.code(401).send({error:'Sign in required'})
  })
- app.get('/api/v1/auth/session',async request=>({authenticated:await authenticated(request),configured:!!config}))
+  app.get('/api/v1/auth/session',async request=>{const signedIn=await authenticated(request);return {authenticated:signedIn,configured:!!config,...(signedIn?{workspaceOwner}:{})}})
  app.post<{Body:{username:string;password:string}}>('/api/v1/auth/login',{
   config:{rateLimit:{max:5,timeWindow:'1 minute'}},
   schema:{body:{type:'object',required:['username','password'],additionalProperties:false,properties:{username:{type:'string',maxLength:256},password:{type:'string',maxLength:1024}}}},
@@ -53,7 +57,7 @@ export function registerAuth(app:FastifyInstance, config?:AuthConfig, taskCallba
   const token=randomBytes(32).toString('hex')
   await config.store.put(digest(token),identity,Date.now()+SESSION_SECONDS*1000)
   reply.setCookie('daymark_session',token,{path:'/',httpOnly:true,sameSite:'strict',secure:config.origin.startsWith('https:'),maxAge:SESSION_SECONDS})
-  return {authenticated:true}
+   return {authenticated:true,workspaceOwner}
  })
  app.post('/api/v1/auth/logout',async(request,reply)=>{
   const token=request.cookies.daymark_session
