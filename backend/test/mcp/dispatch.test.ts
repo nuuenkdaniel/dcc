@@ -166,6 +166,7 @@ test('production is unconfigured; read errors and unsafe transport data fail clo
 test('every tool has an exact allowlist and the registry exposes no generic executor',()=>{
   const {id,...eventFields}=event
   const valid:Record<string,Record<string,unknown>>={
+    request_clarification:{reason:'missing_duration'},
     list_calendars:{limit:1},
     list_calendar_events:{calendarId:event.calendarId,from:'2026-11-01T00:00:00Z',to:'2026-11-02T00:00:00Z',limit:1},
     list_tasks:read,
@@ -198,6 +199,9 @@ test('every tool has an exact allowlist and the registry exposes no generic exec
     get_inbox_message:{id:'Cached_Message',offset:0,limit:100},
     list_prices:{limit:1},
     get_calendar_series:{calendarId:event.calendarId,eventId:id},
+    get_focus_timer:{},
+    control_focus_timer:{id:'Timer_Operation',operationKey:task.operationKey,expectedVersion:1,action:'start'},
+    edit_focus_queue:{id:'Timer_Operation',operationKey:task.operationKey,expectedVersion:1,action:'add',name:'Synthetic focus',minutes:5},
   }
   assert.deepEqual(Object.keys(TOOLS).sort(),Object.keys(valid).sort())
   for(const [name,args] of Object.entries(valid)){

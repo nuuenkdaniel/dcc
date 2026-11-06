@@ -21,6 +21,7 @@ function decode(row:Row,key:string,actorHash:string):IntentRecord {
   const d=row.data,{id,legacyReceiptId}=intentAddress(key)
   if(row.kind!==REQUEST_INTENT_KIND||row.id!==id||!Number.isSafeInteger(row.version)||row.version<1||!plainRecord(d))return fail('intent_conflict')
   const r=d as unknown as IntentRecord
+  if(r.browserTabId!==undefined&&(typeof r.browserTabId!=='string'||!/^[a-f0-9-]{36}$/.test(r.browserTabId)))return fail('intent_conflict')
   if(r.version!==1||r.id!==id||r.legacyReceiptId!==legacyReceiptId||r.key!==key||r.actorHash!==actorHash||typeof r.promptHash!=='string'||!/^[a-f0-9]{64}$/.test(r.promptHash)||!['legacy-parser-v1','mcp-action-v1'].includes(r.executor)||!['admitted','active','uncertain','completed'].includes(r.phase)||!Array.isArray(r.allowedTools)||r.allowedTools.length>Object.keys(TOOLS).length||!r.allowedTools.every(isTool)||new Set(r.allowedTools).size!==r.allowedTools.length||!Number.isInteger(r.rounds)||r.rounds<0||r.rounds>REQUEST_LIMITS.maxRounds||!Array.isArray(r.calls)||r.calls.length>REQUEST_LIMITS.maxCalls)return fail('intent_conflict')
   if(r.startedAt!==undefined&&(!Number.isSafeInteger(r.startedAt)||r.startedAt<0)||r.ownerId!==undefined&&(typeof r.ownerId!=='string'||!r.ownerId)||r.phase==='active'&&(r.startedAt===undefined||!r.ownerId))return fail('intent_conflict')
   if(r.outcome!==undefined&&!['legacy_receipt','no_effects_recorded','effects_recorded','partial','rejected'].includes(r.outcome)||r.phase==='admitted'&&(r.calls.length||r.rounds||r.startedAt!==undefined||r.ownerId!==undefined))return fail('intent_conflict')
@@ -101,7 +102,7 @@ export class SqlIntentStore {
     const result=await c.query('UPDATE planner_entities SET data=$2,version=version+1 WHERE id=$1 AND kind=$3 AND version=$4 RETURNING version',[row.id,record,REQUEST_INTENT_KIND,row.version])
     if(result.rowCount!==1)fail('storage_conflict')
   }
-  async admit(input:{key:string;prompt:string;purpose:'action'},policy:IntentPolicy):Promise<IntentRecord>{
+  async admit(input:{key:string;prompt:string;purpose:'action';tabId?:string},policy:IntentPolicy):Promise<IntentRecord>{
     // Validate admission BEFORE opening a connection.
     requireIntent(admitIntent(undefined,{...input,actorId:this.actorId},policy))
     return this.transaction(input.key,async(c,row,legacy)=>{

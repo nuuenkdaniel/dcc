@@ -4,7 +4,7 @@ import {validateServiceArguments,validServiceResult} from './service-contracts.j
 
 // Supplied by a trusted caller, never extracted from tool arguments or model output.
 // Capabilities here are an offline policy seam, NOT authenticated runtime authorization.
-export type Context={purpose:'action'|'parser'|'planner'|'extraction'|'read';capabilities:readonly string[]}
+export type Context={purpose:'action'|'parser'|'planner'|'extraction'|'read';capabilities:readonly string[];browserTabId?:string;invocationKey?:string}
 export interface Transport {readonly contract?:'dcc-service-v1';execute(command:Command,context?:Context):Promise<unknown>}
 type Entry={fingerprint:string;result:Result}
 const denied:Result={state:'rejected',code:'forbidden'}

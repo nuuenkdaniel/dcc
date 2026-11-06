@@ -32,9 +32,15 @@ export function buildApp(options: { taskActions?:TaskActions; calendarRefresh?:(
           return response===undefined?reply.code(202).send():reply.send(response)
         }catch(error){return reply.code(error instanceof TaskCallbackError?error.status:502).send({error:'Task callback unavailable'})}
       })
-      for(const actionPath of [TASK_ACTION_PATH,ACTION_PATH])scope.post<{Body:{key:string;prompt:string}}>(actionPath,{bodyLimit:20000,logLevel:'silent',config:{rateLimit:{max:6,timeWindow:'1 minute'}},preValidation:async(request,reply)=>{
+      scope.post<{Body:{key:string;tabId:string;ack?:unknown}}>('/api/v1/hermes/timer-bridge',{bodyLimit:20000,logLevel:'silent',config:{rateLimit:{max:240,timeWindow:'1 minute'}}},async(request,reply)=>{
         const b=request.body
-        if(!b||typeof b!=='object'||Array.isArray(b)||Object.keys(b).sort().join(',')!=='key,prompt'||typeof b.key!=='string'||typeof b.prompt!=='string'||!/^\w[\w-]{15,79}$(?![\s\S])/.test(b.key)||!b.prompt.trim()||b.prompt.length>4000)return reply.code(400).send({message:'Use only a submission key and task request.'})
+        if(!b||typeof b!=='object'||Array.isArray(b)||Object.keys(b).some(k=>!['key','tabId','ack'].includes(k))||typeof b.key!=='string'||!/^\w[\w-]{15,79}$/.test(b.key)||typeof b.tabId!=='string'||!/^[a-f0-9-]{36}$/.test(b.tabId))return reply.code(400).send({error:'Invalid timer channel'})
+        if(b.ack!==undefined&&!options.taskActions!.ackTimer(b.key,b.tabId,b.ack))return reply.code(409).send({error:'Timer acknowledgment unavailable'})
+        return {commands:options.taskActions!.pollTimer(b.key,b.tabId)}
+      })
+      for(const actionPath of [TASK_ACTION_PATH,ACTION_PATH])scope.post<{Body:{key:string;prompt:string;tabId?:string}}>(actionPath,{bodyLimit:20000,logLevel:'silent',config:{rateLimit:{max:6,timeWindow:'1 minute'}},preValidation:async(request,reply)=>{
+        const b=request.body
+        if(!b||typeof b!=='object'||Array.isArray(b)||Object.keys(b).filter(k=>k!=='tabId').sort().join(',')!=='key,prompt'||b.tabId!==undefined&&(actionPath!==ACTION_PATH||typeof b.tabId!=='string'||!/^[a-f0-9-]{36}$/.test(b.tabId))||typeof b.key!=='string'||typeof b.prompt!=='string'||!/^\w[\w-]{15,79}$(?![\s\S])/.test(b.key)||!b.prompt.trim()||b.prompt.length>4000)return reply.code(400).send({message:'Use only a submission key and task request.'})
       }},async(request,reply)=>{
         const abort=new AbortController(),stop=()=>abort.abort()
         request.raw.once('aborted',stop)

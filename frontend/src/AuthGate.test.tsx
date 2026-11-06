@@ -2,6 +2,8 @@ import {fireEvent,render,screen,waitFor} from '@testing-library/react'
 import {afterEach,beforeEach,expect,it,vi} from 'vitest'
 import {AuthGate} from './AuthGate'
 import {protectedFetch} from './auth'
+import {useEffect} from 'react'
+import {useWorkspaceSession,type WorkspaceSession} from './workspaceSession'
 
 const response=(body:unknown,status=200)=>({ok:status>=200&&status<300,status,json:async()=>body}) as Response
 
@@ -78,4 +80,25 @@ it('keeps a login 401 local instead of emitting global expiry',async()=>{
  await waitFor(()=>expect(screen.getByRole('status')).toHaveTextContent(/sign-in failed/i))
  expect(expired).not.toHaveBeenCalled()
  unmount();window.removeEventListener('dcc-auth-required',expired)
+})
+it('expires the old owner scope synchronously and accepts only the server returned login owner',async()=>{
+ const scopes:WorkspaceSession[]=[],ownerA='a'.repeat(64),ownerB='b'.repeat(64)
+ const fetchMock=vi.fn().mockResolvedValueOnce(response({authenticated:true,configured:true,workspaceOwner:ownerA})).mockResolvedValueOnce(response({authenticated:true,workspaceOwner:ownerB}))
+ vi.stubGlobal('fetch',fetchMock)
+ function Private(){const session=useWorkspaceSession();useEffect(()=>{if(session)scopes.push(session)},[session]);return <div>Verified workspace</div>}
+ render(<AuthGate><Private/></AuthGate>)
+ await screen.findByText('Verified workspace');expect(scopes[0].owner).toBe(ownerA)
+ fireEvent(window,new Event('dcc-auth-required'))
+ expect(scopes[0].signal.aborted).toBe(true)
+ fireEvent.change(await screen.findByLabelText('Username'),{target:{value:'synthetic-other'}})
+ fireEvent.change(screen.getByLabelText('Password'),{target:{value:'synthetic-only'}})
+ fireEvent.click(screen.getByRole('button',{name:'Sign in'}))
+ await screen.findByText('Verified workspace')
+ expect(scopes[1].owner).toBe(ownerB);expect(scopes[1].signal.aborted).toBe(false)
+})
+it('a truthy non-boolean session flag cannot mount the workspace',async()=>{
+ vi.stubGlobal('fetch',vi.fn().mockResolvedValue(response({authenticated:'true',configured:true,workspaceOwner:'a'.repeat(64)})))
+ render(<AuthGate><div>Must remain gated</div></AuthGate>)
+ await screen.findByLabelText('Username')
+ expect(screen.queryByText('Must remain gated')).not.toBeInTheDocument()
 })

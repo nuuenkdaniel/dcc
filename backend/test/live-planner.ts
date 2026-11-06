@@ -29,7 +29,7 @@ try{
  snap=await (await context.request.get(origin+'/api/v1/planner/snapshot')).json();assert.equal(snap.actions.find((a:{data:{id:string}})=>a.data.id===action.data.id).data.completed,true);assert.equal(snap.projects.find((p:{data:{id:string}})=>p.data.id===id).data.status,'active')
  await page.setViewportSize({width:375,height:1000});await page.goto(origin+'/projects');await page.getByRole('heading',{name:title,exact:true}).waitFor();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:'../frontend/test-results/projects-live-mobile.png',fullPage:true})
  await page.route('**/api/v1/planner/**',r=>r.abort());await page.reload();await page.getByRole('heading',{name:title,exact:true}).waitFor()
- console.log('PASS: real authenticated project, real gpt-5.6-luna generation, validated daily action, browser completion without project completion, mobile layout, offline cached reload.')
+  console.log('PASS: real authenticated project, generated validated daily action, browser completion without project completion, mobile layout, offline cached reload. Model/provider acceptance requires separate runtime policy proof.')
 }finally{
  await pool.query("DELETE FROM planner_entities WHERE id=$1 OR (kind='action' AND data->>'projectId'=$2)",[id,id])
  const remaining=(await pool.query('SELECT count(*)::int AS n FROM planner_entities')).rows[0].n

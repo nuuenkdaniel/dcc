@@ -6,14 +6,16 @@ for(const width of [320,375,768,1024,1920]){
   let release!:()=>void
   const pending=new Promise<void>(resolve=>{release=resolve})
   const requests:unknown[]=[]
-  await page.route('**/api/v1/hermes/commands',async route=>{
+   await page.route('**/api/v1/hermes/action-capabilities',route=>route.fulfill({json:{productActions:true}}))
+   await page.route('**/api/v1/hermes/actions',async route=>{
    requests.push(route.request().postDataJSON())
    await pending
-   await route.fulfill({json:{message:`Synthetic result: ${'x'.repeat(500)}`}})
+    await route.fulfill({json:{message:`Untrusted synthetic prose: ${'x'.repeat(500)}`,summary:{phase:'completed',outcome:'effects_recorded',effects:[{tool:'create_task',state:'applied',id:'synthetic-layout-task',version:1}],pending:0,reads:[]}}})
   })
   await page.goto('/')
-  const input=page.getByRole('textbox',{name:'Create a project, assignment, task, or event'})
-  await expect(input).toBeVisible()
+   const input=page.getByRole('textbox',{name:'Ask Hermes about tasks, projects, or calendar'})
+   await expect(input).toBeVisible()
+   await expect(input).toBeEnabled()
   await expect(input).toHaveAttribute('placeholder','Hermes')
   await expect(page.locator('.sidebar .tell-hermes,.tell-hermes details,.tell-hermes summary,.tell-hermes textarea')).toHaveCount(0)
   const checkLayout=async()=>{
@@ -34,13 +36,22 @@ for(const width of [320,375,768,1024,1920]){
   await input.focus()
   expect(await input.evaluate(el=>getComputedStyle(el).outlineStyle)).not.toBe('none')
   await input.press('Enter')
-  await expect(input).toBeDisabled()
-  await expect(page.locator('#tell-hermes-status')).toHaveText('Creating…')
+   await expect(input).toBeDisabled()
+    await expect(page.locator('#tell-hermes-status')).toHaveText('Checking DCC…')
+    await expect.poll(()=>requests.length).toBe(1)
+   await page.keyboard.press('Enter') // Pending Enter must not create a second intent.
+   expect(requests).toHaveLength(1)
   expect(await checkLayout()).toBe(top)
   release()
   await expect(input).toBeEnabled()
-  await expect(page.locator('#tell-hermes-status')).toContainText('Synthetic result:')
-  expect(requests).toHaveLength(1)
+   await expect(page.locator('#tell-hermes-status')).toHaveText('DCC actions saved.')
+   await expect(page.locator('.tell-hermes')).not.toContainText('Untrusted synthetic prose:')
+   expect(requests).toHaveLength(1)
+   expect(requests[0]).toEqual(expect.objectContaining({prompt:'Synthetic command only',key:expect.stringMatching(/^[a-f0-9-]{36}$/)}))
+   await input.press('Enter') // Unchanged settled retry checks the original key.
+   await expect.poll(()=>requests.length).toBe(2)
+   expect(requests[1]).toEqual(requests[0])
+   await expect(input).toBeEnabled()
   expect(await checkLayout()).toBe(top)
   if(width>=1024){
    await page.getByRole('button',{name:'Collapse sidebar'}).click()

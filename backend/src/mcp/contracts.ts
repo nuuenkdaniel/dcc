@@ -1,4 +1,5 @@
 // Offline domain contracts and shared field-schema metadata. No runtime routes.
+import {CLARIFICATION_QUESTIONS,validClarification} from './clarification.js'
 export type Scalar=string|number|boolean|string[]
 export type Arguments=Record<string,Scalar>
 export type Rule={check:(value:unknown)=>boolean;schema:Record<string,unknown>;optional?:true}
@@ -41,6 +42,7 @@ const eventFields={title,start:time,end:time,allDay:boolean,description:optional
 const eventEdit={...write,calendarId:id,eventId:id,expectedEtag:etag,scope:enumeration('single')}
 export type Definition={write:boolean;capability:string;fields:Record<string,Rule>;patch?:readonly string[]}
 export const TOOLS={
+  request_clarification:{write:false,capability:'clarification:request',fields:{reason:enumeration(...Object.keys(CLARIFICATION_QUESTIONS))}},
   list_calendars:{write:false,capability:'calendars:read',fields:page},
   list_calendar_events:{write:false,capability:'calendars:read',fields:{...page,calendarId:id,from:instant,to:instant}},
   list_tasks:{write:false,capability:'tasks:read',fields:{...page,from:date,to:date}},
@@ -73,11 +75,14 @@ export const TOOLS={
   get_inbox_message:{write:false,capability:'inbox:read',fields:{id,offset:integer(0,1000000),limit:integer(1,10000)}},
   list_prices:{write:false,capability:'prices:read',fields:page},
   get_calendar_series:{write:false,capability:'calendars:read',fields:{calendarId:id,eventId:id}},
+  get_focus_timer:{write:false,capability:'timer:read',fields:{}},
+  control_focus_timer:{write:true,capability:'timer:write',fields:{...edit,action:enumeration('start','pause','resume','reset','configure'),phase:optional(enumeration('focus','break')),focusMinutes:optional(integer(1,180)),breakMinutes:optional(integer(1,60))}},
+  edit_focus_queue:{write:true,capability:'timer:write',fields:{...edit,action:enumeration('add','remove','move'),miniId:optional(id),beforeId:optional(id),name:optional(text(240,true)),minutes:optional(integer(1,120))}},
 } satisfies Record<string,Definition>
 export type ToolName=keyof typeof TOOLS
 export type Command={tool:ToolName;args:Arguments}
 export function isTool(value:unknown):value is ToolName {return typeof value==='string'&&Object.hasOwn(TOOLS,value)}
-export const isCreation=(tool:ToolName)=>['create_task','create_project','create_assignment','create_calendar_event','create_daily_action','create_preparation'].includes(tool)
+export const isCreation=(tool:ToolName)=>['create_task','create_project','create_assignment','create_calendar_event','create_daily_action','create_preparation','control_focus_timer','edit_focus_queue'].includes(tool)
 
 // Never invoke accessors or accept inherited/symbol/non-enumerable payload fields.
 export function plainRecord(value:unknown):value is Record<string,unknown> {
@@ -150,6 +155,7 @@ export function validResult(command:Command,value:unknown):value is Result {
   }
   if(writing||!matches(value,{state:enumeration('ok'),data:rule(()=>true)}))return false
   const data=value.data
+  if(tool==='request_clarification')return validClarification(data)&&data.reason===args.reason
   if(tool==='get_operation_status')return matches(data,{operationKey,status:enumeration('unknown','applied','rejected','conflict','uncertain')})&&data.operationKey===args.operationKey
   if(!matches(data,{items:rule(densePage),nextOffset:rule(v=>v===null||integer(0,LIMITS.offset).check(v))}))return false
   const items=data.items as unknown[]

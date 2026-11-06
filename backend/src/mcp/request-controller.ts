@@ -10,23 +10,25 @@ import {ServiceTransport} from './service-transport.js'
 import {serviceToolDefinitions} from './service-contracts.js'
 import {composeSdkServer} from './sdk-server.js'
 import {REQUEST_LIMITS,requestContext,type IntentRecord,type IntentPolicy} from './request-intent.js'
+import {validClarification,type Clarification} from './clarification.js'
 
 // A testable in-process port, NOT a Hermes CLI output format or transport adapter.
 export type ModelRound={calls:{id:string;tool:string;arguments:Record<string,unknown>}[];done:boolean;final?:unknown}
 export type ModelRunner=(input:{prompt:string;round:number;tools:Tool[];results:{id:string;result:Result}[];signal:AbortSignal})=>Promise<ModelRound>
 export type NativeMcpRun={server:Server;prompt:string;allowedTools:readonly ToolName[];signal:AbortSignal;expiresAt:number;correlate:(id:string|number)=>string;active:()=>Promise<boolean>}
 export type NativeMcpRunner=(input:NativeMcpRun)=>Promise<void>
-export type IntentSummary={phase:IntentRecord['phase'];outcome?:IntentRecord['outcome'];effects:{tool:string;state:string;id?:string;version?:number;confirmation?:'snapshot_pending'}[];pending:number;reads?:{tool:string;data:unknown}[];readsTruncated?:true}
+export type IntentSummary={phase:IntentRecord['phase'];outcome?:IntentRecord['outcome'];effects:{tool:string;state:string;id?:string;version?:number;confirmation?:'snapshot_pending'}[];pending:number;reads?:{tool:string;data:unknown}[];readsTruncated?:true;clarifications?:Clarification[]}
 // Fixed projections only: never echo prompt, payload, policy, owner, model prose,
 // read projections or arbitrary error text into the authoritative UI result.
 export function summarizeIntent(record:IntentRecord):IntentSummary {
-  const allReads=record.calls.filter(c=>!TOOLS[c.command.tool].write&&c.result?.state==='ok').map(c=>({tool:c.command.tool,data:(c.result as Extract<Result,{state:'ok'}>).data}))
+  const clarifications=record.calls.filter(c=>c.command.tool==='request_clarification'&&c.result?.state==='ok').map(c=>(c.result as Extract<Result,{state:'ok'}>).data).filter(validClarification).slice(0,3)
+  const allReads=record.calls.filter(c=>c.command.tool!=='request_clarification'&&!TOOLS[c.command.tool].write&&c.result?.state==='ok').map(c=>({tool:c.command.tool,data:(c.result as Extract<Result,{state:'ok'}>).data}))
   const reads:typeof allReads=[];let bytes=0
   for(const read of [...allReads].reverse()){
     const size=Buffer.byteLength(JSON.stringify(read),'utf8')
     if(bytes+size<=1200000){reads.unshift(read);bytes+=size}
   }
-  return {phase:record.phase,...(record.outcome?{outcome:record.outcome}:{}),effects:record.calls.filter(c=>TOOLS[c.command.tool].write&&c.result).map(c=>{
+  return {phase:record.phase,...(record.outcome?{outcome:record.outcome}:{}),...(clarifications.length?{clarifications}:{}),effects:record.calls.filter(c=>TOOLS[c.command.tool].write&&c.result).map(c=>{
     const r=c.result!
     return {tool:c.command.tool,state:r.state,...(r.state==='applied'&&'version' in r?{id:r.id,version:r.version}:{}),...(r.state==='saved'?{confirmation:'snapshot_pending' as const}:{})}
   }),pending:record.calls.filter(c=>!c.result||c.result.state==='uncertain').length,
@@ -60,7 +62,7 @@ export class RequestController {
     }
     return summarizeIntent(await store.read(key))
   }
-  async run(input:{key:string;prompt:string},policy:IntentPolicy,signal?:AbortSignal):Promise<IntentSummary>{
+  async run(input:{key:string;prompt:string;tabId?:string},policy:IntentPolicy,signal?:AbortSignal):Promise<IntentSummary>{
     const {store,transport,runner,nativeRunner}=this.options,now=this.options.now??Date.now
     const admitted=await store.admit({...input,purpose:'action'},policy)
     // Existing legacy intents are not executed by this source-only controller.

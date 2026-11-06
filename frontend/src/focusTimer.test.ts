@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { advanceFocusTimer, type FocusTimerState } from './focusTimer'
+import { advanceFocusTimer, startFocusTimer, reorderFocusTimers, type FocusTimerState } from './focusTimer'
 
 const runningSequence = (): FocusTimerState => ({
   phase: 'focus',
@@ -36,4 +36,18 @@ it('catches up across ordered focus timers and the break exactly once', () => {
 it('does not advance a paused timer', () => {
   const paused = { ...runningSequence(), running: false }
   expect(advanceFocusTimer(paused, 5000, 2000, 500)).toBe(paused)
+})
+it('rechecks a stale reorder against current running state without resetting elapsed progress',()=>{
+  const state:FocusTimerState={phase:'focus',running:true,activeMiniId:null,sessionRemainingMs:1435000,sessionStarted:true,miniTimers:[{id:'a',name:'A',duration:60,remainingMs:60000},{id:'b',name:'B',duration:120,remainingMs:120000}]}
+  expect(reorderFocusTimers(state,'b','a')).toBe(state)
+  expect(startFocusTimer(state,1500000)).toBe(state)
+  const paused={...state,running:false}
+  expect(startFocusTimer(paused,1500000)).toEqual({...state,running:true})
+})
+it('skips an already-completed following step at an exact boundary instead of persisting a running zero clock',()=>{
+  const source=runningSequence()
+  source.miniTimers[1].remainingMs=0
+  const next=advanceFocusTimer(source,1000,2000,500)
+  expect(next).toMatchObject({phase:'break',running:true,activeMiniId:null,sessionRemainingMs:500})
+  expect(next.miniTimers.map(t=>t.remainingMs)).toEqual([0,0])
 })

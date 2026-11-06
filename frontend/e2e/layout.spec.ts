@@ -32,9 +32,15 @@ for (const width of [375, 768, 1024, 1920, 3672]) {
 test('development toolbar switches page previews and keeps sample data isolated', async ({ page }) => {
   await page.goto('http://127.0.0.1:5173')
   await expect(page.getByRole('toolbar', { name: 'Development tools' })).toBeVisible()
+  const savedTasks=()=>page.evaluate(()=>JSON.parse(localStorage.getItem('productivity-app.tasks.v1')??'[]'))
+  // Empty authenticated sync may persist []; sample isolation concerns content,
+  // not whether the normal storage key has been initialized.
+  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('dcc.manual-tasks.base.v1')??'null'))).toEqual([])
+  const baseline=await savedTasks()
+  expect(baseline).toEqual([])
   await page.getByRole('checkbox', { name: 'Sample data' }).check()
   await expect(page.getByText('Review calendar integration')).toBeVisible()
-  expect(await page.evaluate(() => localStorage.getItem('productivity-app.tasks.v1'))).toBeNull()
+  expect(await savedTasks()).toEqual(baseline)
   await page.getByRole('button', { name: 'Inbox view' }).click()
   await expect(page).toHaveURL(/\/inbox$/)
   await expect(page.getByRole('heading', { name: 'Inbox', exact: true })).toBeVisible()
@@ -42,6 +48,20 @@ test('development toolbar switches page previews and keeps sample data isolated'
   await page.getByRole('button', { name: 'Home view' }).click()
   await expect(page).toHaveURL(/\/$/)
   await expect(page.getByText('Review calendar integration')).toBeVisible()
+  expect(await savedTasks()).toEqual(baseline)
+  await page.getByRole('checkbox',{name:'Sample data'}).uncheck()
+  await page.getByLabel('Task title',{exact:true}).fill('Synthetic saved user task')
+  await page.getByRole('button',{name:'Add task',exact:true}).click()
+  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('dcc.manual-tasks.base.v1')??'[]').map((task:{title:string})=>task.title))).toEqual(['Synthetic saved user task'])
+  const userRecords=await savedTasks()
+  expect(userRecords).toHaveLength(1)
+  await page.getByRole('checkbox',{name:'Sample data'}).check()
+  await expect(page.getByText('Review calendar integration')).toBeVisible()
+  expect(await savedTasks()).toEqual(userRecords)
+  await page.getByRole('checkbox',{name:'Sample data'}).uncheck()
+  await expect(page.getByText('Review calendar integration')).toHaveCount(0)
+  await expect(page.getByText('Synthetic saved user task',{exact:true})).toBeVisible()
+  expect(await savedTasks()).toEqual(userRecords)
 })
 
 test('sidebar collapses to a functional icon rail', async ({ page }) => {
@@ -67,6 +87,7 @@ test('pomodoro view runs a mini timer without overflowing', async ({ page }) => 
   await page.goto('http://127.0.0.1:5173/pomodoro')
   await expect(page).toHaveURL(/\/pomodoro$/)
   await expect(page.getByRole('heading', { name: 'Focus session' })).toBeVisible()
+  await expect(page.getByRole('button',{name:'Start session',exact:true})).toBeEnabled()
   await page.getByRole('button', { name: 'Timer settings' }).click()
   await expect(page.getByRole('dialog', { name: 'Timer setup' })).toBeVisible()
   await expect(page.getByLabel('Break timer (minutes)')).toHaveValue('5')
@@ -78,9 +99,20 @@ test('pomodoro view runs a mini timer without overflowing', async ({ page }) => 
   await focusMinutes.focus()
   const focusStyles = await focusMinutes.evaluate((input) => ({
     outline: getComputedStyle(input).outlineStyle,
+    outlineWidth:getComputedStyle(input).outlineWidth,
+    outlineOffset:getComputedStyle(input).outlineOffset,
+    outlineColor:getComputedStyle(input).outlineColor,
+    radius:getComputedStyle(input).borderRadius,
     parentShadow: getComputedStyle(input.parentElement!).boxShadow,
+    contained:input.getBoundingClientRect().left>=input.parentElement!.getBoundingClientRect().left&&input.getBoundingClientRect().right<=input.parentElement!.getBoundingClientRect().right,
   }))
-  expect(focusStyles.outline).toBe('none')
+  // The later shared-control contract intentionally supplies a visible ring.
+  expect(focusStyles.outline).toBe('solid')
+  expect(focusStyles.outlineWidth).toBe('2px')
+  expect(focusStyles.outlineOffset).toBe('2px')
+  expect(focusStyles.outlineColor).not.toBe('rgba(0, 0, 0, 0)')
+  expect(focusStyles.radius).toBe('7px')
+  expect(focusStyles.contained).toBe(true)
   expect(focusStyles.parentShadow).not.toBe('none')
   await page.getByLabel('Mini timer name').fill('Review flashcards')
   await page.getByLabel('Mini timer minutes').fill('3')

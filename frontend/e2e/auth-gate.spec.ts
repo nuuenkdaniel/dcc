@@ -11,7 +11,7 @@ test('signed-out users never see private cached workspace data',async({page})=>{
 
 test('a valid existing session restores the requested route',async({page})=>{
   let loginRequests=0
-  await page.route('**/api/v1/auth/login',route=>{loginRequests++;return route.fulfill({json:{authenticated:true}})})
+  await page.route('**/api/v1/auth/login',route=>{loginRequests++;return route.fulfill({json:{authenticated:true,workspaceOwner:'a'.repeat(64)}})})
   await page.goto('http://127.0.0.1:5173/projects')
   await expect(page).toHaveURL('http://127.0.0.1:5173/projects')
   await expect(page.getByRole('heading',{name:'Projects',exact:true})).toBeVisible()
@@ -69,7 +69,7 @@ test('a backend 503 shows retry and enters after session recovery',async({page})
 
 test('successful login restores the preserved internal path',async({page})=>{
  await page.route('**/api/v1/auth/session',route=>route.fulfill({json:{authenticated:false,configured:true}}))
- await page.route('**/api/v1/auth/login',route=>route.fulfill({json:{authenticated:true}}))
+ await page.route('**/api/v1/auth/login',route=>route.fulfill({json:{authenticated:true,workspaceOwner:'a'.repeat(64)}}))
  await page.goto('http://127.0.0.1:5173/inbox')
  await page.getByLabel('Username',{exact:true}).fill('synthetic-user')
  await page.getByLabel('Password',{exact:true}).fill('synthetic-password')

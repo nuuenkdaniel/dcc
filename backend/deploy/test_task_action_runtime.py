@@ -93,7 +93,7 @@ class RuntimeTests(unittest.TestCase):
                     'create_task','update_task','set_task_completed','remove_task','create_project','create_assignment',
                     'update_project','set_project_status','archive_project','restore_project','create_calendar_event',
                     'update_calendar_event','cancel_calendar_event','list_daily_actions','create_daily_action',
-                    'update_daily_action','list_preparations','update_preparation','update_preparation_topic','search_inbox','get_inbox_message','list_prices','get_calendar_series','create_preparation','relink_preparation','insert_preparation_topic','remove_preparation_topic'}
+                    'update_daily_action','list_preparations','update_preparation','update_preparation_topic','search_inbox','get_inbox_message','list_prices','get_calendar_series','create_preparation','relink_preparation','insert_preparation_topic','remove_preparation_topic','get_focus_timer','control_focus_timer','edit_focus_queue','request_clarification'}
         self.assertEqual(runtime.PRODUCT_TOOLS, expected)
         names = ['mcp__dcc_task__' + name for name in sorted(expected)]
         schemas = [{'type':'function','function':{'name':name,'parameters':{'type':'object','properties':{}}}} for name in names]
@@ -133,7 +133,11 @@ class RuntimeTests(unittest.TestCase):
         }
         modules['tools'].__path__ = []
         with patch.dict(sys.modules, modules), patch.object(runtime.time, 'time', return_value=1000):
-            runtime.run_action(TOKEN, EXPIRY, 'Synthetic authenticated task request')
+            evidence = runtime.run_action(TOKEN, EXPIRY, 'Synthetic authenticated task request')
+            self.assertEqual(evidence['model'], 'gpt-6-luna')
+            self.assertEqual(evidence['schemaCount'], 3)
+            self.assertTrue(evidence['schemasUnchanged'])
+            self.assertRegex(evidence['schemaSha256'], r'^[a-f0-9]{64}$')
             config = register.call_args.args[0]['dcc_task']
             self.assertEqual(config['env']['DCC_TASK_CALLBACK_CAPABILITY'], TOKEN)
             self.assertNotIn(TOKEN, repr(config['args']))
@@ -144,11 +148,27 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(options['max_iterations'], 4)
             self.assertNotIn(TOKEN, repr(options))
             agent.close.assert_called_once_with(); shutdown.assert_called_once_with(timeout=15.0)
+            self.assertEqual(config['args'], [str(Path(runtime.__file__).resolve()), '--stdio-proxy'])
+            approved = Path(runtime.__file__).resolve().parent.parent / 'test/acceptance/runtime_loopback.py'
+            runtime.run_action(TOKEN, EXPIRY, 'Synthetic injected relay', test_stdio_proxy=approved)
+            injected = register.call_args.args[0]['dcc_task']
+            self.assertEqual(injected['command'], sys.executable)
+            self.assertEqual(injected['args'], [str(approved), '--stdio-proxy'])
+            self.assertNotIn(TOKEN, repr(injected['args']))
+            for forbidden in ['/tmp/arbitrary.py', 'http://127.0.0.1:18534', Path(runtime.__file__)]:
+                with self.assertRaises(ValueError):
+                    runtime.run_action(TOKEN, EXPIRY, 'Synthetic refused relay', test_stdio_proxy=forbidden)
             agent.run_conversation.reset_mock()
             agent.tools = [{'type':'function','function':{'name':'tool_call','parameters':{'type':'object','properties':{}}}}]
             with self.assertRaises(ValueError):
                 runtime.run_action(TOKEN, EXPIRY, 'Synthetic')
             agent.run_conversation.assert_not_called()
+
+    def test_production_cli_cannot_select_test_relay_or_callback_url(self):
+        for args in [['--test-stdio-proxy'], ['--callback-url', 'http://127.0.0.1:18534'], ['--bootstrapped']]:
+            with patch.object(sys, 'argv', [runtime.__file__, *args]), patch.object(runtime, 'run_action') as run:
+                self.assertEqual(runtime.main(), 1)
+                run.assert_not_called()
 
 
 class BridgeTests(unittest.TestCase):

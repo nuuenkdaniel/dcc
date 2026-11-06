@@ -5,17 +5,21 @@ import {useMail} from './useMail'
 import {EmailSummary} from './EmailSummary'
 import {usePlanner,studyCardCount,visibleActionGroups,visiblePlanGroups} from './usePlanner'
 import {Projects,ActionCard,StudyCard,PlanControls} from './Projects'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { AuthGate } from './AuthGate'
 import { Schedule } from './Schedule'
 import { Inbox } from './Inbox'
 import { Settings } from './Settings'
 import { usePreferences } from './usePreferences'
-import { advanceFocusTimer, type FocusTimerState, type MiniTimer } from './focusTimer'
+import { type MiniTimer } from './focusTimer'
+import {BrowserTimerProvider} from './browserTimer'
+import {useBrowserTimer} from './timerContext'
+import {startFocusTimer,canReorderFocusTimers,reorderFocusTimers} from './focusTimer'
 import { LogoutAction } from './LogoutAction'
 import {AccessibleDialog} from './AccessibleDialog'
-import {applyTaskIntents,requestedTasks,taskIntents} from './taskStorage'
+import {applyTaskIntents,requestedTasks,taskIntents,readPendingTaskRestore,stageTaskRestore,commitPendingTaskRestore,type RestoreAccess} from './taskStorage'
+import {useWorkspaceSession,validWorkspaceOwner} from './workspaceSession'
 import {equalSharedTask,mergeTasks,validSharedTask,type SharedTask} from './sharedTasks'
 
 type Task = { id: string; title: string; date: string; notes: string; completed: boolean; sample?: boolean; important?: boolean; deleted?: boolean }
@@ -142,18 +146,9 @@ function NumberStepper({ id, label, actionName, value, min, max, onChange }: {
   )
 }
 
-function PomodoroView() {
-  const [focusMinutes, setFocusMinutes] = useState(25)
-  const [breakMinutes, setBreakMinutes] = useState(5)
-  const [timer, setTimer] = useState<FocusTimerState>({
-    phase: 'focus',
-    sessionRemainingMs: 25 * 60 * 1000,
-    running: false,
-    miniTimers: [],
-    activeMiniId: null,
-  })
+export function PomodoroView() {
+  const {document:{timer,focusMinutes,breakMinutes},setTimer,setFocusMinutes,setBreakMinutes,warning,owned,retryOwnership}=useBrowserTimer()
   const { phase, sessionRemainingMs, running, miniTimers, activeMiniId } = timer
-  const lastTick = useRef<number | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [miniName, setMiniName] = useState('')
   const [miniMinutes, setMiniMinutes] = useState(5)
@@ -163,7 +158,7 @@ function PomodoroView() {
   const pendingTimerScroll = useRef<string | null>(null)
   const clearDrag = () => { setDragging(null); setDragPreview(null) }
   const [orderNotice, setOrderNotice] = useState('')
-  const canReorder = phase === 'focus' && !activeMiniId && miniTimers.every(timer => timer.remainingMs === timer.duration * 1000)
+  const canReorder = owned && canReorderFocusTimers(timer)
   useEffect(()=>{
     const id=pendingTimerScroll.current
     if(!id)return
@@ -171,31 +166,14 @@ function PomodoroView() {
     timerListRef.current?.querySelector<HTMLElement>(`[data-timer-id="${CSS.escape(id)}"]`)?.scrollIntoView?.({block:'nearest'})
   },[miniTimers])
   const moveTimer = (id: string, target: string) => {
-    if (!canReorder || id === target) return
-    const from = miniTimers.findIndex(timer => timer.id === id)
-    const to = miniTimers.findIndex(timer => timer.id === target)
-    if (from < 0 || to < 0) return
-    const next = [...miniTimers]
-    const [timer] = next.splice(from, 1)
-    next.splice(to, 0, timer)
-    setTimer(current => ({ ...current, miniTimers: next, sessionRemainingMs: next[0].duration * 1000 }))
-    setOrderNotice(`${timer.name} moved to position ${to + 1}`)
+    let notice=''
+    const applied=setTimer(current => {
+      const next=reorderFocusTimers(current,id,target)
+      if(next!==current){const index=next.miniTimers.findIndex(item=>item.id===id);notice=`${next.miniTimers[index].name} moved to position ${index+1}`}
+      return next
+    })
+    setOrderNotice(applied?notice:'')
   }
-
-  useEffect(() => {
-    if (!running) {
-      lastTick.current = null
-      return
-    }
-    if (lastTick.current === null) lastTick.current = performance.now()
-    const interval = window.setInterval(() => {
-      const now = performance.now()
-      const elapsed = now - (lastTick.current ?? now)
-      lastTick.current = now
-      setTimer(current => advanceFocusTimer(current, elapsed, focusMinutes * 60_000, breakMinutes * 60_000))
-    }, 200)
-    return () => window.clearInterval(interval)
-  }, [running, breakMinutes, focusMinutes])
 
   const addMiniTimer = () => {
     const name = miniName.trim()
@@ -205,7 +183,7 @@ function PomodoroView() {
     pendingTimerScroll.current=miniTimer.id
     setTimer(current => ({
       ...current,
-      sessionRemainingMs: current.miniTimers.length === 0 && current.phase === 'focus' && !current.running ? miniTimer.duration * 1000 : current.sessionRemainingMs,
+      sessionRemainingMs: current.miniTimers.length === 0 && current.phase === 'focus' && !current.running && current.sessionStarted !== true ? miniTimer.duration * 1000 : current.sessionRemainingMs,
       miniTimers: [...current.miniTimers, miniTimer],
     }))
     setMiniName('')
@@ -224,39 +202,29 @@ function PomodoroView() {
   }
 
   const resetSession = () => {
-    lastTick.current = null
     setTimer(current => {
       const resetMiniTimers = current.miniTimers.map(item => ({ ...item, remainingMs: item.duration * 1000 }))
-      return { ...current, running: false, phase: 'focus', activeMiniId: null, sessionRemainingMs: (resetMiniTimers[0]?.duration ?? 0) * 1000 || focusMinutes * 60_000, miniTimers: resetMiniTimers }
+      return { ...current, running: false, sessionStarted:false, phase: 'focus', activeMiniId: null, sessionRemainingMs: (resetMiniTimers[0]?.duration ?? 0) * 1000 || focusMinutes * 60_000, miniTimers: resetMiniTimers }
     })
   }
 
   const toggleSession = () => {
     if (running) {
-      const now = performance.now()
-      const elapsed = now - (lastTick.current ?? now)
-      lastTick.current = null
-      setTimer(current => ({ ...advanceFocusTimer(current, elapsed, focusMinutes * 60_000, breakMinutes * 60_000), running: false }))
+      setTimer(current => ({ ...current, running: false }))
       return
     }
-    lastTick.current = performance.now()
-    setTimer(current => {
-      if (current.phase === 'focus' && current.miniTimers.length > 0 && !current.activeMiniId) {
-        const nextTimer = current.miniTimers.find(item => item.remainingMs > 0) ?? current.miniTimers[0]
-        return { ...current, activeMiniId: nextTimer.id, sessionRemainingMs: nextTimer.remainingMs || nextTimer.duration * 1000, running: true }
-      }
-      return { ...current, running: true }
-    })
+    setTimer(current => startFocusTimer(current,focusMinutes*60000))
   }
 
   const phaseLabel = phase === 'focus' ? 'Focus' : 'Break'
   const activeMini = miniTimers.find((timer) => timer.id === activeMiniId)
   const sessionRemaining = Math.ceil(sessionRemainingMs / 1000)
-  const currentDuration = phase === 'break' ? breakMinutes * 60 : activeMini?.duration ?? miniTimers[0]?.duration ?? focusMinutes * 60
+  const currentDuration = phase === 'break' ? breakMinutes * 60 : activeMini?.duration ?? (timer.sessionStarted ? focusMinutes * 60 : miniTimers[0]?.duration ?? focusMinutes * 60)
 
   return (
     <section className="content focus-view" id="pomodoro">
       <header className="topbar focus-header"><div><p className="eyebrow">Deep work</p><h1>Focus session</h1></div></header>
+      {!owned&&<p role="status">{warning} <button type="button" onClick={retryOwnership}>Retry timer ownership</button></p>}
       <section className={`card focus-panel ${phase === 'break' ? 'break-phase' : ''}`} aria-labelledby="focus-clock-heading">
         <div className="focus-panel-top">
           <div><p className="eyebrow">Current phase</p><h2 id="focus-clock-heading">{phaseLabel}</h2></div>
@@ -264,7 +232,7 @@ function PomodoroView() {
         </div>
         <output className="focus-time" data-testid="session-time" aria-live="off">{formatTime(sessionRemaining)}</output>
         <p className="focus-status">{running ? activeMini ? activeMini.name : phase === 'break' ? 'Take a breath' : 'Stay with the task' : sessionRemaining === 0 ? `${phaseLabel} complete` : `Ready for ${phase === 'focus' ? 'focus' : 'a break'}`}</p>
-        <div className="focus-actions"><button className="primary-action" type="button" disabled={sessionRemainingMs === 0} onClick={toggleSession}>{running ? 'Pause session' : sessionRemainingMs < currentDuration * 1000 ? 'Resume session' : 'Start session'}</button><button className="secondary-action" type="button" aria-label="Reset session" onClick={resetSession}>Reset</button></div>
+        <div className="focus-actions"><button className="primary-action" type="button" disabled={!owned||sessionRemainingMs === 0} onClick={toggleSession}>{running ? 'Pause session' : sessionRemainingMs < currentDuration * 1000 ? 'Resume session' : 'Start session'}</button><button className="secondary-action" type="button" disabled={!owned} aria-label="Reset session" onClick={resetSession}>Reset</button></div>
 
         {miniTimers.length > 0 && <div className="focus-steps" aria-label="Mini timers"><div className="focus-steps-heading"><span>Focus sequence</span><small>{miniTimers.filter((item) => item.remainingMs === 0).length}/{miniTimers.length} complete</small></div>{miniTimers.map((timer) => {
           const active = timer.id === activeMiniId
@@ -291,12 +259,13 @@ function PomodoroView() {
       </section>
       {dragging && dragPreview && <div aria-hidden="true" data-testid="timer-drag-preview" className="timer-drag-preview" style={{ left: dragPreview.left, top: dragPreview.top, width: dragPreview.width, height: dragPreview.height }}><span>{miniTimers.find(timer => timer.id === dragging)?.name}</span><span>{formatTime(miniTimers.find(timer => timer.id === dragging)?.duration ?? 0)}</span></div>}
       </AccessibleDialog>}
-      <p className="focus-footnote">Timer state is local to this page for now.</p>
+      <p className="focus-footnote">Timer state stays in this browser tab and resumes from saved elapsed time after reload. {warning}</p>
     </section>
   )
 }
 
 export function Workspace() {
+  const workspaceSession=useWorkspaceSession()
   const [previewView, setPreviewView] = useState<PreviewView>(() => viewFromPath(window.location.pathname))
   const mail=useMail(previewView==='home'||previewView==='inbox')
   const preferencesState = usePreferences()
@@ -310,23 +279,65 @@ export function Workspace() {
   const [month, setMonth] = useState(() => { const date = new Date(); date.setDate(1); return date })
   const [title, setTitle] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
-  const [storageWarning, setStorageWarning] = useState('')
+  const [initialUndo]=useState(()=>{try{const pending=readPendingTaskRestore();return {expected:pending?.expected??null,owner:pending?.owner??null,error:''}}catch{return {expected:null,owner:null,error:'Pending Undo is unreadable; retained without applying it.'}}})
+  const candidateOwner=workspaceSession?.owner
+  const verifiedOwner=validWorkspaceOwner(candidateOwner)?candidateOwner:null
+  const undoQuarantined=!!initialUndo.expected&&(!verifiedOwner||initialUndo.owner!==verifiedOwner)
+  const [storageWarning, setStorageWarning] = useState(initialUndo.error)
   const [showSampleData, setShowSampleData] = useState(false)
   const [taskFilter, setTaskFilter] = useState('All')
   const [taskSearch, setTaskSearch] = useState('')
-  const [deletedTask, setDeletedTask] = useState<Task | null>(null)
+  const [deletedTask, setDeletedTask] = useState<Task | null>(initialUndo.expected)
+  const [undoPending,setUndoPending]=useState(!!initialUndo.expected&&!undoQuarantined)
+  const undoInFlight=useRef(false),undoRun=useRef(0)
+  const restoreLifecycle=useRef<{controller:AbortController;owner:string|null}|null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const taskWriteGeneration=useRef(0)
   const committedTasks=useRef(initial.tasks)
   const taskWrites=useRef<Promise<unknown>>(Promise.resolve())
   // Order this page's writes without changing their external-storage preconditions.
-  const queueTaskWrite=<T,>(operation:()=>Promise<T>)=>{
+  const queueTaskWrite=useCallback(<T,>(operation:()=>Promise<T>)=>{
     const queued=taskWrites.current.then(async()=>{
       try{return await operation()}
       catch(error){const current=readTasks();if(!current.error)committedTasks.current=current.tasks;throw error}
     })
     taskWrites.current=queued.catch(()=>{})
     return queued
+  },[])
+  const finishTaskRestore=useCallback(async(expected:SharedTask,access:RestoreAccess)=>{
+    const run=++undoRun.current,generation=++taskWriteGeneration.current
+    try{
+      const saved=await queueTaskWrite(async()=>{const result=await commitPendingTaskRestore(access);if(access.signal.aborted||!access.isCurrent())throw new DOMException('Undo cancelled','AbortError');committedTasks.current=result;return result})
+      if(access.signal.aborted||!access.isCurrent())return
+      if(generation===taskWriteGeneration.current){setTasks(saved);setStorageWarning('')}
+      setDeletedTask(current=>current?.id===expected.id?null:current)
+    }catch(error){
+      if(!access.signal.aborted&&access.isCurrent()&&generation===taskWriteGeneration.current)setStorageWarning((error instanceof Error?error.message:'Undo could not be saved.')+' Pending Undo retained; no newer task was overwritten.')
+    }finally{if(access.isCurrent()&&run===undoRun.current){undoInFlight.current=false;setUndoPending(false)}}
+  },[queueTaskWrite])
+  useEffect(()=>{
+    const local={controller:new AbortController(),owner:workspaceSession?.owner??null}
+    restoreLifecycle.current=local
+    const eligible=!!initialUndo.expected&&validWorkspaceOwner(local.owner)&&initialUndo.owner===local.owner&&!workspaceSession?.signal.aborted
+    undoInFlight.current=eligible
+    if(eligible&&initialUndo.expected){
+      const access:RestoreAccess={owner:local.owner!,signal:AbortSignal.any([local.controller.signal,...(workspaceSession?[workspaceSession.signal]:[])]),isCurrent:()=>restoreLifecycle.current===local&&!local.controller.signal.aborted&&!workspaceSession?.signal.aborted}
+      void finishTaskRestore(initialUndo.expected,access)
+    }
+    return()=>{local.controller.abort();if(restoreLifecycle.current===local){restoreLifecycle.current=null}}
+  },[workspaceSession,initialUndo,finishTaskRestore])
+  const undoTask=()=>{
+    if(!deletedTask||undoInFlight.current)return
+    const expected={...deletedTask,deleted:true}
+    try{
+      const local=restoreLifecycle.current
+      if(!verifiedOwner||!local||local.owner!==verifiedOwner||local.controller.signal.aborted||workspaceSession?.signal.aborted)throw Error('Verify this workspace by signing in before restoring a task.')
+      // Stage synchronously before entering the asynchronous write queue. A
+      // reload can now finish this exact CAS intent, never guess a new restore.
+      stageTaskRestore(expected,verifiedOwner)
+      undoInFlight.current=true;setUndoPending(true)
+      void finishTaskRestore(expected,{owner:verifiedOwner,signal:AbortSignal.any([local.controller.signal,...(workspaceSession?[workspaceSession.signal]:[])]),isCurrent:()=>restoreLifecycle.current===local&&!local.controller.signal.aborted&&!workspaceSession?.signal.aborted})
+    }catch(error){setStorageWarning(error instanceof Error?error.message:'Undo could not be retained; no task was changed.')}
   }
 
   const navigate = (view: PreviewView) => {
@@ -461,7 +472,7 @@ export function Workspace() {
                   <form className="task-form" onSubmit={(event) => { event.preventDefault(); addTask() }}><label htmlFor="task-title">Task title</label><div className="form-row"><input id="task-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Add a daily action…" /><button type="submit" disabled={readError}>Add task</button></div></form>
                   <div className="task-filters"><div className="filter-tabs">{['All', 'Open', 'Important', 'Completed'].map(filter => <button key={filter} aria-pressed={taskFilter === filter} onClick={() => setTaskFilter(filter)}>{filter}</button>)}</div><input aria-label="Search tasks" placeholder="Search tasks" value={taskSearch} onChange={event => setTaskSearch(event.target.value)} /></div>
                   <div className="task-list">{planGroups.map(group=>(group[0].preparationId||group[0].assignmentStep)?<StudyCard key={group[0].preparationId??group[0].projectId} actions={group} planner={planner}/>:<ActionCard key={group[0].id} action={group[0]} planner={planner}/>)}{visibleTasks.length === 0 && planGroups.length === 0 ? <div className="empty-state"><span className="empty-icon">○</span><p>{selectedTasks.length+curatedCount ? 'No matching tasks' : planner.loadState==='loading'?'Loading tasks…':planner.loadState==='signed-out'?'Sign in to load generated tasks':planner.loadState==='offline'?'Unable to refresh tasks — showing cached data':planner.loadState==='storage-error'?'Task storage needs attention':'No tasks for this day'}</p><small>Start with one clear, achievable step.</small></div> : visibleTasks.map((task) => <article className={`task-card ${task.completed ? 'completed' : ''} ${task.sample ? 'sample' : ''}`} key={task.id}><div className="task-summary"><input type="checkbox" checked={task.completed} disabled={task.sample} onChange={() => updateTask(task.id, { completed: !task.completed })} aria-label={`Complete ${task.title}`} /><button className="task-title" aria-expanded={expanded === task.id} onClick={() => setExpanded(expanded === task.id ? null : task.id)} aria-label={`${expanded === task.id ? 'Collapse' : 'Expand'} ${task.title}`}>{task.title}</button><span className="task-state">{task.sample ? 'Sample' : task.completed ? 'Completed' : task.important ? 'Important' : 'Open'}</span></div>{expanded === task.id && <div className="task-details"><div className="task-edit-grid"><label>Name<input aria-label={`${task.title} name`} value={task.title} disabled={task.sample || readError} onChange={event => { if (event.target.value.trim()) updateTask(task.id, { title: event.target.value }) }} /></label></div><label className="priority-toggle"><input type="checkbox" checked={Boolean(task.important)} disabled={task.sample || readError} onChange={event => updateTask(task.id, { important: event.target.checked })} />Important</label><textarea aria-label={`${task.title} notes`} value={task.notes} disabled={task.sample} placeholder="Add context or notes" onChange={(event) => updateTask(task.id, { notes: event.target.value })} /><button className="delete-task" disabled={task.sample || readError} onClick={() => { setDeletedTask(task); updateTasks(tasks.filter(item => item.id !== task.id)) }}>Delete task</button></div>}</article>)}</div>
-                  {deletedTask && <div className="undo-message" role="status">Task removed. <button onClick={() => { void updateTasks([...tasks, deletedTask]).then(saved=>{if(saved)setDeletedTask(null)}) }}>Undo</button></div>}
+                  {deletedTask && <div className="undo-message" role="status">{undoPending?'Restoring task… Undo is retained in this tab for recovery after reload.':undoQuarantined?'Pending Undo is quarantined: its workspace is different or unverified. It was retained without applying it. Review the original workspace before retrying.':'Task removed.'} <button disabled={undoPending||!verifiedOwner||(initialUndo.owner!==null&&initialUndo.owner!==verifiedOwner)} onClick={undoTask}>{undoPending?'Restoring…':undoQuarantined?'Review and restore Undo':'Undo'}</button></div>}
                   {showSampleData && <p className="sample-note">Sample cards are temporary and cannot change your saved tasks.</p>}
                   {readError && <p role="alert" className="storage-warning">Stored tasks could not be read. Editing is paused to protect existing data; recover browser storage before continuing.</p>}
                   {storageWarning && <p className="storage-warning" role="alert">{storageWarning}</p>}
@@ -479,4 +490,4 @@ export function Workspace() {
   )
 }
 
-export default function App(){return <AuthGate><Workspace/></AuthGate>}
+export default function App(){return <AuthGate><BrowserTimerProvider><Workspace/></BrowserTimerProvider></AuthGate>}

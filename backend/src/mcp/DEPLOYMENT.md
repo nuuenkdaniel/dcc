@@ -8,7 +8,7 @@ curator bridge, cache snapshot and scoped guarded calendar writer when configure
 The bridge flag remains exactly `DAYMARK_TASK_ACTIONS_ENABLED=1`. No additional
 listener, persistent credential, tunnel or distributed capability service is added.
 
-The new `/api/v1/hermes/actions` route selects the 32-tool `product-v1` catalog.
+The new `/api/v1/hermes/actions` route selects the 35-tool `product-v1` catalog.
 `/api/v1/hermes/task-actions` retains its original three-tool policy. The callback
 URL is unchanged. The bridge distinguishes `product-action` from `task-action` and
 passes a fixed catalog selector privately to the adjacent runtime via stdin.
@@ -127,7 +127,7 @@ validates only the official launcher shape/executable, not model/provider execut
 
 `backend/deploy/product_mcp_probe.py` supports discovery-only by default and explicit
 synthetic-model phases `tasks-projects`, `calendar`, `cached-reads`. Each invocation
-selects the exact 32-tool service catalog and verifies schema stability and observed
+selects the exact 35-tool service catalog and verifies schema stability and observed
 SDK receipts, never model prose. Product inference permits eight native iterations,
 but the existing twelve-call/four-write/90-second budgets still apply. Larger natural
 requests can remain incomplete; no arbitrary multi-action fulfillment is asserted.

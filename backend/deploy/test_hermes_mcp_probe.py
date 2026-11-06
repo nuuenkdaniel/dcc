@@ -281,7 +281,7 @@ class InstalledBindingTests(unittest.TestCase):
         self.assertEqual(options["max_iterations"], 6)
         self.assertEqual(options["run_budget_seconds"], 90.0)
         self.assertEqual((options["provider"], options["requested_provider"], options["model"]),
-                         ("openai-codex", "openai-codex", "gpt-5.6-luna"))
+                         ("openai-codex", "openai-codex", "gpt-6-luna"))
         for flag in ["skip_context_files", "skip_memory", "skip_background_review", "quiet_mode"]:
             self.assertIs(options[flag], True)
         self.assertIsNone(options["session_db"])

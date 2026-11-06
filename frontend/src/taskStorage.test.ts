@@ -1,10 +1,12 @@
-import {beforeEach,expect,test} from 'vitest'
-import {TaskWriteConflict,applyTaskIntent,readStoredTasks,type TaskIntent} from './taskStorage'
+import {beforeEach,expect,test,vi} from 'vitest'
+import {TaskWriteConflict,applyTaskIntent,readStoredTasks,stageTaskRestore,commitPendingTaskRestore,PENDING_RESTORE_KEY,type TaskIntent} from './taskStorage'
 import type {SharedTask} from './sharedTasks'
 
 const task=(id:string,title=id):SharedTask=>({id,title,date:'2026-10-06',notes:'',completed:false})
+const OWNER='a'.repeat(64)
+const access=()=>({owner:OWNER,signal:new AbortController().signal,isCurrent:()=>true})
 
-beforeEach(()=>localStorage.clear())
+beforeEach(()=>{localStorage.clear();sessionStorage.clear()})
 
 test('serialized intents re-read storage and preserve writes from another tab',async()=>{
  localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([task('first')]))
@@ -50,6 +52,82 @@ test('delete and undo are explicit tombstone intents',async()=>{
  expect(removed).toEqual([{...task('a'),deleted:true}])
  const restored=await applyTaskIntent({kind:'restore',id:'a',expected:{...task('a'),deleted:true}})
  expect(restored).toEqual([{...task('a'),deleted:false}])
+})
+test('Undo is durable before its deferred lock grant, and replay is exact/idempotent',async()=>{
+  const locks=navigator.locks,callbacks:(()=>void)[]=[]
+  const removed={...task('undo'),important:true,notes:'Retain notes',deleted:true,futureMetadata:{synthetic:true}}
+  localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([removed]))
+  Object.defineProperty(navigator,'locks',{configurable:true,value:{request:(_name:string,...args:unknown[])=>new Promise<SharedTask[]>((resolve,reject)=>callbacks.push(()=>{try{resolve((args.at(-1) as ()=>SharedTask[])())}catch(error){reject(error)}}))}})
+  const writes=vi.spyOn(Storage.prototype,'setItem')
+  try{
+    stageTaskRestore(removed,OWNER)
+    const oldPage=commitPendingTaskRestore(access())
+    expect(sessionStorage.getItem(PENDING_RESTORE_KEY)).not.toBeNull()
+    expect(readStoredTasks()).toEqual([removed])
+    const reloadedPage=commitPendingTaskRestore(access())
+    callbacks[1]() // Reload recovers the staged intent before a stale callback.
+    expect(await reloadedPage).toEqual([{...removed,deleted:false}])
+    callbacks[0]()
+    expect(await oldPage).toEqual([{...removed,deleted:false}])
+    expect(sessionStorage.getItem(PENDING_RESTORE_KEY)).toBeNull()
+    expect(writes.mock.calls.filter(([key])=>key==='productivity-app.tasks.v1')).toHaveLength(1)
+  }finally{writes.mockRestore();Object.defineProperty(navigator,'locks',{configurable:true,value:locks})}
+})
+test('pending Undo never overwrites a changed external tombstone and retains its durable intent',async()=>{
+  const removed={...task('undo'),deleted:true,futureMetadata:{synthetic:true}}
+  stageTaskRestore(removed,OWNER)
+  const external={...removed,notes:'External edit'}
+  localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([external]))
+  await expect(commitPendingTaskRestore(access())).rejects.toBeInstanceOf(TaskWriteConflict)
+  expect(readStoredTasks()).toEqual([external])
+  expect(sessionStorage.getItem(PENDING_RESTORE_KEY)).not.toBeNull()
+})
+test('cancelled queued restore checks lifecycle inside the lock and a new same-owner session can recover',async()=>{
+ const removed={...task('cancelled'),deleted:true,futureMetadata:{synthetic:true}},locks=navigator.locks
+ localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([removed]));stageTaskRestore(removed,OWNER)
+ const raw=sessionStorage.getItem(PENDING_RESTORE_KEY),controller=new AbortController()
+ let release=()=>{}
+ Object.defineProperty(navigator,'locks',{configurable:true,value:{request:(_name:string,_options:unknown,callback:()=>SharedTask[])=>new Promise<SharedTask[]>((resolve,reject)=>{release=()=>{try{resolve(callback())}catch(error){reject(error)}}})}})
+ try{
+  const pending=commitPendingTaskRestore({owner:OWNER,signal:controller.signal,isCurrent:()=>!controller.signal.aborted})
+  controller.abort();release()
+  await expect(pending).rejects.toMatchObject({name:'AbortError'})
+  expect(readStoredTasks()).toEqual([removed]);expect(sessionStorage.getItem(PENDING_RESTORE_KEY)).toBe(raw)
+ }finally{Object.defineProperty(navigator,'locks',{configurable:true,value:locks})}
+ await expect(commitPendingTaskRestore({...access(),owner:'b'.repeat(64)})).rejects.toBeInstanceOf(TaskWriteConflict)
+ expect(readStoredTasks()).toEqual([removed]);expect(sessionStorage.getItem(PENDING_RESTORE_KEY)).toBe(raw)
+ expect(await commitPendingTaskRestore(access())).toEqual([{...removed,deleted:false}])
+})
+test('legacy unverified Undo is quarantined until an explicit action binds the verified owner',async()=>{
+ const removed={...task('legacy-undo'),deleted:true}
+ localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([removed]))
+ sessionStorage.setItem(PENDING_RESTORE_KEY,JSON.stringify({version:1,expected:removed}))
+ await expect(commitPendingTaskRestore(access())).rejects.toBeInstanceOf(TaskWriteConflict)
+ expect(readStoredTasks()).toEqual([removed])
+ stageTaskRestore(removed,OWNER)
+ expect(await commitPendingTaskRestore(access())).toEqual([{...removed,deleted:false}])
+})
+test('owner labels must be exact; malformed labels cannot stage or recover an Undo',async()=>{
+ const removed={...task('owner-format'),deleted:true}
+ localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([removed]))
+ expect(()=>stageTaskRestore(removed,OWNER+'\n')).toThrow(TaskWriteConflict)
+ stageTaskRestore(removed,OWNER)
+ const raw=sessionStorage.getItem(PENDING_RESTORE_KEY)
+ await expect(commitPendingTaskRestore({...access(),owner:OWNER+'\n'})).rejects.toBeInstanceOf(TaskWriteConflict)
+ expect(readStoredTasks()).toEqual([removed]);expect(sessionStorage.getItem(PENDING_RESTORE_KEY)).toBe(raw)
+})
+test.each(['stage','task-write','journal-clear'])('%s storage failure cannot lose the task or pretend an uncommitted Undo applied',async failure=>{
+ const removed={...task('failure'),deleted:true,futureMetadata:{synthetic:true}}
+ localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([removed]))
+ const originalSet=Storage.prototype.setItem,originalRemove=Storage.prototype.removeItem
+ const set=vi.spyOn(Storage.prototype,'setItem').mockImplementation(function(this:Storage,key,value){if(failure==='stage'&&this===sessionStorage&&key===PENDING_RESTORE_KEY||failure==='task-write'&&this===localStorage&&key==='productivity-app.tasks.v1')throw Error('Synthetic storage failure');originalSet.call(this,key,value)})
+ const remove=vi.spyOn(Storage.prototype,'removeItem').mockImplementation(function(this:Storage,key){if(failure==='journal-clear'&&this===sessionStorage&&key===PENDING_RESTORE_KEY)throw Error('Synthetic storage failure');originalRemove.call(this,key)})
+ try{
+  if(failure==='stage'){expect(()=>stageTaskRestore(removed,OWNER)).toThrow();expect(sessionStorage.getItem(PENDING_RESTORE_KEY)).toBeNull()}
+  else {stageTaskRestore(removed,OWNER);await expect(commitPendingTaskRestore(access())).rejects.toThrow();expect(sessionStorage.getItem(PENDING_RESTORE_KEY)).not.toBeNull()}
+  expect(readStoredTasks()).toEqual([{...removed,deleted:failure!=='journal-clear'}])
+ }finally{set.mockRestore();remove.mockRestore()}
+ if(failure!=='stage'){expect(await commitPendingTaskRestore(access())).toEqual([{...removed,deleted:false}]);expect(sessionStorage.getItem(PENDING_RESTORE_KEY)).toBeNull()}
 })
 
 test('unsupported Web Locks fail safely without writing',async()=>{

@@ -1,6 +1,22 @@
 import {test as base,expect,type BrowserContext,type Page,type Route} from '@playwright/test'
+import {assertRecurrencePreserved,canonicalTaskJson,type SharedTask} from '../src/sharedTasks'
+import {validManualTask} from '../../backend/src/manual-tasks'
 
-type SyntheticState={manualTasks:unknown[];manualVersion:number;mailRules:string}
+type SyntheticState={manualTasks:SharedTask[];manualVersion:number;mailRules:string}
+
+// Mirror saveTasks' collection CAS/idempotency, tombstone and additive-field
+// rules. A stateful mock must not silently accept stale whole-collection writes.
+export function saveSyntheticTasks(state:{manualTasks:SharedTask[];manualVersion:number},body:{version:number;tasks:SharedTask[]}){
+ if(!body||!Number.isInteger(body.version)||body.version<0||!Array.isArray(body.tasks)||body.tasks.length>10000||!body.tasks.every(validManualTask)||new Set(body.tasks.map(task=>task.id)).size!==body.tasks.length)return {code:400,error:'Invalid synthetic task collection'}
+ const incoming=new Map(body.tasks.map(task=>[task.id,task])),previous=new Map(state.manualTasks.map(task=>[task.id,task]))
+ try{for(const old of state.manualTasks){const next=incoming.get(old.id);if(old.deleted&&!next)return {code:409,error:'Synthetic tombstone cannot be removed'};assertRecurrencePreserved(old,next)}}catch{return {code:409,error:'Synthetic recurrence cannot be stripped'}}
+ const tasks=body.tasks.map(task=>({...Object.fromEntries(Object.entries(previous.get(task.id)??{}).filter(([key])=>!['id','title','date','notes','completed','important','deleted','sample'].includes(key))),...task}))
+ const comparable=(items:SharedTask[])=>canonicalTaskJson(items.map(task=>({...task,important:!!task.important,deleted:!!task.deleted})))
+ if(comparable(state.manualTasks)===comparable(tasks))return {code:200,version:state.manualVersion}
+ if(body.version!==state.manualVersion)return {code:409,error:'Synthetic task collection changed',latest:{version:state.manualVersion,data:{tasks:state.manualTasks}}}
+ state.manualTasks=tasks;state.manualVersion++
+ return {code:200}
+}
 
 async function syntheticApi(route:Route,state:SyntheticState){
  const request=route.request(),method=request.method(),path=new URL(request.url()).pathname
@@ -19,7 +35,7 @@ async function syntheticApi(route:Route,state:SyntheticState){
   if(path==='/api/v1/auth/logout')return route.fulfill({json:{authenticated:false}})
  if(path==='/api/v1/calendar/refresh')return route.fulfill({json:{status:'synced'}})
  if(path==='/api/v1/calendar/changes')return route.fulfill({json:{saved:true}})
- if(path==='/api/v1/planner/manual-tasks'){const body=request.postDataJSON() as {tasks?:unknown[]};state.manualTasks=Array.isArray(body.tasks)?body.tasks:state.manualTasks;state.manualVersion++;return route.fulfill({json:{code:200}})}
+ if(path==='/api/v1/planner/manual-tasks'){const result=saveSyntheticTasks(state,request.postDataJSON());return route.fulfill({status:result.code,json:result})}
  if(path==='/api/v1/planner/entity')return route.fulfill({json:{code:200}})
  if(path==='/api/v1/planner/refresh')return route.fulfill({json:{queued:true}})
  if(path==='/api/v1/planner/material')return route.fulfill({json:{name:'synthetic.txt',text:''}})
@@ -34,7 +50,7 @@ async function syntheticApi(route:Route,state:SyntheticState){
 export async function mockAuthenticatedApi(target:Page|BrowserContext){
  const state:SyntheticState={manualTasks:[],manualVersion:0,mailRules:''}
  await target.route('**/api/v1/**',route=>syntheticApi(route,state))
- await target.route('**/api/v1/auth/session',route=>route.fulfill({json:{authenticated:true,configured:true}}))
+ await target.route('**/api/v1/auth/session',route=>route.fulfill({json:{authenticated:true,configured:true,workspaceOwner:'a'.repeat(64)}}))
 }
 
 const test=base.extend<{authenticatedSession:void}>({

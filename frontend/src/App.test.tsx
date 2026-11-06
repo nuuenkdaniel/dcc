@@ -2,11 +2,106 @@ import { StrictMode } from 'react'
 import type {ReactNode} from 'react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import App from './App'
+import App,{PomodoroView} from './App'
+import {BrowserTimerProvider} from './browserTimer'
+import {useBrowserTimer} from './timerContext'
+import {SyntheticWorkspaceSession} from './test/WorkspaceSession'
 
-vi.mock('./AuthGate',()=>({AuthGate:({children}:{children:ReactNode})=>children}))
+vi.mock('./AuthGate',()=>({AuthGate:({children}:{children:ReactNode})=><SyntheticWorkspaceSession>{children}</SyntheticWorkspaceSession>}))
 
 afterEach(() => vi.useRealTimers())
+it('manual reorder and resume preserve the current RPC-started clock with queued minis',async()=>{
+  vi.useFakeTimers();vi.setSystemTime(1000)
+  function Rpc(){const port=useBrowserTimer();return <button onClick={()=>{
+    const id=crypto.randomUUID()
+    expect(port.process({tool:'control_focus_timer',args:{id,operationKey:'dcc_op_'+id,expectedVersion:port.document.version,action:'start'}}).state).toBe('applied')
+  }}>RPC start</button>}
+  render(<BrowserTimerProvider><PomodoroView/><Rpc/></BrowserTimerProvider>)
+  await act(async()=>{await Promise.resolve()})
+  fireEvent.click(screen.getByRole('button',{name:'Timer settings'}))
+  fireEvent.click(screen.getByRole('button',{name:'RPC start'}))
+  await act(async()=>{await vi.advanceTimersByTimeAsync(65000)})
+  for(const name of ['Later A','Later B']){
+    fireEvent.change(screen.getByLabelText('Mini timer name'),{target:{value:name}})
+    fireEvent.click(screen.getByRole('button',{name:'Add mini timer'}))
+  }
+  const grip=screen.getByRole('button',{name:'Reorder Later B'})
+  const hitTestDescriptor=Object.getOwnPropertyDescriptor(document,'elementFromPoint')
+  let hitTarget=screen.getByRole('button',{name:'Reorder Later A'}).closest('[data-timer-id]')!
+  const hitTest=vi.fn((_x:number,_y:number)=>hitTarget)
+  Object.defineProperty(document,'elementFromPoint',{configurable:true,value:hitTest})
+  const readTimer=()=>JSON.parse(sessionStorage.getItem('dcc.focus-timer.tab.v1')!).timer
+  try{
+    expect(grip).toBeDisabled()
+    const running=readTimer()
+    fireEvent.keyDown(grip,{key:'ArrowUp'});fireEvent.pointerUp(grip,{clientX:10,clientY:20})
+    expect(hitTest).toHaveBeenCalledOnce()
+    expect(readTimer()).toEqual(running)
+    expect(screen.getByTestId('session-time')).toHaveTextContent('23:55')
+    expect(screen.queryByText(/moved to position/)).toBeNull()
+    fireEvent.click(screen.getByRole('button',{name:'Done'}))
+    fireEvent.click(screen.getByRole('button',{name:'Pause session'}));fireEvent.click(screen.getByRole('button',{name:'Resume session'}))
+    expect(screen.getByTestId('session-time')).toHaveTextContent('23:55')
+    expect(screen.getByText('Stay with the task')).toBeVisible()
+
+    // Start a legitimate idle drag, then let RPC change the session before drop.
+    // Pointer-up must reach the current-state guard, not just clear an empty drag.
+    fireEvent.click(screen.getByRole('button',{name:'Reset session'}))
+    fireEvent.click(screen.getByRole('button',{name:'Timer settings'}))
+    const dragGrip=screen.getByRole('button',{name:'Reorder Later B'})
+    hitTarget=screen.getByRole('button',{name:'Reorder Later A'}).closest('[data-timer-id]')!
+    const captureDescriptor=Object.getOwnPropertyDescriptor(dragGrip,'setPointerCapture')
+    const capture=vi.fn()
+    Object.defineProperty(dragGrip,'setPointerCapture',{configurable:true,value:capture})
+    try{
+      expect(dragGrip).toBeEnabled()
+      fireEvent(dragGrip,new MouseEvent('pointerdown',{bubbles:true,button:0,clientX:10,clientY:20}))
+      expect(capture).toHaveBeenCalledOnce()
+      fireEvent.click(screen.getByRole('button',{name:'RPC start'}))
+      await act(async()=>{await vi.advanceTimersByTimeAsync(1000)})
+      const beforeDrop=readTimer()
+      fireEvent(dragGrip,new MouseEvent('pointerup',{bubbles:true,clientX:10,clientY:20}))
+      expect(hitTest).toHaveBeenLastCalledWith(10,20)
+      expect(hitTest).toHaveBeenCalledTimes(2)
+      expect(readTimer()).toEqual(beforeDrop)
+      expect(beforeDrop.miniTimers.map((m:{name:string})=>m.name)).toEqual(['Later A','Later B'])
+      expect(beforeDrop.running).toBe(true)
+      expect(beforeDrop.activeMiniId).toBe(beforeDrop.miniTimers[0].id)
+      expect(screen.getByTestId('session-time')).toHaveTextContent('04:59')
+      expect(screen.queryByText(/moved to position/)).toBeNull()
+    }finally{
+      if(captureDescriptor)Object.defineProperty(dragGrip,'setPointerCapture',captureDescriptor)
+      else Reflect.deleteProperty(dragGrip,'setPointerCapture')
+    }
+  }finally{
+    if(hitTestDescriptor)Object.defineProperty(document,'elementFromPoint',hitTestDescriptor)
+    else Reflect.deleteProperty(document,'elementFromPoint')
+  }
+})
+it('adding the first mini while a default session is paused preserves its elapsed clock',async()=>{
+  vi.useFakeTimers();vi.setSystemTime(1000)
+  render(<BrowserTimerProvider><PomodoroView/></BrowserTimerProvider>)
+  await act(async()=>{await Promise.resolve()})
+  fireEvent.click(screen.getByRole('button',{name:'Start session'}))
+  await act(async()=>{await vi.advanceTimersByTimeAsync(65000)})
+  fireEvent.click(screen.getByRole('button',{name:'Pause session'}))
+  fireEvent.click(screen.getByRole('button',{name:'Timer settings'}))
+  fireEvent.change(screen.getByLabelText('Mini timer name'),{target:{value:'Next session'}})
+  fireEvent.click(screen.getByRole('button',{name:'Add mini timer'}))
+  expect(screen.getByTestId('session-time')).toHaveTextContent('23:55')
+  expect(screen.getByRole('button',{name:'Reorder Next session'})).toBeDisabled()
+  fireEvent.click(screen.getByRole('button',{name:'Done'}));fireEvent.click(screen.getByRole('button',{name:'Resume session'}))
+  expect(screen.getByTestId('session-time')).toHaveTextContent('23:55');expect(screen.getByText('Stay with the task')).toBeVisible()
+})
+it('a manual reorder persistence failure cannot publish a successful move notice',async()=>{
+  render(<BrowserTimerProvider><PomodoroView/></BrowserTimerProvider>)
+  await act(async()=>{await Promise.resolve()})
+  fireEvent.click(screen.getByRole('button',{name:'Timer settings'}))
+  for(const name of ['First','Second']){fireEvent.change(screen.getByLabelText('Mini timer name'),{target:{value:name}});fireEvent.click(screen.getByRole('button',{name:'Add mini timer'}))}
+  const raw=sessionStorage.getItem('dcc.focus-timer.tab.v1'),original=Storage.prototype.setItem
+  const storage=vi.spyOn(Storage.prototype,'setItem').mockImplementation(function(this:Storage,key,value){if(key==='dcc.focus-timer.tab.v1')throw Error('Synthetic storage failure');original.call(this,key,value)})
+  try{fireEvent.keyDown(screen.getByRole('button',{name:'Reorder Second'}),{key:'ArrowUp'});expect(screen.queryByText(/moved to position/)).toBeNull();expect(sessionStorage.getItem('dcc.focus-timer.tab.v1')).toBe(raw)}finally{storage.mockRestore()}
+})
 
 it('places the sole Hermes command below the Home header, never in the sidebar',()=>{
  const {container}=render(<App/>)
@@ -76,6 +171,52 @@ it('persists ordinary deletion as a hidden tombstone and Undo restores deleted f
  expect(await screen.findByText('Ordinary task')).toBeInTheDocument()
  await waitFor(()=>expect(JSON.parse(window.localStorage.getItem('productivity-app.tasks.v1')!)[0].deleted).toBe(false))
 })
+it('Undo stages before a delayed local lock, disables duplicate clicks and confirms only after persistence',async()=>{
+ const now=new Date(),date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`
+ localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([{id:'undo-local',title:'Undo local',date,notes:'Keep notes',completed:false,important:true,futureMetadata:{synthetic:true}}]))
+ render(<App/>);fireEvent.click(screen.getByRole('button',{name:'Expand Undo local'}));fireEvent.click(screen.getByRole('button',{name:'Delete task'}))
+ await screen.findByRole('button',{name:'Undo'})
+ const removed=JSON.parse(localStorage.getItem('productivity-app.tasks.v1')!)[0]
+ const locks=navigator.locks,callbacks:(()=>void)[]=[]
+ Object.defineProperty(navigator,'locks',{configurable:true,value:{request:(name:string,...args:unknown[])=>{
+  const callback=args.at(-1) as ()=>unknown
+  if(name!=='daymark.manual-tasks.v1')return Reflect.apply(locks.request,locks,[name,...args])
+  return new Promise((resolve,reject)=>callbacks.push(()=>{try{resolve(callback())}catch(error){reject(error)}}))
+ }}})
+ try{
+  const undo=screen.getByRole('button',{name:'Undo'});fireEvent.click(undo);fireEvent.click(undo)
+  await waitFor(()=>expect(callbacks).toHaveLength(1))
+  expect(screen.getByRole('button',{name:'Restoring…'})).toBeDisabled()
+  expect(JSON.parse(sessionStorage.getItem('dcc.manual-tasks.pending-undo.v1')!).expected).toEqual(removed)
+  expect(JSON.parse(localStorage.getItem('productivity-app.tasks.v1')!)).toEqual([removed])
+  expect(screen.queryByRole('button',{name:/^(Expand|Collapse) Undo local$/})).toBeNull()
+  await act(async()=>{callbacks[0]();await Promise.resolve()})
+  // Undo preserves the previously expanded task ID; the restored row is open.
+  const restored=await screen.findByRole('button',{name:'Collapse Undo local'})
+  expect(restored).toHaveAttribute('aria-expanded','true')
+  expect(screen.getByLabelText('Undo local notes')).toHaveValue('Keep notes')
+  expect(screen.getByLabelText('Important',{exact:true})).toBeChecked()
+  expect(JSON.parse(localStorage.getItem('productivity-app.tasks.v1')!)).toEqual([{...removed,deleted:false}])
+  expect(sessionStorage.getItem('dcc.manual-tasks.pending-undo.v1')).toBeNull()
+ }finally{Object.defineProperty(navigator,'locks',{configurable:true,value:locks})}
+})
+it('unmount cancels a waiting Undo without clearing it; same verified workspace remount recovers',async()=>{
+ const now=new Date(),date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`
+ localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([{id:'unmount-undo',title:'Unmount Undo',date,notes:'Retain notes',completed:false,important:true}]))
+ const first=render(<App/>);fireEvent.click(screen.getByRole('button',{name:'Expand Unmount Undo'}));fireEvent.click(screen.getByRole('button',{name:'Delete task'}));await screen.findByRole('button',{name:'Undo'})
+ const removed=JSON.parse(localStorage.getItem('productivity-app.tasks.v1')!)[0],locks=navigator.locks,callbacks:(()=>void)[]=[]
+ Object.defineProperty(navigator,'locks',{configurable:true,value:{request:(name:string,...args:unknown[])=>name!=='daymark.manual-tasks.v1'?Reflect.apply(locks.request,locks,[name,...args]):new Promise((resolve,reject)=>callbacks.push(()=>{try{resolve((args.at(-1) as ()=>unknown)())}catch(error){reject(error)}}))}})
+ try{
+  fireEvent.click(screen.getByRole('button',{name:'Undo'}));await waitFor(()=>expect(callbacks).toHaveLength(1))
+  const raw=sessionStorage.getItem('dcc.manual-tasks.pending-undo.v1');expect(JSON.parse(raw!).owner).toBe('a'.repeat(64))
+  first.unmount();await act(async()=>{callbacks[0]();await Promise.resolve()})
+  expect(JSON.parse(localStorage.getItem('productivity-app.tasks.v1')!)).toEqual([removed]);expect(sessionStorage.getItem('dcc.manual-tasks.pending-undo.v1')).toBe(raw)
+  render(<App/>);await waitFor(()=>expect(callbacks).toHaveLength(2))
+  await act(async()=>{callbacks[1]();await Promise.resolve()})
+  await screen.findByRole('button',{name:'Expand Unmount Undo'})
+  expect(JSON.parse(localStorage.getItem('productivity-app.tasks.v1')!)).toEqual([{...removed,deleted:false}]);expect(sessionStorage.getItem('dcc.manual-tasks.pending-undo.v1')).toBeNull()
+ }finally{Object.defineProperty(navigator,'locks',{configurable:true,value:locks})}
+})
 it('retains a new task draft when safe storage locking is unavailable',async()=>{
  const locks=navigator.locks
  Object.defineProperty(navigator,'locks',{configurable:true,value:undefined})
@@ -90,6 +231,7 @@ it('retains a new task draft when safe storage locking is unavailable',async()=>
 })
 beforeEach(() => {
   window.localStorage.clear()
+  window.sessionStorage.clear()
   window.history.replaceState({}, '', '/')
 })
 
@@ -222,11 +364,12 @@ it('runs mini focus sessions in order and breaks after the last one', () => {
   expect(screen.getByTestId('session-time')).toHaveTextContent('05:00')
 })
 
-it('starts immediately and waits a full second before the first displayed decrement', () => {
+it('starts immediately once owned and waits a full second before the first displayed decrement', async() => {
   vi.useFakeTimers()
   window.history.replaceState({}, '', '/pomodoro')
   render(<StrictMode><App /></StrictMode>)
-
+  await act(async()=>{await Promise.resolve()})
+  expect(screen.getByRole('button',{name:'Start session'})).toBeEnabled()
   fireEvent.click(screen.getByRole('button', { name: 'Start session' }))
   expect(screen.getByRole('button', { name: 'Pause session' })).toBeInTheDocument()
   expect(screen.getByText('Stay with the task', { selector: '.focus-status' })).toBeInTheDocument()
