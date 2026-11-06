@@ -54,10 +54,11 @@ export class SyntheticCalendarProvider {
   readonly resources=new Map<string,Resource>()
   readonly events:ProviderEvent[]=[]
   private server:Server|undefined
-  constructor(){
+  constructor(readonly year:2026|2030=2026){
+    if(year!==2026&&year!==2030)throw Error('Synthetic calendar year refused')
     for(const calendar of calendars){
       const path=new URL(calendar.url).pathname+'zone-donor.ics'
-      this.resources.set(path,{etag:'"synthetic-donor-1"',body:['BEGIN:VCALENDAR','VERSION:2.0',EASTERN_ZONE,'BEGIN:VEVENT',`UID:qa-zone-${calendar.name}`,'SUMMARY:Synthetic timezone donor','DTSTART;TZID=America/New_York:20261026T090000','DTEND;TZID=America/New_York:20261026T100000','END:VEVENT','END:VCALENDAR'].join('\r\n')})
+      this.resources.set(path,{etag:'"synthetic-donor-1"',body:['BEGIN:VCALENDAR','VERSION:2.0',EASTERN_ZONE,'BEGIN:VEVENT',`UID:qa-zone-${calendar.name}`,'SUMMARY:Synthetic timezone donor',`DTSTART;TZID=America/New_York:${year}1026T090000`,`DTEND;TZID=America/New_York:${year}1026T100000`,'END:VEVENT','END:VCALENDAR'].join('\r\n')})
     }
   }
   async start(){
@@ -96,7 +97,7 @@ export class SyntheticCalendarProvider {
     this.server=server
   }
   async snapshot():Promise<Snapshot>{
-    const snapshot:Snapshot={calendars:structuredClone(calendars),events:[],coverageStart:'2026-10-01T00:00:00Z',coverageEnd:'2026-12-01T00:00:00Z'}
+    const snapshot:Snapshot={calendars:structuredClone(calendars),events:[],coverageStart:`${this.year}-10-01T00:00:00Z`,coverageEnd:`${this.year}-12-01T00:00:00Z`}
     // Discover only the fixture's own finite resource set. Every ICS body/ETag
     // comes through actual HTTP GET, never from an injected success value.
     for(const path of this.resources.keys()){

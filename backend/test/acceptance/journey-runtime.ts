@@ -7,7 +7,9 @@ export type SchemaEvidence={model:string;schemaCount:number;schemaSha256:string;
 export class JourneyRuntime {
   calls=0
   readonly evidence:SchemaEvidence[]=[]
-  constructor(readonly signal:AbortSignal){}
+  constructor(readonly signal:AbortSignal,readonly maxCalls:10|12=10){
+    if(maxCalls!==10&&maxCalls!==12)throw Error('QA call bound configuration')
+  }
   private run(script:string,args:string[],input?:TaskBridgeInput,signal?:AbortSignal):Promise<string>{
     return new Promise((resolve,reject)=>{
       const child=spawn('/usr/bin/python3',[fileURLToPath(new URL(script,import.meta.url)),...args],{detached:true,cwd:'/root/.hermes/profiles/daymark-curator',stdio:['pipe','pipe','ignore'],env:{...process.env,HERMES_HOME:'/root/.hermes/profiles/daymark-curator',...(input?{DCC_TASK_CALLBACK_CAPABILITY:input.callbackCapability,DCC_TASK_CALLBACK_EXPIRES_AT:String(input.expiresAt)}:{})}})
@@ -28,7 +30,7 @@ export class JourneyRuntime {
   }
   async preflight(){if((await this.run('../../deploy/task_action_launcher.py',['--preflight'])).trim()!=='{"status":"runtime_ready"}')throw Error('QA bootstrap unavailable')}
   async invoke(input:TaskBridgeInput,signal:AbortSignal){
-    if(this.calls>=10||input.mode!=='product-action'||this.signal.aborted)throw Error('QA call bound')
+    if(this.calls>=this.maxCalls||input.mode!=='product-action'||this.signal.aborted)throw Error('QA call bound')
     this.calls++
     const parsed=JSON.parse(await this.run('./runtime_loopback.py',[],input,signal)) as {status:string;evidence:SchemaEvidence}
     const e=parsed.evidence

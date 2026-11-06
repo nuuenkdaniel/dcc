@@ -109,6 +109,11 @@ class RuntimeTests(unittest.TestCase):
         modules['tools'].__path__=[]
         with patch.dict(sys.modules,modules),patch.object(runtime.time,'time',return_value=1000):
             runtime.run_action(TOKEN,EXPIRY,'Synthetic product request',product=True)
+            options=modules['run_agent'].AIAgent.call_args.kwargs
+            self.assertIn('list_daily_actions.id is an exact ACTION ID, never a project ID',options['ephemeral_system_prompt'])
+            self.assertIn('unresolved target is incomplete, not a successful no-change',options['ephemeral_system_prompt'])
+            self.assertEqual(options['max_iterations'],8)
+            self.assertEqual(options['run_budget_seconds'],90.0)
             self.assertEqual(register.call_args.args[0]['dcc_task']['tools']['include'],sorted(expected))
             agent.run_conversation.assert_called_once()
             def changed(**_kwargs):
@@ -146,6 +151,7 @@ class RuntimeTests(unittest.TestCase):
             options = factory.call_args.kwargs
             self.assertEqual(options['enabled_toolsets'], ['mcp-dcc_task'])
             self.assertEqual(options['max_iterations'], 4)
+            self.assertNotIn('Daily action reads:', options['ephemeral_system_prompt'])
             self.assertNotIn(TOKEN, repr(options))
             agent.close.assert_called_once_with(); shutdown.assert_called_once_with(timeout=15.0)
             self.assertEqual(config['args'], [str(Path(runtime.__file__).resolve()), '--stdio-proxy'])

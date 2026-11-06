@@ -8,6 +8,23 @@ import {ProductPool,projectId,actionId,preparationId} from './product-pool.js'
 
 const context={purpose:'action' as const,capabilities:['planner:read','planner:write','inbox:read','prices:read','calendars:read']}
 function fixture(){const db=new ProductPool();return {db,d:new Dispatcher(new ServiceTransport({pool:db.pool,actorId:'synthetic',guardedCalendarWriter:createScopedCalendarWriter(db.pool,config,db.fetch)}))}}
+test('daily action id is exact action row ID, never parent ID; date-window lookup stays bounded and read-only',async()=>{
+  const {db,d}=fixture(),before=structuredClone([...db.rows.values()])
+  const window={from:'2026-11-01',to:'2026-11-04',limit:10,offset:0}
+  const wrong=await d.dispatch('list_daily_actions',{...window,id:projectId},context)
+  assert.deepEqual(wrong,{state:'ok',data:{items:[],nextOffset:null}})
+  const right=await d.dispatch('list_daily_actions',{...window,id:actionId},context)
+  assert.equal(right.state,'ok')
+  if(right.state==='ok'){
+    const data=right.data as {items:{id:string;projectId:string;version:number}[];nextOffset:number|null}
+    assert.equal(data.items.length,1);assert.equal(data.items[0]!.id,actionId);assert.equal(data.items[0]!.projectId,projectId);assert.equal(data.items[0]!.version,1);assert.equal(data.nextOffset,null)
+  }
+  const bounded=await d.dispatch('list_daily_actions',window,context)
+  assert.deepEqual(bounded,right)
+  assert.deepEqual(await d.dispatch('list_daily_actions',{...window,id:actionId,from:'2026-11-03'},context),{state:'ok',data:{items:[],nextOffset:null}})
+  assert.equal((await d.dispatch('list_daily_actions',{...window,projectId},context)).state,'rejected')
+  assert.deepEqual([...db.rows.values()],before);assert.equal(db.fetches.length,0);assert.equal(db.puts,0)
+})
 test('daily action completion/reopen/edit retain parent and unknown fields, generated dates are immutable',async()=>{
   const {db,d}=fixture()
   assert.equal((await d.dispatch('update_daily_action',{id:actionId,expectedVersion:1,operationKey:'daily_complete_001',completed:true},context)).state,'applied')
