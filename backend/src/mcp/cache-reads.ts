@@ -38,11 +38,6 @@ export async function readProductCache(pool:Pool,{tool,args}:Command):Promise<Re
     const body=String(row.body),consumed=Array.from(body).length
     return {state:'ok',data:{id:row.id,body,nextOffset:offset+consumed<Number(row.body_length)?offset+consumed:null}}
   }
-  if(tool==='list_prices'){
-    const rows=(await pool.query('SELECT id,title,target_cents,paused FROM price_items ORDER BY id LIMIT $1 OFFSET $2',[limit+1,offset])).rows
-    const ids=rows.slice(0,limit).map(r=>r.id)
-    const sources=ids.length?(await pool.query('SELECT item_id,store,status,last_good FROM price_sources WHERE item_id=ANY($1::text[]) ORDER BY item_id,store',[ids])).rows:[]
-    return paged(rows.map(r=>({id:r.id,title:r.title,targetCents:r.target_cents,paused:r.paused,sources:sources.filter(s=>s.item_id===r.id).map(s=>({store:s.store,status:s.status,observedAt:s.last_good?.observedAt??null,offers:(Array.isArray(s.last_good?.offers)?s.last_good.offers:[]).slice(0,20).map((o:Record<string,unknown>)=>({condition:o.condition,cents:o.cents,currency:o.currency,eligible:o.eligible,availability:o.availability}))}))})))
-  }
+  if(tool==='list_prices')return {state:'rejected',code:'forbidden'} // No historical-cache/provider access.
   return undefined
 }

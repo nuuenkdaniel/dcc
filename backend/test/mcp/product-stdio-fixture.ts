@@ -2,7 +2,7 @@
 // environment loader, real Pool, listener or provider fallback is permitted.
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js'
 import type {Transport} from '@modelcontextprotocol/sdk/shared/transport.js'
-import {TOOLS,plainRecord,type ToolName} from '../../src/mcp/contracts.js'
+import {TOOLS,ACTIVE_TOOLS,plainRecord,type ToolName} from '../../src/mcp/contracts.js'
 import {SqlIntentStore} from '../../src/mcp/intent-store.js'
 import {RequestController} from '../../src/mcp/request-controller.js'
 import {ServiceTransport} from '../../src/mcp/service-transport.js'
@@ -32,6 +32,6 @@ const controller=new RequestController({store:new SqlIntentStore(pool.pool,actor
     try{await run.server.connect(wire);await done}finally{process.stdin.off('end',stop);run.signal.removeEventListener('abort',stop);await wire.close()}
   }})
 try{
-  const summary=await controller.run({key:'synthetic_product_probe_01',prompt:'Isolated synthetic product probe'}, {executor:'mcp-action-v1',allowedTools:Object.keys(TOOLS) as ToolName[]})
+  const summary=await controller.run({key:'synthetic_product_probe_01',prompt:'Isolated synthetic product probe'}, {executor:'mcp-action-v1',allowedTools:ACTIVE_TOOLS})
   process.stderr.write(JSON.stringify({status:'synthetic_fixture_closed',phase:summary.phase,writes:summary.effects.length,syntheticProviderPuts:pool.puts})+'\n')
 }catch{process.stderr.write('Synthetic product fixture unavailable.\n');process.exitCode=1}

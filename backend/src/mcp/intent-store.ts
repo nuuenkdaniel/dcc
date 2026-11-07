@@ -3,7 +3,8 @@ import type {Pool,PoolClient} from 'pg'
 import {TOOLS,isTool,plainRecord,isCreation,type Result} from './contracts.js'
 import {canonicalJson} from './service-transport.js'
 import {validateServiceArguments,validServiceResult} from './service-contracts.js'
-import {REQUEST_INTENT_KIND,REQUEST_LIMITS,intentAddress,admitIntent,legacyReceiptEvidence,legacyFenceForIntent,startIntent,beginIntentRound,reserveIntentCall,recordIntentResult,interruptIntent,finishIntent,type IntentRecord,type IntentPolicy,type IntentDecision} from './request-intent.js'
+import {REQUEST_INTENT_KIND,REQUEST_LIMITS,intentAddress,admitIntent,legacyReceiptEvidence,legacyFenceForIntent,startIntent,beginIntentRound,reserveIntentCall,recordIntentResult,interruptIntent,finishIntent,type IntentRecord,type IntentPolicy,type IntentDecision,type ConversationGuard} from './request-intent.js'
+import {validGuard} from './conversation-validation.js'
 
 type Row={id:string;kind:string;version:number;data:unknown}
 export class IntentStoreError extends Error {
@@ -21,6 +22,7 @@ function decode(row:Row,key:string,actorHash:string):IntentRecord {
   const d=row.data,{id,legacyReceiptId}=intentAddress(key)
   if(row.kind!==REQUEST_INTENT_KIND||row.id!==id||!Number.isSafeInteger(row.version)||row.version<1||!plainRecord(d))return fail('intent_conflict')
   const r=d as unknown as IntentRecord
+  if(r.guard!==undefined&&!validGuard(r.guard))return fail('intent_conflict')
   if(r.browserTabId!==undefined&&(typeof r.browserTabId!=='string'||!/^[a-f0-9-]{36}$/.test(r.browserTabId)))return fail('intent_conflict')
   if(r.version!==1||r.id!==id||r.legacyReceiptId!==legacyReceiptId||r.key!==key||r.actorHash!==actorHash||typeof r.promptHash!=='string'||!/^[a-f0-9]{64}$/.test(r.promptHash)||!['legacy-parser-v1','mcp-action-v1'].includes(r.executor)||!['admitted','active','uncertain','completed'].includes(r.phase)||!Array.isArray(r.allowedTools)||r.allowedTools.length>Object.keys(TOOLS).length||!r.allowedTools.every(isTool)||new Set(r.allowedTools).size!==r.allowedTools.length||!Number.isInteger(r.rounds)||r.rounds<0||r.rounds>REQUEST_LIMITS.maxRounds||!Array.isArray(r.calls)||r.calls.length>REQUEST_LIMITS.maxCalls)return fail('intent_conflict')
   if(r.startedAt!==undefined&&(!Number.isSafeInteger(r.startedAt)||r.startedAt<0)||r.ownerId!==undefined&&(typeof r.ownerId!=='string'||!r.ownerId)||r.phase==='active'&&(r.startedAt===undefined||!r.ownerId))return fail('intent_conflict')
@@ -31,8 +33,8 @@ function decode(row:Row,key:string,actorHash:string):IntentRecord {
   for(const call of r.calls){
     if(!plainRecord(call)||typeof call.id!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(call.id)||ids.has(call.id)||!plainRecord(call.command)||!isTool(call.command.tool)||!r.allowedTools.includes(call.command.tool)||!plainRecord(call.command.args))return fail('intent_conflict')
     ids.add(call.id)
-    const validation=validateServiceArguments(call.command.tool,call.command.args)
-    if(!validation.valid||call.fingerprint!==hash(canonicalJson(call.command))||call.result!==undefined&&!validServiceResult(call.command,call.result))return fail('intent_conflict')
+    const validation=validateServiceArguments(call.command.tool,call.command.args,true)
+    if(!validation.valid||call.fingerprint!==hash(canonicalJson(call.command))||call.result!==undefined&&!validServiceResult(call.command,call.result,true))return fail('intent_conflict')
     // Re-run host key/target derivation, not only schema validation.
     const input={...call.command.args}
     if(TOOLS[call.command.tool].write){writes++;delete input.operationKey;if(isCreation(call.command.tool))delete input.id}
@@ -102,7 +104,7 @@ export class SqlIntentStore {
     const result=await c.query('UPDATE planner_entities SET data=$2,version=version+1 WHERE id=$1 AND kind=$3 AND version=$4 RETURNING version',[row.id,record,REQUEST_INTENT_KIND,row.version])
     if(result.rowCount!==1)fail('storage_conflict')
   }
-  async admit(input:{key:string;prompt:string;purpose:'action';tabId?:string},policy:IntentPolicy):Promise<IntentRecord>{
+  async admit(input:{key:string;prompt:string;purpose:'action';tabId?:string;guard?:ConversationGuard},policy:IntentPolicy):Promise<IntentRecord>{
     // Validate admission BEFORE opening a connection.
     requireIntent(admitIntent(undefined,{...input,actorId:this.actorId},policy))
     return this.transaction(input.key,async(c,row,legacy)=>{
@@ -136,6 +138,13 @@ export class SqlIntentStore {
   reserve(key:string,owner:string,id:string,tool:unknown,args:unknown,now:number){return this.change(key,r=>reserveIntentCall(this.owned(r,owner),id,tool,args,now))}
   result(key:string,owner:string,id:string,result:Result){return this.change(key,r=>recordIntentResult(this.owned(r,owner),id,result))}
   interrupt(key:string){return this.change(key,r=>({ok:true,record:interruptIntent(r),directive:'receipts_only'}))}
+  fence(key:string,now:number){return this.change(key,r=>{
+    if(r.phase==='admitted'){
+      const next=requireIntent(startIntent(r,now));next.record.ownerId=randomUUID()
+      return {ok:true,record:interruptIntent(next.record),directive:'receipts_only'}
+    }
+    return {ok:true,record:interruptIntent(r),directive:'receipts_only'}
+  })}
   finish(key:string,owner:string){return this.change(key,r=>{
     this.owned(r,owner)
     if(r.phase!=='active')return fail('inactive')

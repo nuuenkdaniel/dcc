@@ -34,7 +34,7 @@ export class JourneyRuntime {
     this.calls++
     const parsed=JSON.parse(await this.run('./runtime_loopback.py',[],input,signal)) as {status:string;evidence:SchemaEvidence}
     const e=parsed.evidence
-    if(parsed.status!=='finished'||e?.model!=='gpt-6-luna'||e.schemaCount!==36||e.schemasUnchanged!==true||!/^[a-f0-9]{64}$/.test(e.schemaSha256)||this.evidence.some(old=>old.schemaSha256!==e.schemaSha256))throw Error('QA schema/model evidence')
+    if(parsed.status!=='finished'||e?.model!=='gpt-6-luna'||e.schemaCount!==35||e.schemasUnchanged!==true||!/^[a-f0-9]{64}$/.test(e.schemaSha256)||this.evidence.some(old=>old.schemaSha256!==e.schemaSha256))throw Error('QA schema/model evidence')
     this.evidence.push(e);return {status:'finished'}
   }
 }

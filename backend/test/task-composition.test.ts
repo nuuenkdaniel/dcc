@@ -45,7 +45,9 @@ test('feature discovery is authenticated and reflects actual configured instance
       const discovery=await app.inject({url:'/api/v1/hermes/capabilities',cookies:{daymark_session:cookie}})
       assert.deepEqual(discovery.json(),{taskActions:enabled})
       const product=await app.inject({url:'/api/v1/hermes/action-capabilities',cookies:{daymark_session:cookie}})
-      assert.deepEqual(product.json(),{productActions:enabled})
+      assert.equal(product.json().productActions,enabled)
+      assert.equal(product.json().conversation,enabled)
+      assert.match(product.json().workspaceOwner,/^[a-f0-9]{64}$/)
       assert.equal(discovery.headers['cache-control'],'no-store')
     }finally{await app.close()}
   }

@@ -9,7 +9,7 @@ import {SqlIntentStore,IntentStoreError} from './intent-store.js'
 import {ServiceTransport} from './service-transport.js'
 import {serviceToolDefinitions} from './service-contracts.js'
 import {composeSdkServer} from './sdk-server.js'
-import {REQUEST_LIMITS,requestContext,type IntentRecord,type IntentPolicy} from './request-intent.js'
+import {REQUEST_LIMITS,requestContext,type IntentRecord,type IntentPolicy,type ConversationGuard} from './request-intent.js'
 import {validClarification,type Clarification} from './clarification.js'
 
 // A testable in-process port, NOT a Hermes CLI output format or transport adapter.
@@ -22,7 +22,7 @@ export type IntentSummary={phase:IntentRecord['phase'];outcome?:IntentRecord['ou
 // read projections or arbitrary error text into the authoritative UI result.
 export function summarizeIntent(record:IntentRecord):IntentSummary {
   const clarifications=record.calls.filter(c=>c.command.tool==='request_clarification'&&c.result?.state==='ok').map(c=>(c.result as Extract<Result,{state:'ok'}>).data).filter(validClarification).slice(0,3)
-  const allReads=record.calls.filter(c=>c.command.tool!=='request_clarification'&&!TOOLS[c.command.tool].write&&c.result?.state==='ok').map(c=>({tool:c.command.tool,data:(c.result as Extract<Result,{state:'ok'}>).data}))
+  const allReads=record.calls.filter(c=>c.command.tool!=='request_clarification'&&c.command.tool!=='list_prices'&&!TOOLS[c.command.tool].write&&c.result?.state==='ok').map(c=>({tool:c.command.tool,data:(c.result as Extract<Result,{state:'ok'}>).data}))
   const reads:typeof allReads=[];let bytes=0
   for(const read of [...allReads].reverse()){
     const size=Buffer.byteLength(JSON.stringify(read),'utf8')
@@ -34,7 +34,7 @@ export function summarizeIntent(record:IntentRecord):IntentSummary {
   }),pending:record.calls.filter(c=>!c.result||c.result.state==='uncertain').length,
     ...(record.allowedTools.length>3?{reads,...(reads.length<allReads.length?{readsTruncated:true as const}:{})}:{})}
 }
-export function requestTools(record:Pick<IntentRecord,'allowedTools'>):Tool[]{
+export function requestTools(record:{allowedTools:readonly ToolName[]}):Tool[]{
   return serviceToolDefinitions().filter(t=>record.allowedTools.includes(t.name as IntentRecord['allowedTools'][number])).map(tool=>{
     const t=structuredClone(tool),properties=t.inputSchema.properties??{}
     if(TOOLS[t.name as keyof typeof TOOLS].write){
@@ -62,7 +62,7 @@ export class RequestController {
     }
     return summarizeIntent(await store.read(key))
   }
-  async run(input:{key:string;prompt:string;tabId?:string},policy:IntentPolicy,signal?:AbortSignal):Promise<IntentSummary>{
+  async run(input:{key:string;prompt:string;tabId?:string;guard?:ConversationGuard},policy:IntentPolicy,signal?:AbortSignal):Promise<IntentSummary>{
     const {store,transport,runner,nativeRunner}=this.options,now=this.options.now??Date.now
     const admitted=await store.admit({...input,purpose:'action'},policy)
     // Existing legacy intents are not executed by this source-only controller.
@@ -71,7 +71,7 @@ export class RequestController {
       return summarizeIntent(admitted)
     }
     if(nativeRunner&&(admitted.allowedTools.length!==policy.allowedTools.length||admitted.allowedTools.some(tool=>!policy.allowedTools.includes(tool)))){
-      if(admitted.phase!=='admitted'&&admitted.allowedTools.every(tool=>policy.allowedTools.includes(tool)))return this.recover(input.key)
+      if(admitted.phase!=='admitted'&&admitted.allowedTools.every(tool=>tool==='list_prices'||policy.allowedTools.includes(tool)))return this.recover(input.key)
       throw new IntentStoreError('executor_conflict')
     }
     if(signal?.aborted)return this.recover(input.key)

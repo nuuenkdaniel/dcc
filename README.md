@@ -1,13 +1,13 @@
 # dcc
 
-A web-first personal workspace for daily tasks, assignments, exam preparation, calendars, email briefings, and price tracking.
+A web-first personal workspace for daily tasks, assignments, exam preparation, calendars and email briefings.
 
 ## Stack
 
 - React, TypeScript and Vite (`frontend/`)
 - Node.js 22+, Fastify and PostgreSQL (`backend/`)
 - Native Android: Kotlin and Compose (`frontend-android/`)
-- Private Python connectors for Hermes, read-only email and browser-based price checks
+- Private Python connectors for Hermes and read-only email; price fetching is retired
 
 ## Development
 
@@ -27,9 +27,14 @@ docker compose up -d
 npm run dev
 ```
 
-Authentication, database support, planner, calendar, mail and prices are implemented, but available capabilities depend on configuration. `GET /health` reports process health, not database or integration readiness; `GET /api/v1/status` reports configured capability flags, not live integration health. See package.json files for worker, database-check and test commands. Calendar, email, planning and price checks require separately configured integrations; cloning this repository does not automatically provision them. Deployment scripts currently contain development-host paths and must be adapted before use. Personal service units and operational notes are intentionally excluded. These setup instructions are not production sign-off.
+Authentication, database support, planner, calendar and mail are implemented, but available capabilities depend on configuration. `GET /health` reports process health, not database or integration readiness; `GET /api/v1/status` reports configured capability flags, not live integration health. See package.json files for worker, database-check and test commands. Calendar, email and planning require separately configured integrations; cloning this repository does not automatically provision them. Price tracking is retired: old APIs return HTTP410, scheduling/provider entrypoints are disabled, and historical storage is preserved. Deployment scripts currently contain development-host paths and must be adapted before use. Personal service units and operational notes are intentionally excluded. These setup instructions are not production sign-off.
 
 ## Checks
+
+Hermes compact clarification/receipt source, its supported completion grammar,
+storage limits and verification boundary are documented in
+[CLARIFICATION-RECEIPTS.md](backend/src/mcp/CLARIFICATION-RECEIPTS.md).
+Source implementation is not live model/SQL, Android device, or deployment acceptance.
 
 ```sh
 npm run check
@@ -45,7 +50,7 @@ Database integration tests require a configured test environment. Live integrati
 - Calendar synchronization, event editing and an offline outbox.
 - Read-only multi-account Inbox and today's important-email summaries; no sending or mailbox flag changes.
 - Inbox link heuristics only identify plausible public web URLs. They cannot verify site reputation, redirects, or DNS results, and provide no safety guarantees or trust badges in the UI.
-- Price tracking for a specific XPS configuration, with separate new/open-box views. Additional products require verified connectors; local inventory filtering is unfinished.
+- Price tracking is retired on web, Android and Hermes. `/prices` retains a retirement notice; stored history is not deleted. Runtime retirement requires deployment of the reviewed API/worker/bridge changes by the deployment owner.
 - Cached views survive warm backend outages. Cold offline startup remains incomplete. Manual tasks save locally first and can synchronize across signed-in web and Android clients.
 - Focus timer supports ordered sessions; reload persistence is not implemented.
 

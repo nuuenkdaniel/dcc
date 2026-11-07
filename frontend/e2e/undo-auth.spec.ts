@@ -34,10 +34,10 @@ for(const loginOwner of [OWNER_A,OWNER_B])test(`queued Undo cancels through ${ch
  let readPhase:ReadPhase='capturing',unexpectedOldReads=0
  const issued=new Map<Request,ReadPhase>(),terminal=new Map<Request,'finished'|'failed'>()
  const expiredReads:{id:number;request:Request;route:Route}[]=[]
- const isPriceRead=(request:Request)=>new URL(request.url()).pathname==='/api/v1/prices/snapshot'
- page.on('request',request=>{if(isPriceRead(request))issued.set(request,readPhase)})
- page.on('requestfinished',request=>{if(isPriceRead(request))terminal.set(request,'finished')})
- page.on('requestfailed',request=>{if(isPriceRead(request))terminal.set(request,'failed')})
+ const isSettingsRead=(request:Request)=>new URL(request.url()).pathname==='/api/v1/mail/preferences'
+ page.on('request',request=>{if(isSettingsRead(request))issued.set(request,readPhase)})
+ page.on('requestfinished',request=>{if(isSettingsRead(request))terminal.set(request,'finished')})
+ page.on('requestfailed',request=>{if(isSettingsRead(request))terminal.set(request,'failed')})
  await page.route('**/api/v1/auth/session',route=>route.fulfill({json:{authenticated,configured:true,...(authenticated?{workspaceOwner:currentOwner}:{})}}))
  await page.route('**/api/v1/auth/login',route=>{
   expect(route.request().postDataJSON()).toEqual({username:'synthetic-user',password:'synthetic-only'})
@@ -69,7 +69,7 @@ for(const loginOwner of [OWNER_A,OWNER_B])test(`queued Undo cancels through ${ch
    state.authUndo401Events=0
    window.addEventListener('dcc-auth-required',()=>{state.authUndo401Events=(state.authUndo401Events??0)+1})
   })
-  await page.route('**/api/v1/prices/snapshot',route=>{
+  await page.route('**/api/v1/mail/preferences',route=>{
    const request=route.request(),phase=issued.get(request)
    expect(request.method()).toBe('GET')
    // A request issued under the expired scope must never fall through to a
@@ -79,7 +79,7 @@ for(const loginOwner of [OWNER_A,OWNER_B])test(`queued Undo cancels through ${ch
    expiredReads.push({id:expiredReads.length+1,request,route})
    // Hold both StrictMode mount reads until the exact request set is known.
   })
-  await page.getByRole('button',{name:'Price tracker',exact:true}).click()
+  await page.getByRole('button',{name:'Settings',exact:true}).click()
   await expect.poll(()=>expiredReads.length).toBe(2)
   expect(unexpectedOldReads).toBe(0)
   const selected=expiredReads[0]!
@@ -87,7 +87,7 @@ for(const loginOwner of [OWNER_A,OWNER_B])test(`queued Undo cancels through ${ch
   authenticated=false
   await selected.route.fulfill({status:401,json:{error:'Synthetic expired session'}});deniedReads++
   expect(await (await response).finished()).toBeNull()
-  // Prices -> protectedFetch -> reportAuthRequired -> AuthGate. The companion
+  // EmailSettings -> protectedFetch -> reportAuthRequired -> AuthGate. The companion
   // is still held, so this login transition is attributable to selected ID1.
   await expect(page.getByLabel('Username',{exact:true})).toBeVisible()
   await expect.poll(()=>page.evaluate(()=>(window as typeof window&{authUndo401Events?:number}).authUndo401Events)).toBe(1)
@@ -100,7 +100,7 @@ for(const loginOwner of [OWNER_A,OWNER_B])test(`queued Undo cancels through ${ch
   // Network completion alone is not JS-handler completion. Drain both real
   // protectedFetch expiry events before allowing any login response.
   await expect.poll(()=>page.evaluate(()=>(window as typeof window&{authUndo401Events?:number}).authUndo401Events)).toBe(2)
-  expect(expiredReads.map(entry=>({id:entry.id,path:new URL(entry.request.url()).pathname,method:entry.request.method(),phase:issued.get(entry.request)}))).toEqual([1,2].map(id=>({id,path:'/api/v1/prices/snapshot',method:'GET',phase:'capturing'})))
+  expect(expiredReads.map(entry=>({id:entry.id,path:new URL(entry.request.url()).pathname,method:entry.request.method(),phase:issued.get(entry.request)}))).toEqual([1,2].map(id=>({id,path:'/api/v1/mail/preferences',method:'GET',phase:'capturing'})))
  }else{
   const response=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/v1/auth/logout'&&r.status()===200)
   await page.getByRole('button',{name:'Sign out / test login',exact:true}).click()

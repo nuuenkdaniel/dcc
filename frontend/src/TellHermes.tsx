@@ -2,6 +2,7 @@ import {useCallback,useEffect,useRef,useState} from 'react'
 import {protectedFetch} from './auth'
 import {useOptionalBrowserTimer} from './timerContext'
 import {validClarification,type Clarification} from '../../backend/src/mcp/clarification'
+import {HermesConversation} from './HermesConversation'
 
 type Mode='legacy'|'tasks'|'actions'
 type Submission={key:string;prompt:string;mode:Mode;settled:boolean;tabId?:string}
@@ -20,7 +21,7 @@ function taskReceipt(v:Record<string,unknown>){
    const clarifications=s.clarifications??[]
    if(!Array.isArray(clarifications)||clarifications.length>3||!clarifications.every(validClarification)||new Set(clarifications.map(c=>c.reason)).size!==clarifications.length)return null
   const reads=s.reads??[]
-  if(!Array.isArray(reads)||reads.length>12||reads.some(r=>!record(r)||!exact(r,['tool','data'])||!['list_tasks','list_projects','list_calendars','list_calendar_events','get_operation_status','list_daily_actions','list_preparations','search_inbox','get_inbox_message','list_prices','get_calendar_series','get_focus_timer'].includes(String(r.tool))||!record(r.data))||JSON.stringify(reads).length>2000000)return null
+  if(!Array.isArray(reads)||reads.length>12||reads.some(r=>!record(r)||!exact(r,['tool','data'])||!['list_tasks','list_projects','list_calendars','list_calendar_events','get_operation_status','list_daily_actions','list_preparations','search_inbox','get_inbox_message','get_calendar_series','get_focus_timer'].includes(String(r.tool))||!record(r.data))||JSON.stringify(reads).length>2000000)return null
   const domains=new Set<'tasks'|'projects'|'calendar'>()
   let applied=0,failed=0,uncertain=0
   for(const e of s.effects){
@@ -88,6 +89,12 @@ export function TellHermes({onCreated}:{onCreated:(scope?:'tasks'|'projects'|'ca
    const [reads,setReads]=useState<{tool:string;data:unknown}[]>([])
    const [clarifications,setClarifications]=useState<Clarification[]>([])
    const [saved,setSaved]=useState(initial.submission),[available,setAvailable]=useState(false)
+   const [conversationOwner,setConversationOwner]=useState<string|null>(null)
+   const [conversationEnabled,setConversationEnabled]=useState(false)
+   const conversationOwnerRef=useRef(conversationOwner);conversationOwnerRef.current=conversationOwner
+   const discoveryDenied=useRef(false),edited=useRef(false)
+   const [denied,setDenied]=useState(false)
+   const confirmedCatalog=useRef<Mode|null>(null)
    const [retained,setRetained]=useState<Retained[]>(()=>{try{return history()}catch{return []}})
    const [retentionWarning,setRetentionWarning]=useState(''),[confirmNew,setConfirmNew]=useState<string|null>(null)
     const submission=useRef(initial.submission),inFlight=useRef(false),newIntent=useRef(false),requestAbort=useRef<AbortController|null>(null)
@@ -133,13 +140,30 @@ export function TellHermes({onCreated}:{onCreated:(scope?:'tasks'|'projects'|'ca
      let alive=true,generation=0
     const discover=async()=>{
       const current=++generation
+      confirmedCatalog.current=null;setAvailable(false)
       try{
         const r=await protectedFetch(mode==='tasks'?'/api/v1/hermes/capabilities':'/api/v1/hermes/action-capabilities',{signal:AbortSignal.timeout(8000)})
         const v:unknown=r.ok?await r.json():null
-        if(alive&&current===generation)setAvailable(record(v)&&(mode==='tasks'?v.taskActions===true:v.productActions===true))
-      }catch{if(alive&&current===generation)setAvailable(false)}
+        if(alive&&current===generation){
+          const configured=r.ok&&record(v)&&typeof (mode==='tasks'?v.taskActions:v.productActions)==='boolean'&&
+            (mode==='tasks'||v.conversation===undefined||v.conversation===false||v.conversation===true&&v.productActions===true&&typeof v.workspaceOwner==='string'&&/^[a-f0-9]{64}$/.test(v.workspaceOwner))
+          discoveryDenied.current=!configured
+          setDenied(!configured)
+          confirmedCatalog.current=configured?mode:null
+          setAvailable(configured&&(mode==='tasks'?v.taskActions===true:v.productActions===true))
+          const owner=configured&&mode!=='tasks'&&v.conversation===true&&typeof v.workspaceOwner==='string'&&/^[a-f0-9]{64}$/.test(v.workspaceOwner)?v.workspaceOwner:null
+          setConversationEnabled(!!owner)
+          if(owner){
+            if(conversationOwnerRef.current&&conversationOwnerRef.current!==owner){edited.current=false;setPrompt('')}
+            setConversationOwner(owner)
+          }
+        }
+      }catch{if(alive&&current===generation){discoveryDenied.current=true;setDenied(true);setAvailable(false);setConversationEnabled(false)}}
     }
-    const signedOut=()=>{generation++;setAvailable(false)}
+    const signedOut=()=>{
+      generation++;discoveryDenied.current=true;setDenied(true);setAvailable(false);setConversationEnabled(false)
+      if(conversationOwnerRef.current){edited.current=false;setPrompt('');setConversationOwner(null)}
+    }
     void discover()
     window.addEventListener('dcc-auth-changed',discover);window.addEventListener('focus',discover);window.addEventListener('dcc-auth-required',signedOut)
     return()=>{alive=false;generation++;window.removeEventListener('dcc-auth-changed',discover);window.removeEventListener('focus',discover);window.removeEventListener('dcc-auth-required',signedOut)}
@@ -149,7 +173,7 @@ export function TellHermes({onCreated}:{onCreated:(scope?:'tasks'|'projects'|'ca
     if(initial.error){setMessage('Saved request is unreadable and preserved. You can edit or clear this box; sending is paused.');return}
     // Availability is rendered from authoritative discovery below, not stored
     // over the last receipt/error. Recovery must reveal that status unchanged.
-    if(mode!=='legacy'&&!available)return
+    if(discoveryDenied.current||mode!=='legacy'&&(!available||confirmedCatalog.current!==mode))return
     let retainedNow:Retained[]
     try{retainedNow=history()}catch{setRetentionWarning('Local history is unreadable and preserved. Text remains editable; sending is paused.');return}
     const prior=submission.current
@@ -197,12 +221,19 @@ export function TellHermes({onCreated}:{onCreated:(scope?:'tasks'|'projects'|'ca
     }
   finally{requestAbort.current=null;inFlight.current=false;setBusy(false)}
   }
+  // Discovery never replaces the editor with a disabled loader. A confirmed v2
+  // upgrade transfers typed text and focus; an old saved request stays on its
+  // original executor until the user deliberately edits it into a new intent.
+  if(conversationOwner&&!busy&&!initial.error&&(!initial.submission||edited.current&&prompt!==initial.submission.prompt)){
+    const focused=document.activeElement instanceof HTMLInputElement&&document.activeElement.id==='tell-hermes-command'
+    return <HermesConversation key={conversationOwner} owner={conversationOwner} available={conversationEnabled} onCreated={onCreated} {...(edited.current?{initialText:prompt}:{})} focusEditor={focused}/>
+  }
   return <form className="tell-hermes" aria-busy={busy} onSubmit={event=>{event.preventDefault();void send()}}>
     <div className="tell-hermes-row">
       <label className="sr-only" htmlFor="tell-hermes-command">Ask Hermes about tasks, projects, or calendar</label>
-      <input id="tell-hermes-command" type="text" required maxLength={4000} disabled={busy} value={prompt} onChange={event=>{setPrompt(event.target.value);setMode('actions');if(confirmNew!==null)setMessage('');setConfirmNew(null);setReads([]);setClarifications([]);if(mode!=='actions')newIntent.current=true}} placeholder="Hermes" aria-describedby="tell-hermes-status"/>
+      <input id="tell-hermes-command" type="text" required maxLength={4000} disabled={busy} value={prompt} onChange={event=>{edited.current=true;setPrompt(event.target.value);setMode('actions');if(confirmNew!==null)setMessage('');setConfirmNew(null);setReads([]);setClarifications([]);if(mode!=='actions')newIntent.current=true}} placeholder="Hermes" aria-describedby="tell-hermes-status"/>
     </div>
-    <p id="tell-hermes-status" role="status">{initial.error?message:mode!=='legacy'&&!available?'MCP actions are unavailable. You can still edit or clear this box.':message}</p>
+    <p id="tell-hermes-status" role="status">{initial.error?message:denied||mode!=='legacy'&&!available?'MCP actions are unavailable. You can still edit or clear this box.':message}</p>
     {clarifications.length>0&&<section aria-label="Details Hermes needs"><ul>{clarifications.map(c=><li key={c.reason}>{c.question}</li>)}</ul><p>{locked?'This request is still unresolved. Check its receipts or explicitly retain it before sending a different request.':'Edit the request above with your answer. This sends a new request; it does not repeat earlier saved effects automatically.'}</p></section>}
     {busy&&<button type="button" onClick={()=>requestAbort.current?.abort()}>Stop waiting</button>}
     {confirmNew===prompt&&<button type="button" disabled={busy} onClick={()=>void send(true)}>Send as new request — may duplicate effects</button>}

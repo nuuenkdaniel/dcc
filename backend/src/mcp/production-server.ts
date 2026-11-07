@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto'
-import {TOOLS,isTool,plainRecord,type ToolName,type Result} from './contracts.js'
+import {TOOLS,ACTIVE_TOOLS,isActiveTool as isTool,plainRecord,type ToolName,type Result} from './contracts.js'
 import {Dispatcher,type Context} from './dispatcher.js'
 import {ServiceTransport,canonicalJson} from './service-transport.js'
 import {serviceToolDefinitions,validateServiceArguments} from './service-contracts.js'
@@ -30,10 +30,10 @@ export function createServiceMcpServer(options:Options){
   if(!Number.isSafeInteger(issuedAt)||!plainRecord(invocation)||!opaque(invocation.id)||!Number.isSafeInteger(invocation.expiresAt)||invocation.expiresAt<=issuedAt||invocation.expiresAt-issuedAt>MAX_INVOCATION_MS)throw Error('Invalid trusted invocation lifetime')
   if(!options.context)throw Error('Explicit trusted context required')
   const purpose=options.context.purpose,capabilities=options.context.capabilities
-  const knownCapabilities=new Set(Object.values(TOOLS).map(tool=>tool.capability))
+  const knownCapabilities=new Set(ACTIVE_TOOLS.map(name=>TOOLS[name].capability))
   if(!['action','parser','planner','extraction','read'].includes(purpose)||!Array.isArray(capabilities)||capabilities.length>knownCapabilities.size||!capabilities.every(capability=>typeof capability==='string'&&knownCapabilities.has(capability)))throw Error('Explicit trusted context required')
   const context:Context=Object.freeze({purpose,capabilities:Object.freeze([...capabilities])})
-  if(!Array.isArray(invocation.allowedTools)||invocation.allowedTools.length>Object.keys(TOOLS).length||!invocation.allowedTools.every(isTool)||new Set(invocation.allowedTools).size!==invocation.allowedTools.length)throw Error('Invalid invocation tool allowlist')
+  if(!Array.isArray(invocation.allowedTools)||invocation.allowedTools.length>ACTIVE_TOOLS.length||!invocation.allowedTools.every(isTool)||new Set(invocation.allowedTools).size!==invocation.allowedTools.length)throw Error('Invalid invocation tool allowlist')
   const allowed=new Set(invocation.allowedTools),expiresAt=invocation.expiresAt
   const actions=invocation.actions??[],statusKeys=invocation.statusKeys??[]
   if(!Array.isArray(actions)||actions.length>16||!Array.isArray(statusKeys)||statusKeys.length>64||!statusKeys.every(opaque))throw Error('Invalid invocation grants')

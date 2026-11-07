@@ -1,4 +1,3 @@
-import {migratePrices,checkPrices} from './prices.js'
 import {rollover} from './rollover.js'
 import {planAssignments} from './assignment-plan.js'
 import {migratePlanner,runPlanner} from './planner.js'
@@ -18,12 +17,10 @@ for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>controller.abor
 try {
  await migrate(pool)
  await migratePlanner(pool)
- await migratePrices(pool)
  do {
   await cleanupExpiredSessions(pool).catch(()=>console.error('Expired session cleanup unavailable'))
   try {if(config)console.log('Calendar sync:',await runSync(pool,config.interval,sourceHash(config),()=>fetchSnapshot(config),process.argv.includes('--once')))}
   catch {console.error('Calendar worker database failure; retrying without discarding cache')}
-  await checkPrices(pool).catch(()=>console.error('Price checks unavailable'))
   await rollover(pool).catch(()=>console.error('Rollover unavailable; existing work preserved'))
   if(process.env.HERMES_CURATOR_URL)await planAssignments(pool).catch(()=>console.error('Assignment planner unavailable'))
   if(process.env.HERMES_CURATOR_URL)console.log('Daily planner:',await runPlanner(pool))

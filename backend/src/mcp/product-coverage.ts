@@ -4,6 +4,7 @@ type Coverage={tools:readonly ToolName[];boundary:string}
 // Explicit product-route inventory, not routing or authorization. Empty tool lists
 // are exclusions/remaining work, never permission to use a generic route executor.
 export const PRODUCT_ROUTE_COVERAGE:Record<string,Coverage>={
+  '/api/v1/hermes/conversation':{tools:[],boundary:'Authenticated owner/client-bound bounded continuation and structured receipts. Immutable supported task checklist before writes; no new product capability or generic executor.'},
   '/api/v1/hermes/actions':{tools:[],boundary:'Unified authenticated action admission; server-owned catalog only.'},
   '/api/v1/hermes/task-actions':{tools:[],boundary:'Compatibility admission with the original three-tool policy.'},
   '/api/v1/hermes/commands':{tools:[],boundary:'Legacy receipt executor retained for old callers and pinned submissions.'},
@@ -30,8 +31,8 @@ export const PRODUCT_ROUTE_COVERAGE:Record<string,Coverage>={
   '/api/v1/mail/refresh':{tools:[],boundary:'Mailbox integration scheduling excluded from action catalog.'},
   '/api/v1/mail/preferences':{tools:[],boundary:'Classification preferences/configuration excluded.'},
   '/api/v1/mail/feedback':{tools:[],boundary:'Local classification feedback remains UI-only; mail/provider mutations excluded.'},
-  '/api/v1/prices/snapshot':{tools:['list_prices'],boundary:'Bounded cached items/offers/source summaries; URLs and integration configuration excluded.'},
-  '/api/v1/prices/settings':{tools:[],boundary:'Tracker configuration remains UI-only.'},
-  '/api/v1/prices/refresh':{tools:[],boundary:'External browser integration scheduling excluded.'},
+  '/api/v1/prices/snapshot':{tools:[],boundary:'Retired authenticated compatibility endpoint: HTTP410, no historical data read or provider activation.'},
+  '/api/v1/prices/settings':{tools:[],boundary:'Retired HTTP410: no configuration or stored-row mutation.'},
+  '/api/v1/prices/refresh':{tools:[],boundary:'Retired HTTP410: no scheduling or provider activation.'},
   '/api/v1/status':{tools:[],boundary:'Public service status, not model authority.'},
 }

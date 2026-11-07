@@ -27,6 +27,15 @@ export class ServicePool {
       }
       if(sql.startsWith('SELECT pg_advisory_xact_lock'))return result([{}])
       const store=tx??this.rows
+      if(sql.startsWith("UPDATE planner_entities SET data=(data-'original'")){
+        let changed=0
+        for(const row of store.values())if(row.kind===args[0]&&(args[1]===''||row.data.owner===args[1])&&row.data.expiresAt<=Number(args[2])&&Object.hasOwn(row.data,'original')){
+          for(const k of ['original','prompt','guard','question'])delete row.data[k]
+          row.data.answers=[];row.data.status='closed';row.version++;changed++
+          if(row.data.receipt.outcome==='question'){row.data.receipt.outcome='failed';row.data.receipt.line='Clarification expired after 24 hours. Start a new request; nothing was resent.'}
+        }
+        return result([],changed)
+      }
       if(sql.startsWith('SELECT id,kind,version,data FROM planner_entities WHERE id=$1')){
         const row=store.get(String(args[0]));return result(row?[structuredClone(row)]:[])
       }
@@ -36,7 +45,12 @@ export class ServicePool {
       if(sql.startsWith('INSERT INTO planner_entities(id,kind,data)')){
         if(this.zero==='insert'){this.zero=undefined;return result()}
         const [id,kind,data]=args
-        if(store.has(String(id)))return result()
+        if(store.has(String(id))){
+          if(!sql.includes('ON CONFLICT(id) DO UPDATE SET data=$3'))return result()
+          const row=store.get(String(id))!;if(row.kind!==kind)throw Error('Wrong upsert kind')
+          if(sql.includes('IS DISTINCT FROM')&&JSON.stringify(row.data)===JSON.stringify(data))return result()
+          row.data=structuredClone(data) as Record<string,any>;row.version++;return result([{version:row.version}])
+        }
         store.set(String(id),{id:String(id),kind:String(kind),version:1,data:structuredClone(data) as Record<string,any>})
         return result([{version:1}])
       }

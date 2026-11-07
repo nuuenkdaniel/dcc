@@ -15,6 +15,7 @@ const PUBLIC_API_ROUTES=new Set(['/api/v1/status','/api/v1/auth/session','/api/v
 const digest=(text:string)=>createHash('sha256').update(text).digest('hex')
 const derive=promisify(scrypt)
 export function registerAuth(app:FastifyInstance, config?:AuthConfig, taskCallback?:{verify:(authorization:unknown)=>Promise<boolean>}) {
+ const owners=new WeakMap<FastifyRequest,string>()
  app.register(cookie)
  app.register(rateLimit,{global:false})
  const salt=randomBytes(32)
@@ -42,7 +43,10 @@ export function registerAuth(app:FastifyInstance, config?:AuthConfig, taskCallba
    if(request.headers.origin!==config.origin) return reply.code(403).send({error:'Origin not permitted'})
   }
   const path=request.url.split('?',1)[0]??request.url
-  if(path.startsWith('/api/v1/')&&!PUBLIC_API_ROUTES.has(path)&&!(await authenticated(request))) return reply.code(401).send({error:'Sign in required'})
+   if(path.startsWith('/api/v1/')&&!PUBLIC_API_ROUTES.has(path)){
+    if(!(await authenticated(request)))return reply.code(401).send({error:'Sign in required'})
+    owners.set(request,workspaceOwner)
+   }
  })
   app.get('/api/v1/auth/session',async request=>{const signedIn=await authenticated(request);return {authenticated:signedIn,configured:!!config,...(signedIn?{workspaceOwner}:{})}})
  app.post<{Body:{username:string;password:string}}>('/api/v1/auth/login',{
@@ -59,10 +63,11 @@ export function registerAuth(app:FastifyInstance, config?:AuthConfig, taskCallba
   reply.setCookie('daymark_session',token,{path:'/',httpOnly:true,sameSite:'strict',secure:config.origin.startsWith('https:'),maxAge:SESSION_SECONDS})
    return {authenticated:true,workspaceOwner}
  })
- app.post('/api/v1/auth/logout',async(request,reply)=>{
+  app.post('/api/v1/auth/logout',async(request,reply)=>{
   const token=request.cookies.daymark_session
   if(token && config) await config.store.remove(digest(token))
   reply.clearCookie('daymark_session',{path:'/'})
   return {authenticated:false}
- })
+  })
+  return (request:FastifyRequest)=>owners.get(request)
 }

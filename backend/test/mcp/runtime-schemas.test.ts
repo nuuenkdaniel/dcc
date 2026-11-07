@@ -3,13 +3,14 @@ import assert from 'node:assert/strict'
 import {spawnSync} from 'node:child_process'
 import {fileURLToPath} from 'node:url'
 import {requestTools} from '../../src/mcp/request-controller.js'
-import {TOOLS,type ToolName} from '../../src/mcp/contracts.js'
+import {TOOLS,ACTIVE_TOOLS,type ToolName} from '../../src/mcp/contracts.js'
 import {serviceToolDefinitions} from '../../src/mcp/service-contracts.js'
 
 test('actual product catalog explains exact daily action ID without changing fields, permissions or allowlist',()=>{
-  const allowedTools=Object.keys(TOOLS) as ToolName[],names=[...allowedTools].sort()
+  const allowedTools=[...ACTIVE_TOOLS],names=[...allowedTools].sort()
   const tools=requestTools({allowedTools}),daily=tools.find(t=>t.name==='list_daily_actions')!
-  assert.equal(tools.length,36);assert.deepEqual(tools.map(t=>t.name).sort(),names)
+  assert.equal(tools.length,35);assert.deepEqual(tools.map(t=>t.name).sort(),names)
+  assert.equal(names.includes('list_prices'),false)
   assert.match(daily.description??'',/exact ACTION ID, never a parent\/project ID/)
   const schemaDescription=daily.inputSchema.description
   assert.ok(typeof schemaDescription==='string');assert.match(schemaDescription,/omit id and match returned projectId/)
@@ -28,7 +29,7 @@ test('actual product catalog explains exact daily action ID without changing fie
 })
 
 test('production Python run_action accepts real controller schemas and rejects model mutation keys',()=>{
-  const schemas=requestTools({allowedTools:Object.keys(TOOLS) as ToolName[]}).map(t=>({type:'function',function:{name:'mcp__dcc_task__'+t.name,parameters:t.inputSchema}}))
+  const schemas=requestTools({allowedTools:ACTIVE_TOOLS}).map(t=>({type:'function',function:{name:'mcp__dcc_task__'+t.name,parameters:t.inputSchema}}))
   const child=spawnSync('/usr/bin/python3',['-B','-c','import json,sys; import test_task_action_runtime as t; t.exercise_product_schemas(json.load(sys.stdin))'],{
     cwd:fileURLToPath(new URL('../../deploy/',import.meta.url)),input:JSON.stringify(schemas),encoding:'utf8',timeout:10000,
   })

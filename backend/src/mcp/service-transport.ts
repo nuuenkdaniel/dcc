@@ -12,11 +12,12 @@ import {readProductCache} from './cache-reads.js'
 import {mutatePlannerEntity} from './planner-operations.js'
 import {boundedPage} from './wire-budget.js'
 import {BrowserTimerBridge,isTimerTool} from './browser-timer.js'
+import {projectReceiptFields,type ReceiptTarget,type ReceiptFields} from './action-receipt.js'
 
 export const COLLECTION='ccbf2a93-9be3-45bd-b039-1019cdb8276f'
 export const RECEIPT_KIND='dcc-mcp-operation-v1'
 type Row={id:string;kind:string;version:number;data:Record<string,unknown>}
-type Receipt={v:1;actorHash:string;key:string;fingerprint:string;tool:Command['tool'];state:Result['state'];result:Result;change?:EventChange;writerPayloadJson?:string;writerPayloadHash?:string;guardedWriterVersion?:1;calendarCommand?:Command;browserTimerVersion?:1}
+type Receipt={v:1;actorHash:string;key:string;fingerprint:string;tool:Command['tool'];state:Result['state'];result:Result;detail?:{before:ReceiptFields;after:ReceiptFields};change?:EventChange;writerPayloadJson?:string;writerPayloadHash?:string;guardedWriterVersion?:1;calendarCommand?:Command;browserTimerVersion?:1}
 export type ServiceOptions={
   pool:Pool
   // Trusted authenticated caller binding, never accepted from tool arguments.
@@ -66,6 +67,40 @@ export class ServiceTransport implements Transport {
     this.options={...options};this.actorHash=hash(options.actorId)
   }
   get actorScope(){return this.actorHash}
+  private async localFields(c:Pick<PoolClient,'query'>,command:Command):Promise<ReceiptFields|undefined>{
+    if(command.tool.includes('calendar_event')||isTimerTool(command.tool))return undefined
+    if(command.tool.includes('task')){
+      const task=collection(await this.row(c,COLLECTION)).tasks.find(t=>t.id===command.args.id)
+      return task?projectReceiptFields(task as unknown as Record<string,unknown>):{}
+    }
+    const row=await this.row(c,String(command.args.id))
+    if(!row)return {}
+    if(!['project','action','preparation'].includes(row.kind)||row.data.id!==command.args.id)return undefined
+    return projectReceiptFields(row.data)
+  }
+  // No mutation/recovery dispatch here. Check the actor-bound durable operation
+  // plus a fresh SQL domain read, never a model's list result or final text.
+  async inspect(command:Command,result:Result,lastForTarget:boolean):Promise<ReceiptTarget>{
+    const tool=command.tool,kind=tool.includes('calendar_event')?'calendar':tool.includes('task')?'task':tool.includes('project')||tool==='create_assignment'?'project':tool.includes('preparation')?'preparation':isTimerTool(tool)?'timer':'action'
+    const action=tool.startsWith('create_')?'added':tool.startsWith('remove_')||tool.startsWith('cancel_')?'deleted':tool.startsWith('set_')||tool.includes('archive')||tool.includes('restore')?'status':'updated'
+    const id=String(command.args.eventId??command.args.id??''),base:ReceiptTarget={kind,id,action,title:'Record details unavailable',state:result.state,verification:'unavailable'}
+    if(!TOOLS[tool].write)return base
+    try{
+      const row=await this.row(this.options.pool,this.receiptId(String(command.args.operationKey)))
+      if(!row)return base
+      const receipt=this.receipt(row,String(command.args.operationKey))
+      if(receipt.tool!==tool||receipt.fingerprint!==hash(canonicalJson(command))||canonicalJson(receipt.result)!==canonicalJson(result))return base
+      if(result.state==='saved')return {...base,kind:'calendar-mutation',id:result.mutationId,verification:'snapshot_pending',title:'Calendar saved; snapshot confirmation pending (mutation reference, not an event ID)'}
+      const detail=receipt.detail
+      if(!detail)return base // Older receipts remain valid, never fabricate history.
+      const before=projectReceiptFields(detail.before),after=projectReceiptFields(detail.after)
+      const current=lastForTarget?await this.localFields(this.options.pool,command):after
+      const verified=result.state==='applied'&&current!==undefined&&canonicalJson(current)===canonicalJson(after)
+      const title=String(after.title??before.title??'Record details unavailable')
+      const date=after.date??before.date
+      return {...base,title,...(typeof date==='string'?{date}:{}),before,after,verification:verified?'verified':'unavailable'}
+    }catch{return base}
+  }
   // Source-only receipt reconciliation for an already bound command. Unlike
   // execute(), this never starts/retries a domain write or reads a provider/cache.
   async reconcile(command:Command,context?:Context):Promise<Result|undefined> {
@@ -227,6 +262,10 @@ export class ServiceTransport implements Transport {
       }
       const receipt:Receipt={v:1,actorHash:this.actorHash,key,fingerprint,tool,state:'uncertain',result:uncertain}
       await this.insert(c,id,RECEIPT_KIND,receipt)
+      // The domain lock also protects the before/after projection. The mutation
+      // functions reenter the same transaction-level advisory lock safely.
+      if(!tool.includes('calendar_event'))await c.query(tool.includes('task')?'SELECT pg_advisory_xact_lock(817342)':'SELECT pg_advisory_xact_lock(817340)')
+      const before=await this.localFields(c,command)
       let result:Result
       if(tool.includes('calendar_event')){
         const preflight=this.calendarPreflight(command,snapshot)
@@ -243,6 +282,7 @@ export class ServiceTransport implements Transport {
       }else result=['create_daily_action','update_daily_action'].includes(tool)||tool.includes('preparation')?await mutatePlannerEntity(c,command):tool.includes('task')?await this.taskMutation(c,command):await this.projectMutation(c,command)
       if(!validServiceResult(command,result))throw Error('Invalid mutation result')
       receipt.result=result;receipt.state=result.state
+      if(before!==undefined){const after=await this.localFields(c,command);if(after!==undefined)receipt.detail={before,after}}
       await this.update(c,{id,kind:RECEIPT_KIND,version:1,data:{}},receipt)
       // Local data, planning request and completed receipt share this commit.
       // External effects have only an immutable uncertain reservation here.

@@ -79,11 +79,7 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(400, {'error': 'Invalid JSON'})
             return
         if data.get('mode') == 'price-check':
-            try:
-                from price_connector import dispatch
-                self.respond(200, dispatch(data))
-            except Exception:
-                self.respond(502, {'error':'Price browser unavailable; previous observations retained'})
+            self.respond(410, {'retired': True, 'error': 'Price tracker retired; stored observations preserved'})
             return
         if data.get('mode') in ('mail-sync','mail-attachment','mail-html'):
             try:

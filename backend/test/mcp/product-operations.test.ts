@@ -6,7 +6,7 @@ import {createScopedCalendarWriter} from '../../src/calendar-write.js'
 import {config} from './calendar-harness.js'
 import {ProductPool,projectId,actionId,preparationId} from './product-pool.js'
 
-const context={purpose:'action' as const,capabilities:['planner:read','planner:write','inbox:read','prices:read','calendars:read']}
+const context={purpose:'action' as const,capabilities:['planner:read','planner:write','inbox:read','calendars:read']}
 function fixture(){const db=new ProductPool();return {db,d:new Dispatcher(new ServiceTransport({pool:db.pool,actorId:'synthetic',guardedCalendarWriter:createScopedCalendarWriter(db.pool,config,db.fetch)}))}}
 test('daily action id is exact action row ID, never parent ID; date-window lookup stays bounded and read-only',async()=>{
   const {db,d}=fixture(),before=structuredClone([...db.rows.values()])
@@ -48,9 +48,9 @@ test('manual action creation and preparation patches use existing versions and p
   assert.equal(db.rows.get(preparationId)!.data.topics[0].title,'Reviewed topic')
   assert.equal(db.rows.get(preparationId)!.data.topics[0].id,'topic')
 })
-test('inbox/price projections are bounded cached reads without URLs, HTML, attachments or configuration',async()=>{
+test('inbox projections are bounded cached reads without URLs, HTML, attachments or configuration',async()=>{
   const {db,d}=fixture()
-  for(const [tool,args] of [['search_inbox',{query:'Synthetic',account:'all',importantOnly:false,limit:10}],['get_inbox_message',{id:'synthetic-mail',offset:10,limit:2}],['list_prices',{limit:1}]] as const){
+  for(const [tool,args] of [['search_inbox',{query:'Synthetic',account:'all',importantOnly:false,limit:10}],['get_inbox_message',{id:'synthetic-mail',offset:10,limit:2}]] as const){
     const result=await d.dispatch(tool,args,context)
     assert.equal(result.state,'ok',tool);assert.equal(JSON.stringify(result).includes('must-not-leak'),false)
   }

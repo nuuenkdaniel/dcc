@@ -93,8 +93,10 @@ class RuntimeTests(unittest.TestCase):
                     'create_task','update_task','set_task_completed','remove_task','create_project','create_assignment',
                     'update_project','set_project_status','archive_project','restore_project','create_calendar_event',
                     'update_calendar_event','cancel_calendar_event','list_daily_actions','create_daily_action',
-                    'update_daily_action','list_preparations','update_preparation','update_preparation_topic','search_inbox','get_inbox_message','list_prices','get_calendar_series','create_preparation','relink_preparation','insert_preparation_topic','remove_preparation_topic','get_focus_timer','control_focus_timer','edit_focus_queue','request_clarification'}
+                    'update_daily_action','list_preparations','update_preparation','update_preparation_topic','search_inbox','get_inbox_message','get_calendar_series','create_preparation','relink_preparation','insert_preparation_topic','remove_preparation_topic','get_focus_timer','control_focus_timer','edit_focus_queue','request_clarification'}
         self.assertEqual(runtime.PRODUCT_TOOLS, expected)
+        self.assertEqual(len(expected), 35)
+        self.assertNotIn('list_prices', runtime.PRODUCT_TOOLS)
         names = ['mcp__dcc_task__' + name for name in sorted(expected)]
         schemas = [{'type':'function','function':{'name':name,'parameters':{'type':'object','properties':{}}}} for name in names]
         status=next(t for t in schemas if t['function']['name'].endswith('__get_operation_status'))
@@ -112,6 +114,11 @@ class RuntimeTests(unittest.TestCase):
             options=modules['run_agent'].AIAgent.call_args.kwargs
             self.assertIn('list_daily_actions.id is an exact ACTION ID, never a project ID',options['ephemeral_system_prompt'])
             self.assertIn('unresolved target is incomplete, not a successful no-change',options['ephemeral_system_prompt'])
+            self.assertIn('standalone study task requires no exam date, duration or calendar',options['ephemeral_system_prompt'])
+            self.assertIn('task_topics or task_names',options['ephemeral_system_prompt'])
+            self.assertIn('Inbox tools are bounded cached read-only tools',options['ephemeral_system_prompt'])
+            self.assertNotIn('prices',options['ephemeral_system_prompt'].lower())
+            self.assertNotIn('list_prices',options['ephemeral_system_prompt'])
             self.assertEqual(options['max_iterations'],8)
             self.assertEqual(options['run_budget_seconds'],90.0)
             self.assertEqual(register.call_args.args[0]['dcc_task']['tools']['include'],sorted(expected))
@@ -217,6 +224,17 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(self.request(module, {'mode':'task-action'})[0], 503)
             self.assertEqual(self.request(module, {'mode':'product-action'})[0], 503)
             self.assertEqual(self.request(module, {'mode':'task-action'}, 'wrong')[0], 401)
+            spawn.assert_not_called()
+
+    def test_retired_prices_never_activate_connector_even_for_an_old_configured_caller(self):
+        import price_connector
+        module = self.bridge()
+        with patch.object(module.subprocess, 'run') as spawn:
+            code, body = self.request(module, {'mode': 'price-check', 'store': 'dell'})
+            self.assertEqual(code, 410)
+            self.assertTrue(body['retired'])
+            with self.assertRaisesRegex(ValueError, 'retired'):
+                price_connector.dispatch({'store': 'dell', 'enabled': True})
             spawn.assert_not_called()
 
     def test_bridge_passes_capability_only_in_env_and_leaves_legacy_parser_path_intact(self):

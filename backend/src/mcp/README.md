@@ -5,7 +5,9 @@ Fresh web composer requests use `/api/v1/hermes/actions`. The fixed HTTPS callba
 and bootstrapped Hermes launcher are described in [TASK-ACTIONS.md](TASK-ACTIONS.md).
 This is implemented source wiring, not a claim of deployment or live acceptance.
 
-## Exact product catalog (35 tools)
+## Exact active product catalog (35 tools)
+
+- `request_clarification` (bounded typed questions, no effects)
 
 - `list_tasks`, `create_task`, `update_task`, `set_task_completed`, `remove_task`
 - `list_projects`, `create_project`, `create_assignment`, `update_project`,
@@ -17,8 +19,14 @@ This is implemented source wiring, not a claim of deployment or live acceptance.
 - `list_preparations`, `update_preparation`, `update_preparation_topic`
 - `create_preparation`, `relink_preparation`, `insert_preparation_topic`,
   `remove_preparation_topic`
-- `search_inbox`, `get_inbox_message`, `list_prices`, `get_calendar_series`
+- `search_inbox`, `get_inbox_message`, `get_calendar_series`
 - `get_focus_timer`, `control_focus_timer`, `edit_focus_queue`
+
+Price tracking is retired, including UI, scheduling and provider activation.
+`list_prices` metadata is retained solely for strict historical journal decoding;
+it is not an advertised schema or an accepted new invocation. Old journals recover
+nonprice receipts without a new model run; archived price reads are omitted.
+Old authenticated price routes return HTTP410 without SQL, preserving stored rows.
 
 All DCC inference and QA constructors share the source-owned adjacent
 `backend/deploy/dcc_model_policy.py`: exact `gpt-6-luna`, no fallback. This is not
@@ -98,6 +106,10 @@ changed; action completion/reopen never completes its parent. No write capabilit
 is added to inference helpers.
 
 ## Checks
+
+The bounded web/native clarification/checklist/receipt contract is documented in
+[CLARIFICATION-RECEIPTS.md](CLARIFICATION-RECEIPTS.md), including honest unsupported
+scope, text expiry, compatibility and parent-only acceptance gates.
 
 New cache reads have small explicit page limits: daily actions ten, inbox search
 twenty-five, preparation/price pages one. Topic notes are 512-character slices with

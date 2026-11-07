@@ -10,11 +10,24 @@ import Fastify from 'fastify'
 import type { EventChange } from './calendar-write.js'
 import { registerAuth, type AuthConfig } from './auth.js'
 import {ACTION_PATH,TASK_ACTION_PATH,TASK_CALLBACK_PATH,TaskActions,TaskCallbackError} from './mcp/task-actions.js'
+import {CONVERSATION_PATH,validConversationInput} from './mcp/conversation.js'
+import {plainRecord} from './mcp/contracts.js'
 
 // Construction is separate from listening so tests require no network port.
 export function buildApp(options: { taskActions?:TaskActions; calendarRefresh?:()=>Promise<string>; plannerPool?:Pool; curator?:(input:unknown)=>Promise<unknown>; logger?: boolean | { level: string }; auth?: AuthConfig; calendarSnapshot?:()=>Promise<unknown>; calendarChange?:(change:EventChange)=>Promise<{code:number;error?:string;saved?:boolean}> } = {}) {
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 1048576 })
-  registerAuth(app, options.auth, options.taskActions?{verify:authorization=>options.taskActions!.verifyCallback(authorization)}:undefined)
+  if(options.taskActions){
+    let timer:ReturnType<typeof setInterval>|undefined,working=false
+    const expire=async()=>{
+      if(working)return;working=true
+      try{await options.taskActions!.expireConversationText()}
+      catch{app.log.warn('Hermes conversation text expiry is unavailable; execution receipts are unchanged.')}
+      finally{working=false}
+    }
+    app.addHook('onReady',async()=>{await expire();timer=setInterval(()=>void expire(),60000);timer.unref()})
+    app.addHook('onClose',async()=>{if(timer)clearInterval(timer)})
+  }
+  const authenticatedOwner=registerAuth(app, options.auth, options.taskActions?{verify:authorization=>options.taskActions!.verifyCallback(authorization)}:undefined)
   app.get('/health', async () => ({ status: 'ok', service: 'daymark-backend' }))
   app.get('/api/v1/status', async () => ({
     apiVersion: 'v1',
@@ -23,8 +36,25 @@ export function buildApp(options: { taskActions?:TaskActions; calendarRefresh?:(
   app.register(async scope => {
     // Authenticated discovery only: no capability, actor, bridge URL or secret.
     scope.get('/api/v1/hermes/capabilities',async()=>({taskActions:!!options.taskActions&&!!options.auth}))
-    scope.get('/api/v1/hermes/action-capabilities',async()=>({productActions:!!options.taskActions&&!!options.auth}))
+    scope.get('/api/v1/hermes/action-capabilities',async request=>({productActions:!!options.taskActions&&!!options.auth,conversation:!!options.taskActions&&!!options.auth,...(authenticatedOwner(request)?{workspaceOwner:authenticatedOwner(request)}:{})}))
     if(options.taskActions){
+      scope.post(CONVERSATION_PATH,{bodyLimit:20000,logLevel:'silent',config:{rateLimit:{max:12,timeWindow:'1 minute'}}},async(request,reply)=>{
+        const owner=authenticatedOwner(request)
+        if(!owner)return reply.code(401).send({message:'Sign in required'})
+        if(!plainRecord(request.body)||typeof request.body.workspaceOwner!=='string')return reply.code(400).send({message:'Use the authenticated workspace owner fence.'})
+        if(request.body.workspaceOwner!==owner)return reply.code(409).send({message:'Workspace changed. This turn was not admitted.'})
+        const {workspaceOwner:_,...input}=request.body
+        if(!validConversationInput(input))return reply.code(400).send({message:'Invalid bounded conversation request.'})
+        const abort=new AbortController(),stop=()=>abort.abort()
+        request.raw.once('aborted',stop)
+        const onClose=()=>{if(!reply.raw.writableEnded)stop()}
+        reply.raw.once('close',onClose)
+        try{return await options.taskActions!.converse(input,owner,abort.signal)}
+        catch(error){
+          const conflict=error instanceof Error&&['conversation_conflict','active_conversation','closed_question','intent_conflict','executor_conflict'].includes(error.message)
+          return reply.code(conflict?409:502).send({message:conflict?'This conversation is closed, already answered, or another request is active. No automatic resend.':'Request not confirmed. Effects may have saved. No automatic resend.'})
+        }finally{request.raw.off('aborted',stop);reply.raw.off('close',onClose)}
+      })
       scope.post(TASK_CALLBACK_PATH,{bodyLimit:65536,logLevel:'silent',config:{rateLimit:{max:128,timeWindow:'1 minute'}}},async(request,reply)=>{
         if(request.url!==TASK_CALLBACK_PATH||request.headers.cookie!==undefined||request.headers.origin!==undefined)return reply.code(403).send({error:'Task callback denied'})
         try{
@@ -65,7 +95,8 @@ export function buildApp(options: { taskActions?:TaskActions; calendarRefresh?:(
       if(!options.plannerPool)return reply.code(503).send({message:'Planner unavailable. Nothing was created.'})
       try{const result=await tellHermes(request.body,{pool:options.plannerPool,curator:options.curator,calendarChange:options.calendarChange});return reply.code(result.code).send(result)}catch{return reply.code(502).send({message:'Creation was not confirmed. Retry this same submission safely.'})}
     })
-    if(options.plannerPool){manualTaskRoutes(scope,options.plannerPool);mailRoutes(scope,options.plannerPool);priceRoutes(scope,options.plannerPool)}
+    priceRoutes(scope) // Retired compatibility endpoints never touch storage.
+    if(options.plannerPool){manualTaskRoutes(scope,options.plannerPool);mailRoutes(scope,options.plannerPool)}
     scope.get('/api/v1/planner/snapshot',async(_request,reply)=>options.plannerPool?plannerSnapshot(options.plannerPool):reply.code(503).send({error:'Planner unavailable'}))
     scope.post<{Body:{kind:string;version:number;data:Entity}}>('/api/v1/planner/entity',{schema:{body:{type:'object',required:['kind','version','data'],additionalProperties:false,properties:{kind:{enum:['project','action','preparation']},version:{type:'integer',minimum:0},data:{type:'object',required:['id','title'],properties:{id:{type:'string',format:'uuid'},title:{type:'string',minLength:1,maxLength:240}}}}}}},async(request,reply)=>{
       if(!options.plannerPool)return reply.code(503).send({error:'Planner unavailable'})

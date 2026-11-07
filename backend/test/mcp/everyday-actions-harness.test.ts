@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import {EVERYDAY_CASES,EVERYDAY_MODEL_CAP,EVERYDAY_SEED,EVERYDAY_ORIGIN,everydayOptions,everydayRequestHeaders,RECURRENCE_SENTINEL,CALENDAR_WINDOW,TASK_WINDOW} from '../acceptance/everyday-actions-cases.js'
 import {JourneyRuntime} from '../acceptance/journey-runtime.js'
 import {SyntheticCalendarProvider,expanded,calendars,PROVIDER} from '../acceptance/calendar-provider.js'
-import {TOOLS,isTool} from '../../src/mcp/contracts.js'
+import {TOOLS,ACTIVE_TOOLS,isActiveTool as isTool} from '../../src/mcp/contracts.js'
 import {validateServiceArguments} from '../../src/mcp/service-contracts.js'
 import {validManualTask} from '../../src/manual-tasks.js'
 
@@ -29,7 +29,7 @@ test('one seed/twelve requests, every expected write is a real service tool unde
   assert.equal(EVERYDAY_SEED,20261107);assert.equal(EVERYDAY_MODEL_CAP,12);assert.equal(EVERYDAY_CASES.length,12)
   assert.equal(new Set(EVERYDAY_CASES.map(c=>c.id)).size,12)
   assert.equal(EVERYDAY_CASES.reduce((n,c)=>n+c.tools.length,0),19)
-  assert.equal(Object.keys(TOOLS).length,36)
+  assert.equal(ACTIVE_TOOLS.length,35)
   for(const c of EVERYDAY_CASES){assert.ok(c.tools.length<=4);for(const tool of c.tools){assert.equal(isTool(tool),true);assert.equal(TOOLS[tool].write,true);assert.ok(!tool.includes('timer')&&!tool.includes('queue'))}}
   assert.deepEqual(EVERYDAY_CASES.find(c=>c.id==='EA09')!.tools,[])
   assert.deepEqual(EVERYDAY_CASES.slice(-3).map(c=>c.tools[0]),['create_calendar_event','update_calendar_event','cancel_calendar_event'])

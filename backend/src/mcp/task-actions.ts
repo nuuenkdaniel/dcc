@@ -2,18 +2,19 @@ import {createHash,randomBytes} from 'node:crypto'
 import type {Pool} from 'pg'
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js'
 import {JSONRPCMessageSchema,type JSONRPCMessage} from '@modelcontextprotocol/sdk/types.js'
-import {TOOLS,plainRecord,type ToolName} from './contracts.js'
+import {ACTIVE_TOOLS,plainRecord,type ToolName} from './contracts.js'
 import {canonicalJson,ServiceTransport,type ServiceOptions} from './service-transport.js'
 import {SqlIntentStore} from './intent-store.js'
 import {RequestController,type NativeMcpRun} from './request-controller.js'
 import {BrowserTimerBridge} from './browser-timer.js'
+import {Conversations,expireConversationText,type ConversationInput} from './conversation.js'
 
 export const TASK_ACTION_PATH='/api/v1/hermes/task-actions'
 export const ACTION_PATH='/api/v1/hermes/actions'
 export const TASK_CALLBACK_PATH='/api/v1/hermes/mcp-task-callback'
 export const TASK_CALLBACK_URL='https://dcc.home.captnuu.online'+TASK_CALLBACK_PATH
 const policy={executor:'mcp-action-v1' as const,allowedTools:['list_tasks','create_task','set_task_completed'] as const}
-export const PRODUCT_TOOLS=Object.freeze(Object.keys(TOOLS) as ToolName[])
+export const PRODUCT_TOOLS=ACTIVE_TOOLS
 const productPolicy={executor:'mcp-action-v1' as const,allowedTools:PRODUCT_TOOLS}
 const digest=(text:string)=>createHash('sha256').update(text).digest('hex')
 export class TaskCallbackError extends Error {constructor(readonly status:number){super('Task callback unavailable')}}
@@ -97,11 +98,14 @@ export class TaskActions {
   private readonly timerBridge=new BrowserTimerBridge()
   private readonly entries=new Map<string,{expiresAt:number;session:CallbackSession;active:()=>Promise<boolean>}>()
   private readonly controller:RequestController
+  private readonly conversations:Conversations
+  private readonly pool:Pool
   private readonly now:()=>number
   constructor(options:{pool:Pool;actorId:string;bridge:TaskBridge;now?:()=>number;issueCapability?:()=>string;calendarSnapshot?:ServiceOptions['calendarSnapshot'];guardedCalendarWriter?:ServiceOptions['guardedCalendarWriter']}){
     this.now=options.now??Date.now
-    this.controller=new RequestController({store:new SqlIntentStore(options.pool,options.actorId),
-      transport:new ServiceTransport({pool:options.pool,actorId:options.actorId,browserTimer:this.timerBridge,...(options.calendarSnapshot?{calendarSnapshot:options.calendarSnapshot}:{}),...(options.guardedCalendarWriter?{guardedCalendarWriter:options.guardedCalendarWriter}:{})}),now:this.now,
+    this.pool=options.pool
+    const store=new SqlIntentStore(options.pool,options.actorId),transport=new ServiceTransport({pool:options.pool,actorId:options.actorId,browserTimer:this.timerBridge,...(options.calendarSnapshot?{calendarSnapshot:options.calendarSnapshot}:{}),...(options.guardedCalendarWriter?{guardedCalendarWriter:options.guardedCalendarWriter}:{})})
+    this.controller=new RequestController({store,transport,now:this.now,
       nativeRunner:async run=>{
         if(this.entries.size>=8)throw new TaskCallbackError(429)
         // Generated only at invocation time, after authenticated admission/start.
@@ -122,9 +126,12 @@ export class TaskActions {
           run.signal.removeEventListener('abort',revoke);revoke();await session.close()
         }
       }})
+    this.conversations=new Conversations({pool:options.pool,store,transport,now:this.now,run:(input,signal)=>this.controller.run(input,productPolicy,signal),fence:async input=>{await store.admit({...input,purpose:'action'},productPolicy);await store.fence(input.key,this.now())}})
   }
   run(input:{key:string;prompt:string},signal?:AbortSignal){return this.controller.run(input,policy,signal)}
   runProduct(input:{key:string;prompt:string;tabId?:string},signal?:AbortSignal){return this.controller.run(input,productPolicy,signal)}
+  converse(input:ConversationInput,owner:string,signal?:AbortSignal){return this.conversations.handle(input,owner,signal)}
+  expireConversationText(){return expireConversationText(this.pool,this.now())}
   pollTimer(key:string,tabId:string){return this.timerBridge.poll(key,tabId)}
   ackTimer(key:string,tabId:string,ack:unknown){return this.timerBridge.ack(key,tabId,ack)}
   private async entry(authorization:unknown){

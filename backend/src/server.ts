@@ -1,4 +1,3 @@
-import {migratePrices} from './prices.js'
 import {migrateMail} from './mail.js'
 import {migratePlanner,callCurator} from './planner.js'
 import { buildApp } from './app.js'
@@ -15,7 +14,7 @@ try { process.loadEnvFile('.env') } catch (error) {
 }
 const config = loadConfig()
 const pool=process.env.DATABASE_URL ? new Pool({connectionString:process.env.DATABASE_URL,connectionTimeoutMillis:5000,max:5}):null
-if(pool) {await migrate(pool);await migratePlanner(pool);await migrateMail(pool);await migratePrices(pool)}
+if(pool) {await migrate(pool);await migratePlanner(pool);await migrateMail(pool)}
 const calendar=readCalendarConfig()
 const username=process.env.DAYMARK_USERNAME,password=process.env.DAYMARK_PASSWORD,origin=process.env.APP_ORIGIN
 if(origin && new URL(origin).origin!==origin) throw new Error('APP_ORIGIN must be an exact origin')

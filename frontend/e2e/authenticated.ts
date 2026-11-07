@@ -28,7 +28,7 @@ async function syntheticApi(route:Route,state:SyntheticState){
   if(path.startsWith('/api/v1/mail/html/'))return route.fulfill({json:{html:null,hasHtml:false}})
   if(path==='/api/v1/mail/page')return route.fulfill({json:{messages:[],briefing:[],accounts:[],today:'2026-10-06',total:0,nextCursor:null}})
   if(path.startsWith('/api/v1/mail/message/'))return route.fulfill({status:404,json:{error:'Synthetic message not found'}})
-  if(path==='/api/v1/prices/snapshot')return route.fulfill({json:{items:[],sources:[],history:[]}})
+  if(path==='/api/v1/prices/snapshot')return route.fulfill({status:410,json:{retired:true,error:'Price tracker retired; stored history preserved.'}})
   return route.fulfill({json:{}})
  }
  if(path==='/api/v1/auth/login')return route.fulfill({status:401,json:{error:'Synthetic login not configured for this test'}})
@@ -42,8 +42,8 @@ async function syntheticApi(route:Route,state:SyntheticState){
  if(path==='/api/v1/planner/extract')return route.fulfill({json:{topics:[],progress:''}})
  if(path==='/api/v1/mail/refresh')return route.fulfill({json:{queued:true}})
  if(path==='/api/v1/mail/preferences'){const body=request.postDataJSON() as {rules?:unknown};if(typeof body.rules==='string')state.mailRules=body.rules;return route.fulfill({json:{saved:true}})}
- if(path==='/api/v1/mail/feedback'||path==='/api/v1/prices/settings')return route.fulfill({json:{saved:true}})
- if(path==='/api/v1/prices/refresh')return route.fulfill({status:202,json:{queued:0,note:'Synthetic price check.'}})
+ if(path==='/api/v1/mail/feedback')return route.fulfill({json:{saved:true}})
+ if(path==='/api/v1/prices/refresh'||path==='/api/v1/prices/settings')return route.fulfill({status:410,json:{retired:true,error:'Price tracker retired; no checks scheduled.'}})
  return route.fulfill({json:{ok:true}})
 }
 

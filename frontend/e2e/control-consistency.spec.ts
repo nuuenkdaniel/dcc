@@ -14,7 +14,6 @@ async function expectThemed(page:Page,selector:string,pseudo?:string){
 
 test('shared controls stay themed and operable across primary routes',async({page})=>{
  await page.route('**/api/v1/calendar/snapshot',route=>route.fulfill({json:{calendars:[{id:'calendar',name:'Synthetic calendar'}],events:[],lastSuccess:new Date().toISOString()}}))
- await page.route('**/api/v1/prices/snapshot',route=>route.fulfill({json:{items:[{id:'laptop',title:'Synthetic laptop · 32 GB',target_cents:280000,paused:false}],sources:[],history:[]}}))
 
  await page.goto('/')
  await expectThemed(page,'.task-form input')
@@ -30,11 +29,9 @@ test('shared controls stay themed and operable across primary routes',async({pag
  await expectThemed(page,'.inbox-view .secondary-action')
 
  await page.goto('/prices')
- await page.getByText('Tracking settings',{exact:true}).click()
- await expectThemed(page,'.price-card input')
- await expectThemed(page,'.price-card .primary-action')
- await page.getByLabel('Target price (USD)').fill('2750')
- await page.getByRole('button',{name:'Save target',exact:true}).click()
+ await expect(page.getByRole('heading',{name:'Feature retired',exact:true})).toBeVisible()
+ await expect(page.getByRole('button',{name:'Price tracker',exact:true})).toHaveCount(0)
+ await expect(page.getByLabel('Target price (USD)')).toHaveCount(0)
 
  await page.goto('/settings')
  await expectThemed(page,'.settings-section input')

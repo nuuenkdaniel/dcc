@@ -11,6 +11,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import kotlinx.coroutines.launch
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.CancellationException
 
 @Composable fun ManualTasks(date:String,model:WorkspaceModel?=null) {
  val context=LocalContext.current
@@ -39,13 +41,38 @@ import kotlinx.coroutines.launch
    else{
      val changed=manualTasksNeedWrite(merged.first,remote.getJSONObject("data").getJSONArray("tasks").objects())
      if(changed)model.api("/api/v1/planner/manual-tasks",JSONObject().put("version",remote.getInt("version")).put("tasks",JSONArray(merged.first)))
-     val fresh=if(changed)model.api("/api/v1/planner/manual-tasks").getJSONObject("data").getJSONArray("tasks") else JSONArray(merged.first)
-    check(preferences.edit().putString("tasks",fresh.toString()).putString("sync-base",fresh.toString()).commit()){"Could not save synced tasks on this phone."}
+     val snapshot=if(changed)model.api("/api/v1/planner/manual-tasks") else remote
+     val confirmed=parseManualTaskReadback(snapshot)
+     val fresh=JSONArray(confirmed.tasks)
+    check(preferences.edit().putString("tasks",fresh.toString()).putString("sync-base",fresh.toString()).putLong("sync-base-version",confirmed.version).commit()){"Could not save synced tasks on this phone."}
     raw=fresh.toString();conflict=false;error="Tasks synced."
    }
   }catch(e:Exception){error=e.message?:"Sync unavailable; local tasks retained."}finally{syncing=false}}
- }
- Column {
+  }
+  val receipt=if(model!=null)model.hermes.state.collectAsStateWithLifecycle().value.receipt else null
+  val receiptKey=receipt?.let{JSONObject(it)}?.takeIf{it.getJSONArray("targets").objects().any{t->t.optString("kind")=="task"&&t.optString("state")=="applied"}}?.getString("key")
+  LaunchedEffect(receiptKey,receipt,syncing){
+   if(receiptKey==null||model==null||syncing)return@LaunchedEffect
+   val fence=model.hermes.ownerFence()?:return@LaunchedEffect
+   // Read-only reconciliation after a server effect. Never auto-submit the
+   // phone's offline edits, and never overwrite a newer edit or auth generation.
+   val before=preferences.getString("tasks","[]")?:"[]"
+   val baseRaw=preferences.getString("sync-base","[]")?:"[]"
+   val baseVersion=preferences.getLong("sync-base-version",0L)
+   try{
+    val remote=model.hermesTaskReadback(fence)
+    val currentReceipt=model.hermes.state.value.receipt?.let{JSONObject(it).optString("key")}
+    if(!model.hermes.isCurrent(fence)||syncing||currentReceipt!=receiptKey||preferences.getString("tasks","[]")!=before||preferences.getString("sync-base","[]")!=baseRaw||preferences.getLong("sync-base-version",0L)!=baseVersion)return@LaunchedEffect
+    val merged=mergeManualTaskReadback(baseRaw,before,remote,baseVersion)?:return@LaunchedEffect
+    if(merged.conflicts.isNotEmpty()){conflict=true;error="Hermes saved server tasks. Local conflicts are retained; use Sync tasks to review."}
+    else{
+     check(preferences.edit().putString("tasks",merged.tasks).putString("sync-base",merged.base).putLong("sync-base-version",merged.version).commit()){"Could not cache the server tasks; offline edits retained."}
+     raw=merged.tasks
+    }
+   }catch(e:CancellationException){throw e}
+   catch(_:Exception){if(model.hermes.isCurrent(fence))error="Hermes receipt retained. Could not refresh tasks; local edits are unchanged."}
+  }
+  Column {
   TextButton(onClick={sync()},enabled=model!=null&&!syncing){Text(if(syncing)"Syncing tasks…" else "Sync tasks")}
   if(conflict){TextButton(onClick={sync("local")},enabled=!syncing){Text("Keep local conflicting edits")};TextButton(onClick={sync("remote")},enabled=!syncing){Text("Keep remote conflicting edits")}}
   OutlinedTextField(title,{title=it},label={Text("Add a task")},modifier=Modifier.fillMaxWidth(),singleLine=true,enabled=!syncing)

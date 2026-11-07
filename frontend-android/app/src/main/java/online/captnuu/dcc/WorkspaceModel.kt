@@ -33,6 +33,12 @@ class WorkspaceModel(application:Application):AndroidViewModel(application) {
     private val sessions=PersistentSessionJar(EncryptedSessionStorage(application),ORIGIN.toHttpUrl())
     private val client = OkHttpClient.Builder().callTimeout(20,TimeUnit.SECONDS)
         .followRedirects(false).followSslRedirects(false).cookieJar(sessions).build()
+    val hermes=HermesConversationController(viewModelScope,{owner->EncryptedSessionStorage(application,"hermes-$owner.enc",strict=true)},{body->api("/api/v1/hermes/conversation",body)})
+    private suspend fun bindHermes(session:JSONObject){
+        val owner=session.optString("workspaceOwner")
+        if(Regex("^[a-f0-9]{64}$").matches(owner))hermes.bind(owner) else hermes.unbind()
+        try{hermes.availability(api("/api/v1/hermes/action-capabilities").optBoolean("conversation",false));hermes.readReceipt()}catch(_:Exception){hermes.availability(false)}
+    }
     init { connectivity.registerDefaultNetworkCallback(networkCallback);viewModelScope.launch {
         try { withContext(Dispatchers.IO){sessions.restore()
             if(sessions.hasSession()){mutable.value=mutable.value.copy(pending=queue.list().map{it.toString()})};if(sessions.hasSession())cache.read()?.let {raw->
@@ -45,31 +51,54 @@ class WorkspaceModel(application:Application):AndroidViewModel(application) {
         }
         finally {mutable.value=mutable.value.copy(restoring=false,busy=false)}
     } }
-    override fun onCleared(){connectivity.unregisterNetworkCallback(networkCallback);super.onCleared()}
+    override fun onCleared(){hermes.unbind();connectivity.unregisterNetworkCallback(networkCallback);super.onCleared()}
     private suspend fun restoreSession() {
-        if(!withContext(Dispatchers.IO){sessions.hasSession()}) {mutable.value=WorkspaceState();return}
+        if(!withContext(Dispatchers.IO){sessions.hasSession()}) {hermes.unbind();mutable.value=WorkspaceState();return}
         val result=JSONObject(request("/api/v1/auth/session"))
         if(!result.getBoolean("authenticated")) {
+            hermes.unbind()
             withContext(Dispatchers.IO){sessions.clear();clearWorkspaceCache()}
             mutable.value=WorkspaceState(notice="Session expired. Please sign in again.");return
         }
         mutable.value=mutable.value.copy(signedIn=true,restoring=false,restorePending=false,notice="Signed in")
+        bindHermes(result)
         refreshAll()
     }
-    private suspend fun request(path:String,body:JSONObject?=null):String = withContext(Dispatchers.IO) {
+    private suspend fun request(path:String,body:JSONObject?=null,ownerFence:HermesOwnerFence?=null):String {
+      val scoped=path=="/api/v1/hermes/conversation"||ownerFence!=null
+      val fence=ownerFence?:if(scoped)hermes.ownerFence()?.takeIf{it.owner==body?.optString("workspaceOwner")} else null
+      return withContext(Dispatchers.IO) {
         val builder=Request.Builder().url(ORIGIN+path).header("Origin",ORIGIN)
         if(body!=null) builder.post(body.toString().toRequestBody("application/json".toMediaType()))
-        val callClient=if(path.endsWith("/extract")||path.endsWith("/session")||path.endsWith("/material"))client.newBuilder().callTimeout(180,TimeUnit.SECONDS).build() else client
+        val callClient=if(path=="/api/v1/hermes/conversation")client.newBuilder().callTimeout(180,TimeUnit.SECONDS).retryOnConnectionFailure(false).build() else if(path.endsWith("/extract")||path.endsWith("/session")||path.endsWith("/material"))client.newBuilder().callTimeout(180,TimeUnit.SECONDS).build() else client
         callClient.newCall(builder.build()).execute().use { response ->
             if(response.code==401) {
-                sessions.clear();clearWorkspaceCache()
-                mutable.value=WorkspaceState(busy=true)
+                withContext(Dispatchers.Main.immediate){
+                    // A delayed response from a prior Hermes/account generation
+                    // must not erase a subsequently restored or signed-in session.
+                    if(!scoped||fence!=null&&hermes.isCurrent(fence)){
+                        hermes.unbind();sessions.clear();clearWorkspaceCache()
+                        mutable.value=WorkspaceState(busy=true)
+                    }
+                }
                 throw IllegalStateException("Sign-in required. Check credentials or sign in again.")
             }
             if(response.code==409) throw IllegalStateException("Changed on another device. Refresh before retrying.")
             check(response.isSuccessful) { "Request failed (HTTP ${response.code})." }
             response.body?.string() ?: "{}"
         }
+      }
+    }
+    suspend fun hermesTaskReadback(fence:HermesOwnerFence):ManualTaskReadback {
+        check(hermes.isCurrent(fence)){"Workspace changed"}
+        return parseManualTaskReadback(JSONObject(request("/api/v1/planner/manual-tasks",ownerFence=fence)))
+    }
+    suspend fun mailSettingsApi(path:String,body:JSONObject?,fence:HermesOwnerFence):JSONObject {
+        require(path in setOf("/api/v1/mail/preferences","/api/v1/mail/refresh"))
+        check(hermes.isCurrent(fence)){"Workspace changed"}
+        val result=JSONObject(request(path,body,ownerFence=fence))
+        check(hermes.isCurrent(fence)){"Workspace changed"}
+        return result
     }
     private fun operation(block:suspend ()->Unit) {
         if(mutable.value.busy)return
@@ -81,8 +110,9 @@ class WorkspaceModel(application:Application):AndroidViewModel(application) {
         }
     }
     fun signIn(username:String,password:String)=operation {
-        request("/api/v1/auth/login",JSONObject().put("username",username).put("password",password))
+        val session=JSONObject(request("/api/v1/auth/login",JSONObject().put("username",username).put("password",password)))
         mutable.value=mutable.value.copy(signedIn=true,restorePending=false,notice="Signed in")
+        bindHermes(session)
         refreshAll()
     }
     private suspend fun queueState(){val entries=withContext(Dispatchers.IO){queue.list().map{it.toString()}};mutable.value=mutable.value.copy(pending=entries)}
@@ -116,7 +146,7 @@ class WorkspaceModel(application:Application):AndroidViewModel(application) {
     }
     private suspend fun refreshAll() {
         flushQueue()
-        for(name in listOf("planner","calendar","mail","prices")) {
+        for(name in listOf("planner","calendar","mail")) {
             val snapshot=request(if(name=="mail")"/api/v1/mail/page" else "/api/v1/$name/snapshot")
             mutable.value=mutable.value.copy(snapshots=mutable.value.snapshots+(name to snapshot))
             withContext(Dispatchers.IO){cache.write(JSONObject(mutable.value.snapshots).toString())}
@@ -161,10 +191,11 @@ class WorkspaceModel(application:Application):AndroidViewModel(application) {
         val fresh=request("/api/v1/planner/snapshot")
         mutable.value=mutable.value.copy(snapshots=mutable.value.snapshots+("planner" to fresh))
     }
-    fun refresh()=operation { if(mutable.value.signedIn)refreshAll() else restoreSession() }
+    fun refresh()=operation { if(mutable.value.signedIn){bindHermes(api("/api/v1/auth/session"));refreshAll()} else restoreSession() }
     fun signOut()=operation {
         queueState()
         check(mutable.value.pending.isEmpty()){"Sync or explicitly discard pending edits before signing out."}
+        hermes.unbind()
         var revoked=false
         try { request("/api/v1/auth/logout",JSONObject());revoked=true }
         catch(_:java.io.IOException) { /* Local logout must still work offline. */ }

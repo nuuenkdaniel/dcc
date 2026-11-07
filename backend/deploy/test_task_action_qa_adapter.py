@@ -51,7 +51,7 @@ class AdapterTests(unittest.TestCase):
         runtime.run_action.assert_not_called()
 
     def test_bootstrapped_entry_calls_production_function_not_an_alternate_loop(self):
-        evidence = {'model': 'gpt-6-luna', 'schemaCount': 36, 'schemaSha256': 'b'*64, 'schemasUnchanged': True}
+        evidence = {'model': 'gpt-6-luna', 'schemaCount': 35, 'schemaSha256': 'b'*64, 'schemasUnchanged': True}
         runtime = types.SimpleNamespace(capability_environment=Mock(return_value=('a'*64, 12345)), quiet_runtime=contextlib.nullcontext, run_action=Mock(return_value=evidence))
         with patch.object(qa, 'load', return_value=runtime), patch.dict(os.environ, {'DCC_QA_RUNTIME_APPROVED': 'synthetic-loopback-model'}, clear=True), \
                 patch.object(sys, 'argv', [str(PATH), '--bootstrapped']), patch.object(sys, 'stdin', io.StringIO('{"prompt":"Synthetic QA"}')), \

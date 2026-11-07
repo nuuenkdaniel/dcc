@@ -1,13 +1,13 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {AjvJsonSchemaValidator} from '@modelcontextprotocol/sdk/validation/ajv'
-import {TOOLS,validateArguments,type ToolName} from '../../src/mcp/contracts.js'
+import {TOOLS,ACTIVE_TOOLS,validateArguments,type ToolName} from '../../src/mcp/contracts.js'
 import {inputSchema} from '../../src/mcp/schemas.js'
 import {parseMode} from '../../src/mcp/stdio.js'
 
 test('discovery schemas derive required fields and strict allowlists from domain rules without coercion',()=>{
   const provider=new AjvJsonSchemaValidator()
-  for(const name of Object.keys(TOOLS) as ToolName[]){
+  for(const name of ACTIVE_TOOLS){
     const schema=inputSchema(name),fields=TOOLS[name].fields
     assert.deepEqual(Object.keys(schema.properties??{}).sort(),Object.keys(fields).sort())
     assert.equal(schema.additionalProperties,false)

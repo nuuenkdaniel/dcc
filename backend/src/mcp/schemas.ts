@@ -9,6 +9,7 @@ export function inputSchema(name:ToolName):Tool['inputSchema'] {
   return schemaForDefinition(name,TOOLS[name])
 }
 export function schemaForDefinition(name:ToolName,definition:Definition):Tool['inputSchema'] {
+  if(name==='list_prices')throw Error('Retired price tool has no active schema')
   const fields=Object.entries(definition.fields)
   const allOf:Record<string,unknown>[]=[]
   if(definition.patch)allOf.push({anyOf:definition.patch.map(field=>({required:[field]}))})

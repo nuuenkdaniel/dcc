@@ -73,6 +73,7 @@ export const TOOLS={
   remove_preparation_topic:{write:true,capability:'planner:write',fields:{...edit,topicId:id}},
   search_inbox:{write:false,capability:'inbox:read',fields:{...page,query:text(200),account:enumeration('all','personal','school','work'),importantOnly:boolean}},
   get_inbox_message:{write:false,capability:'inbox:read',fields:{id,offset:integer(0,1000000),limit:integer(1,10000)}},
+  // Historical journal decoder ONLY. Never an active tool/schema/capability.
   list_prices:{write:false,capability:'prices:read',fields:page},
   get_calendar_series:{write:false,capability:'calendars:read',fields:{calendarId:id,eventId:id}},
   get_focus_timer:{write:false,capability:'timer:read',fields:{}},
@@ -80,6 +81,8 @@ export const TOOLS={
   edit_focus_queue:{write:true,capability:'timer:write',fields:{...edit,action:enumeration('add','remove','move'),miniId:optional(id),beforeId:optional(id),name:optional(text(240,true)),minutes:optional(integer(1,120))}},
 } satisfies Record<string,Definition>
 export type ToolName=keyof typeof TOOLS
+export const ACTIVE_TOOLS=Object.freeze((Object.keys(TOOLS) as ToolName[]).filter(name=>name!=='list_prices'))
+export function isActiveTool(value:unknown):value is ToolName{return isTool(value)&&value!=='list_prices'}
 export type Command={tool:ToolName;args:Arguments}
 export function isTool(value:unknown):value is ToolName {return typeof value==='string'&&Object.hasOwn(TOOLS,value)}
 export const isCreation=(tool:ToolName)=>['create_task','create_project','create_assignment','create_calendar_event','create_daily_action','create_preparation','control_focus_timer','edit_focus_queue'].includes(tool)
@@ -100,8 +103,9 @@ function interval(from:Scalar|undefined,to:Scalar|undefined,maxDays:number){
   return typeof from==='string'&&typeof to==='string'&&Date.parse(to)>Date.parse(from)&&Date.parse(to)-Date.parse(from)<=maxDays*DAY
 }
 export type Validation={valid:true;args:Arguments}|{valid:false;code:'invalid_arguments'|'unsupported_recurrence'}
-export function validateArguments(name:string,value:unknown):Validation {
+export function validateArguments(name:string,value:unknown,historical=false):Validation {
   if(!isTool(name)||!plainRecord(value))return {valid:false,code:'invalid_arguments'}
+  if(name==='list_prices'&&!historical)return {valid:false,code:'invalid_arguments'}
   const definition:Definition=TOOLS[name]
   if(definition.write&&(['recurrence','recurrenceId','rrule','rdate','exdate','seriesId'].some(key=>Object.hasOwn(value,key))||name.includes('calendar_event')&&value.scope!=='single'))return {valid:false,code:'unsupported_recurrence'}
   if(!matches(value,definition.fields))return {valid:false,code:'invalid_arguments'}

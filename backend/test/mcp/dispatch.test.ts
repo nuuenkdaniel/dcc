@@ -1,7 +1,7 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {Dispatcher, type Context} from '../../src/mcp/dispatcher.js'
-import {TOOLS, validateArguments} from '../../src/mcp/contracts.js'
+import {TOOLS,ACTIVE_TOOLS, validateArguments} from '../../src/mcp/contracts.js'
 import {FakeTransport} from '../../src/mcp/fake-transport.js'
 
 const action:Context={purpose:'action',capabilities:['tasks:read','tasks:write','projects:read','projects:write','calendars:read','calendars:write','operations:read']}
@@ -22,7 +22,7 @@ test('writes default deny, and parser/planner/extraction cannot dispatch even wi
 
 test('all tools enforce their capability and writes require action context',async()=>{
   const fake=new FakeTransport(),dispatcher=new Dispatcher(fake)
-  for(const [name,definition] of Object.entries(TOOLS)){
+  for(const name of ACTIVE_TOOLS){const definition=TOOLS[name]
     assert.deepEqual(await dispatcher.dispatch(name,{}, {purpose:'action',capabilities:[]}),{state:'rejected',code:'forbidden'},name)
     if(definition.write)assert.deepEqual(await dispatcher.dispatch(name,{}, {purpose:'parser',capabilities:action.capabilities}),{state:'rejected',code:'forbidden'},name)
   }
@@ -197,13 +197,12 @@ test('every tool has an exact allowlist and the registry exposes no generic exec
     remove_preparation_topic:{operationKey:task.operationKey,id:'Preparation_A',expectedVersion:1,topicId:'Topic_A'},
     search_inbox:{limit:1,query:'synthetic',account:'all',importantOnly:false},
     get_inbox_message:{id:'Cached_Message',offset:0,limit:100},
-    list_prices:{limit:1},
     get_calendar_series:{calendarId:event.calendarId,eventId:id},
     get_focus_timer:{},
     control_focus_timer:{id:'Timer_Operation',operationKey:task.operationKey,expectedVersion:1,action:'start'},
     edit_focus_queue:{id:'Timer_Operation',operationKey:task.operationKey,expectedVersion:1,action:'add',name:'Synthetic focus',minutes:5},
   }
-  assert.deepEqual(Object.keys(TOOLS).sort(),Object.keys(valid).sort())
+  assert.deepEqual([...ACTIVE_TOOLS].sort(),Object.keys(valid).sort())
   for(const [name,args] of Object.entries(valid)){
     assert.equal(validateArguments(name,args).valid,true,name)
     for(const extra of ['url','sql','route','shell','authorization','context','capabilities','profile'])assert.equal(validateArguments(name,{...args,[extra]:'forbidden'}).valid,false,`${name}: ${extra}`)

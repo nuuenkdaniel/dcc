@@ -1,6 +1,5 @@
 import {ManualTaskSync} from './ManualTaskSync'
 import {TellHermes} from './TellHermes'
-import {Prices} from './Prices'
 import {useMail} from './useMail'
 import {EmailSummary} from './EmailSummary'
 import {usePlanner,studyCardCount,visibleActionGroups,visiblePlanGroups} from './usePlanner'
@@ -437,7 +436,6 @@ export function Workspace() {
         <button type="button" aria-label="Inbox" title={sidebarCollapsed ? 'Inbox' : undefined} className={`nav-item ${previewView === 'inbox' ? 'active' : ''}`} onClick={() => navigate('inbox')}><span className="nav-icon">▣</span><span className="nav-label">Inbox</span></button>
         <button type="button" aria-label="Focus" title={sidebarCollapsed ? 'Focus' : undefined} className={`nav-item ${previewView === 'pomodoro' ? 'active' : ''}`} onClick={() => navigate('pomodoro')}><span className="nav-icon">◷</span><span className="nav-label">Focus</span></button>
         <button type="button" aria-label="Projects" title="Projects" className={`nav-item ${previewView === 'projects' ? 'active' : ''}`} onClick={()=>navigate('projects')}><span className="nav-icon">◫</span><span className="nav-label">Projects</span></button>
-        <button type="button" aria-label="Price tracker" title="Price tracker" className={`nav-item ${previewView === 'prices' ? 'active' : ''}`} onClick={()=>navigate('prices')}><span className="nav-icon">◇</span><span className="nav-label">Prices</span></button>
       </nav>
       <div className="sidebar-utilities">
       <button type="button" className={`nav-item settings-nav ${previewView === 'settings' ? 'active' : ''}`} aria-label="Settings" title="Settings" onClick={() => navigate('settings')}><svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 3-1 2 3 3-1 1-3 3-1 1-3-2-2 1-3-3-2-3 1-2-3Z"/><circle cx="12" cy="11" r="3"/></svg><span className="nav-label">Settings</span></button>
@@ -452,7 +450,7 @@ export function Workspace() {
       {import.meta.env.DEV && <DevToolbar view={previewView} sampleData={showSampleData} onViewChange={navigate} onSampleDataChange={setShowSampleData} />}
          <main className="app-shell">
           {sidebar}
-          {previewView === 'prices' ? <Prices/> : previewView === 'projects' ? <Projects planner={planner}/> : previewView === 'settings' ? <Settings {...preferencesState} /> : previewView === 'inbox' ? (
+          {previewView === 'prices' ? <section className="content"><h1>Feature retired</h1><p>Price tracking is no longer available. Stored history is preserved; no checks are scheduled.</p></section> : previewView === 'projects' ? <Projects planner={planner}/> : previewView === 'settings' ? <Settings {...preferencesState} /> : previewView === 'inbox' ? (
             <Inbox mail={mail} />
           ) : previewView === 'pomodoro' ? (
             <PomodoroView />

@@ -1,5 +1,5 @@
 import {afterEach,beforeEach,expect,test,vi} from 'vitest'
-import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react'
+import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react'
 import {TellHermes} from './TellHermes'
 import {protectedFetch} from './auth'
 vi.mock('./auth',()=>({protectedFetch:vi.fn()}))
@@ -7,8 +7,8 @@ const commandFetch=vi.hoisted(()=>vi.fn())
 const STORAGE='dcc.tell-hermes.submission.v1'
 let enabled=true
 beforeEach(()=>{
- localStorage.clear();enabled=true;commandFetch.mockReset();vi.mocked(protectedFetch).mockReset()
- vi.mocked(protectedFetch).mockImplementation(async(input,init)=>['/api/v1/hermes/capabilities','/api/v1/hermes/action-capabilities'].includes(String(input))?new Response(JSON.stringify({taskActions:enabled,productActions:enabled})):commandFetch(input,init))
+ localStorage.clear();sessionStorage.clear();enabled=true;commandFetch.mockReset();vi.mocked(protectedFetch).mockReset()
+ vi.mocked(protectedFetch).mockImplementation(async(input,init)=>['/api/v1/hermes/capabilities','/api/v1/hermes/action-capabilities'].includes(String(input))?new Response(JSON.stringify({taskActions:enabled,productActions:enabled,conversation:false})):commandFetch(input,init))
 })
 afterEach(()=>{cleanup();vi.restoreAllMocks();vi.useRealTimers()})
 const command=()=>screen.getByRole('textbox',{name:'Ask Hermes about tasks, projects, or calendar'})
@@ -156,8 +156,31 @@ test('a late receipt refreshes known effects but cannot overwrite a different ta
 
 test.each([401,503])('unavailable discovery (%s) blocks sending, never editing, without legacy fallback',async status=>{
  vi.mocked(protectedFetch).mockResolvedValueOnce(new Response('{}',{status}))
- render(<TellHermes onCreated={vi.fn()}/>);await waitFor(()=>expect(protectedFetch).toHaveBeenCalled())
+ await act(async()=>{render(<TellHermes onCreated={vi.fn()}/>)});expect(protectedFetch).toHaveBeenCalledTimes(1)
  expect(command()).toBeEnabled();enter('');enter('Editable offline');submit();expect(commandFetch).not.toHaveBeenCalled();expect(screen.queryByRole('combobox')).toBeNull()
+})
+test('discovery keeps an editable DOM input and cannot discard typing or dispatch before confirmation',async()=>{
+ let finish!:(r:Response)=>void
+ vi.mocked(protectedFetch).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve}))
+ render(<TellHermes onCreated={vi.fn()}/>);const original=command()
+ original.focus();enter('Typed while discovering');submit()
+ expect(original).toBeEnabled();expect(command()).toBe(original);expect(commandFetch).not.toHaveBeenCalled()
+ finish(new Response(JSON.stringify({productActions:true,conversation:false})))
+ await ready();expect(command()).toBe(original);expect(command()).toHaveValue('Typed while discovering');expect(command()).toHaveFocus()
+})
+test('malformed conversation capability never falls back to the compatibility action executor',async()=>{
+ vi.mocked(protectedFetch).mockResolvedValueOnce(new Response(JSON.stringify({productActions:true,conversation:true,workspaceOwner:'invalid-owner'})))
+ await act(async()=>{render(<TellHermes onCreated={vi.fn()}/> )})
+ await screen.findByText(/MCP actions are unavailable/);enter('Editable despite malformed discovery');submit()
+ expect(command()).toHaveValue('Editable despite malformed discovery');expect(commandFetch).not.toHaveBeenCalled()
+})
+test('confirmed conversation upgrade transfers the pending editor text and focus without sending',async()=>{
+ let finish!:(r:Response)=>void
+ vi.mocked(protectedFetch).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve}))
+ render(<TellHermes onCreated={vi.fn()}/>);command().focus();enter('Typed before v2 discovery')
+ finish(new Response(JSON.stringify({productActions:true,conversation:true,workspaceOwner:'a'.repeat(64)})))
+ await waitFor(()=>expect(command()).toHaveAttribute('id','hermes-conversation-input'))
+ expect(command()).toHaveValue('Typed before v2 discovery');expect(command()).toHaveFocus();expect(commandFetch).not.toHaveBeenCalled()
 })
 test('disabled old task request is retained and never sent to legacy',async()=>{
  enabled=false;const old=seed('tasks');render(<TellHermes onCreated={vi.fn()}/>)
@@ -227,7 +250,7 @@ test('project and saved calendar receipts refresh exact domains and disclose pen
 })
 
 test('daily action/preparation receipts refresh planner only and bounded cache reads never manufacture effects',async()=>{
- commandFetch.mockImplementation(async()=>receipt({...summary([{tool:'update_daily_action',state:'applied',id:'daily-id',version:2},{tool:'update_preparation_topic',state:'applied',id:'preparation-id',version:3}]),reads:[{tool:'search_inbox',data:{items:[],nextOffset:null}},{tool:'list_prices',data:{items:[],nextOffset:null}}]}))
+ commandFetch.mockImplementation(async()=>receipt({...summary([{tool:'update_daily_action',state:'applied',id:'daily-id',version:2},{tool:'update_preparation_topic',state:'applied',id:'preparation-id',version:3}]),reads:[{tool:'search_inbox',data:{items:[],nextOffset:null}}]}))
  const created=vi.fn();render(<TellHermes onCreated={created}/>);await ready();enter();submit()
  await screen.findByText('Authoritative results')
  expect(created.mock.calls).toEqual([['projects']]);expect(stored().settled).toBe(true)
