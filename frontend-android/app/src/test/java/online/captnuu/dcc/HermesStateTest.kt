@@ -33,7 +33,8 @@ class HermesStateTest {
         controller.edit("Unsent answer survives restore")
         val restored=HermesConversationController(scope,{memory},{body->operations+=body.getString("op");assertFalse(body.has("answer"));question(savedKey)})
         restored.bind(owner);restored.readReceipt();assertEquals(listOf("start","read"),operations)
-        assertEquals("Study 3 CSE354 chunks today in my tasks",restored.state.value.draft)
+        assertEquals("",restored.state.value.draft)
+        assertEquals("Study 3 CSE354 chunks today in my tasks",JSONObject(restored.state.value.view!!).getString("original"))
         assertEquals("Unsent answer survives restore",restored.state.value.answer)
         assertNull(restored.state.value.attemptKey);scope.cancel()
     }

@@ -5,11 +5,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalInspectionMode
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.*
@@ -101,5 +104,69 @@ class HermesComposerTest {
             compose.onNodeWithText("Original request: "+fixture.getJSONObject("question").getString("original")).performScrollTo().assertIsDisplayed()
             assertEquals(1,calls)
         }finally{scope.cancel()}
+    }
+    @Test fun imeSendMovesExactTextToExpandableItemAndKeepsFreshDraftBesideReceipt(){
+        val fixture=fixtures();val owner="a".repeat(64);val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate)
+        val memory=object:SessionStorage{var raw:String?=null;override fun read()=raw;override fun write(value:String){raw=value};override fun clear(){raw=null}}
+        val gate=CompletableDeferred<JSONObject>();val requests=mutableListOf<JSONObject>()
+        val controller=HermesConversationController(scope,{memory},{body->requests+=JSONObject(body.toString());gate.await()},{1794016800000L})
+        val message="Synthetic submitted request with exact wording retained for review"
+        try{
+            compose.activityRule.scenario.onActivity{it.enableEdgeToEdge()}
+            compose.runOnIdle{controller.bind(owner);controller.availability(true)}
+            compose.setContent{
+                val state by controller.state.collectAsStateWithLifecycle()
+                CompositionLocalProvider(LocalInspectionMode provides true){DccTheme{
+                    Workspace(WorkspaceState(signedIn=true,notice="Signed in",snapshots=mapOf("planner" to "{\"projects\":[],\"actions\":[]}","calendar" to "{\"events\":[],\"calendars\":[]}","mail" to "{\"messages\":[]}")),{_,_->},{},{},{_,_->},{_,_->},hermesContent={modifier->
+                        HermesComposer(state,controller::edit,controller::send,controller::newRequest,controller::dismiss,controller::readReceipt,modifier=modifier,docked=true)
+                    })
+                }}
+            }
+            compose.onNodeWithTag("hermes-editor").performClick().performTextInput(message)
+            compose.waitUntil(5000){compose.onAllNodesWithTag("main-navigation").fetchSemanticsNodes().isEmpty()}
+            compose.onNodeWithTag("hermes-editor").performImeAction()
+            assertEquals("",compose.onNodeWithTag("hermes-editor").fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
+            compose.onNodeWithTag("hermes-submitted").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText(message).assertExists()
+            compose.onNodeWithText("Sent request · Sending — not confirmed saved").assertIsDisplayed()
+            compose.onNodeWithTag("hermes-submitted").performClick()
+            compose.onNodeWithText(message).assertIsDisplayed()
+            compose.waitUntil(5000){compose.onAllNodesWithTag("main-navigation").fetchSemanticsNodes().isNotEmpty()}
+            val dock=compose.onNodeWithTag("hermes-dock").fetchSemanticsNode().boundsInRoot
+            val page=compose.onNodeWithTag("workspace-page").fetchSemanticsNode().boundsInRoot
+            val editor=compose.onNodeWithTag("hermes-editor").fetchSemanticsNode().boundsInRoot
+            assertTrue(page.height>0f&&page.bottom<=dock.top+1f)
+            assertTrue(editor.height>0f&&editor.top>=dock.top-1f&&editor.bottom<=dock.bottom+1f)
+            compose.runOnIdle{controller.send();assertEquals(1,requests.size)}
+            compose.onNodeWithTag("hermes-editor").performTextInput("Fresh unsent draft")
+            compose.runOnIdle{
+                assertTrue(controller.state.value.busy)
+                val body=requests.single();val complete=JSONObject(fixture.getJSONObject("complete").toString()).put("rootKey",body.getString("key")).put("turnKey",body.getString("key"))
+                complete.getJSONObject("receipt").put("key",body.getString("key"));gate.complete(complete)
+            }
+            compose.onNodeWithTag("hermes-editor").assertTextContains("Fresh unsent draft")
+            compose.onNodeWithText("Sent request · Saved · 3/3").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("View").performScrollTo().performClick()
+            compose.onNodeWithText("task · synthetic-task-3 · applied · verified").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("Dismiss").performScrollTo().performClick()
+            compose.onNodeWithTag("hermes-editor").assertTextContains("Fresh unsent draft")
+            compose.runOnIdle{assertEquals(1,requests.size)}
+        }finally{scope.cancel()}
+    }
+    @Test fun submittedPartialItemKeepsFreshEditorAndReceiptRecoveryWithoutClaimingSaved(){
+        val fixture=fixtures().getJSONObject("complete");val receipt=JSONObject(fixture.getJSONObject("receipt").toString())
+        receipt.put("outcome","partial").put("verified",2).put("line","Incomplete: 2/3 tasks verified.");receipt.getJSONArray("targets").remove(2)
+        val sent=HermesSubmitted(fixture.getString("rootKey"),fixture.getString("turnKey"),"Exact submitted synthetic request",false,fixture.getLong("expiresAt"))
+        compose.setContent{DccTheme{ComposerViewport{
+            HermesComposer(HermesState(draft="Fresh unsent draft",receipt=receipt.toString(),rootKey=sent.rootKey,attemptKey=sent.turnKey,submitted=sent),{},{},{},{})
+        }}}
+        compose.onNodeWithTag("hermes-editor").assertTextContains("Fresh unsent draft")
+        compose.onNodeWithText("Sent request · Partial · 2/3").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("hermes-submitted").performClick()
+        compose.onNodeWithText("Exact submitted synthetic request").assertIsDisplayed()
+        compose.onNodeWithText("Sent request · Saved · 3/3").assertDoesNotExist()
+        compose.onNodeWithText("Check receipt").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("View").performScrollTo().performClick()
+        compose.onNodeWithText("task · synthetic-task-2 · applied · verified").performScrollTo().assertIsDisplayed()
     }
 }

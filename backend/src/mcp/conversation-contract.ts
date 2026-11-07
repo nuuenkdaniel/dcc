@@ -45,12 +45,15 @@ export function interpretTasks(original:string,answers:string[],today:string):In
   const explicit=/^(?:please\s+)?(?:add|create|put)\s+(?:exactly\s+)?(?<count>[1-4]|one|two|three|four)?\s*(?:named\s+)?tasks?\s+(?:for\s+)?today\s*:\s*(?<titles>.*?)\s*$/i.exec(text)
   const sentence=/^I need to study (?:the\s+first\s+|first\s+)?(?<count>[1-4]|one|two|three|four)\s+(?:study\s+)?chunks? today(?<beforeTopics>\s+using specific topics)?[,.]?\s+(?:can you\s+)?put (?:that|them) (?:in my tasks|on my task list)(?<topics>\s+using specific topics)?(?:\s*:\s*(?<titles>.*?))?[?.!]?\s*$/i.exec(body)
   const command=!context?/^(?:please\s+)?(?:add|create|put)\s+(?:exactly\s+)?(?:the\s+first\s+|first\s+)?(?<count>[1-4]|one|two|three|four)\s+(?:study\s+)?chunks?\s+(?:for\s+)?today(?<topics>\s+using specific topics)?(?:\s*:\s*(?<titles>.*?))?[.!]?\s*$/i.exec(body):null
-  const study=sentence??command
+  // The mobile wording is a complete four-clause form. Every clause is matched;
+  // this must never become a search for a course/count inside arbitrary prose.
+  const mobile=/^I have a (?<course>[a-z]{2,6}\s?\d{3,4}) exam coming up[.,!]?\s+I broke my studying into chunks[.,!]?\s+I(?:['’]?m| am) doing (?<count>[1-4]|one|two|three|four)\s+chunks? today[.,!]?\s+Can you (?:throw|put) that (?:on my tasks|on my task list|in my tasks)(?<topics>\s+using specific topics)?(?:\s*:\s*(?<titles>.*?))?[?.!]?\s*$/i.exec(text)
+  const study=sentence??command??mobile
   if(!explicit&&!study)return {kind:'unsupported'}
   const countText=(explicit??study)?.groups?.count
   const words:Record<string,number>={one:1,two:2,three:3,four:4}
   const requested=countText?(words[countText.toLowerCase()]??Number(countText)):undefined
-  const course=context?.groups?.course?.replace(/\s/g,'').toUpperCase()
+  const course=(context?.groups?.course??mobile?.groups?.course)?.replace(/\s/g,'').toUpperCase()
   const supplied=(explicit??study)?.groups?.titles
   const topics=!!(study?.groups?.topics||study?.groups?.beforeTopics)
   const valid=(titles:string[]|undefined):titles is string[]=>!!titles&&titles.length>=1&&titles.length<=4&&(requested===undefined||titles.length===requested)&&titles.every(t=>t.length<=200&&!!t&&!/[\n\r:]/.test(t))&&new Set(titles.map(t=>t.toLowerCase())).size===titles.length

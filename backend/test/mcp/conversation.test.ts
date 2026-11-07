@@ -17,6 +17,7 @@ import type {Command,Result} from '../../src/mcp/contracts.js'
 const clientId='11111111-1111-4111-a111-111111111111',owner='synthetic-owner'
 const original='I have an exam coming up for CSE354 I need to study 3 chunks today can you put that in my tasks'
 const actual='I am studying for an upcoming midterm I need to study the first 3 chunks today. Can you put that on my task list?'
+const mobile='i have a CSE 354 exam coming up. I broke my studying into chunks. Im doing 3 chunks today. Can you throw that on my tasks?'
 const questionRequest=original+' using specific topics'
 const policy={executor:'mcp-action-v1' as const,allowedTools:ACTIVE_TOOLS}
 function setup(limit=3,prompt=questionRequest){
@@ -115,7 +116,7 @@ test('zero effects is not done; read-only is distinct; calendar saved never mean
   assert.equal(receipt.targets[0]!.kind,'calendar-mutation');assert.match(receipt.targets[0]!.title,/not an event ID/)
 })
 test('exact natural study request and CSE request each admit an immutable three-task guard with no clarification',async()=>{
-  for(const [prompt,prefix] of [[actual,''],[original,'CSE354: ']] as const){
+  for(const [prompt,prefix] of [[actual,''],[original,'CSE354: '],[mobile,'CSE354: ']] as const){
     const h=setup(3,prompt),r=await h.start()
     const expected=Array.from({length:3},(_,i)=>({title:`${prefix}Study chunk ${i+1}`,date:'2026-11-07'}))
     assert.equal(h.calls(),1);assert.equal(r.question,undefined);assert.equal(r.original,undefined)
@@ -131,11 +132,13 @@ test('exact natural study request and CSE request each admit an immutable three-
   }
 })
 test('generic default still requires all three writes and fresh readback, never a model declaration of completion',async()=>{
-  const h=setup(2,actual),r=await h.start(),record=await h.store.read(r.turnKey)
-  assert.equal(record.guard?.checklist?.tasks.length,3);assert.equal(r.receipt.outcome,'partial')
-  assert.equal(r.receipt.expected,3);assert.equal(r.receipt.verified,2);assert.equal(h.calls(),1)
-  h.domain.rows.get(COLLECTION)!.data.tasks=[]
-  assert.equal((await projectConversationReceipt(record,new ServiceTransport({pool:h.domain.pool,actorId:'actor-A'}))).outcome,'uncertain')
+  for(const prompt of [actual,mobile]){
+    const h=setup(2,prompt),r=await h.start(),record=await h.store.read(r.turnKey)
+    assert.equal(record.guard?.checklist?.tasks.length,3);assert.equal(r.receipt.outcome,'partial')
+    assert.equal(r.receipt.expected,3);assert.equal(r.receipt.verified,2);assert.equal(h.calls(),1)
+    h.domain.rows.get(COLLECTION)!.data.tasks=[]
+    assert.equal((await projectConversationReceipt(record,new ServiceTransport({pool:h.domain.pool,actorId:'actor-A'}))).outcome,'uncertain')
+  }
 })
 test('old persisted optional-topics question accepts Just label without another question or duplicate writes',async()=>{
   const h=setup(),q=await h.start()
