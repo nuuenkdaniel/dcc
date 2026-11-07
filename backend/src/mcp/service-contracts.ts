@@ -1,5 +1,5 @@
 import type {Tool} from '@modelcontextprotocol/sdk/types.js'
-import {TOOLS,isTool,matches,plainRecord,validateArguments,validResult,validEntity,validDate,validInstant,DATE_SCHEMA,INSTANT_SCHEMA,type Arguments,type Command,type Definition,type Result,type Rule,type ToolName} from './contracts.js'
+import {TOOLS,ACTIVE_TOOLS,isTool,matches,plainRecord,validateArguments,validResult,validEntity,validDate,validInstant,DATE_SCHEMA,INSTANT_SCHEMA,type Arguments,type Command,type Definition,type Result,type Rule,type ToolName} from './contracts.js'
 import {schemaForDefinition} from './schemas.js'
 import {validManualTask} from '../manual-tasks.js'
 import {EXTENDED_READS,validExtendedRead} from './product-projections.js'
@@ -50,6 +50,7 @@ export const SERVICE_TOOLS:Record<ToolName,Definition>={...TOOLS,
   list_daily_actions:{...TOOLS.list_daily_actions,fields:{...TOOLS.list_daily_actions.fields,limit:integer(1,10)}},
   list_preparations:{...TOOLS.list_preparations,fields:{...TOOLS.list_preparations.fields,limit:integer(1,1),topicId:optional(TOOLS.create_task.fields.id),notesOffset:optional(integer(0,4000))}},
   search_inbox:{...TOOLS.search_inbox,fields:{...TOOLS.search_inbox.fields,limit:integer(1,25)}},
+  // Decode-only schema for frozen journals; never passed to active catalog generation.
   list_prices:{...TOOLS.list_prices,fields:{...TOOLS.list_prices.fields,limit:integer(1,1)}},
   list_projects:{...TOOLS.list_projects,fields:{...TOOLS.list_projects.fields,id:optional(field(projectUuid,{type:'string',format:'uuid'}))}},
   create_task:{...TOOLS.create_task,fields:{...taskCreateFields,expectedVersion:version,...recurrenceFields,
@@ -72,8 +73,9 @@ for(const name of Object.keys(SERVICE_TOOLS) as ToolName[]){
   SERVICE_TOOLS[name]={...definition,fields}
 }
 
-export function validateServiceArguments(tool:unknown,input:unknown):{valid:true;args:Arguments}|{valid:false;code:'invalid_arguments'|'unsupported_linkage'|'unsupported_recurrence'} {
+export function validateServiceArguments(tool:unknown,input:unknown,historical=false):{valid:true;args:Arguments}|{valid:false;code:'invalid_arguments'|'unsupported_linkage'|'unsupported_recurrence'} {
   if(!isTool(tool)||!plainRecord(input))return {valid:false,code:'invalid_arguments'}
+  if(tool==='list_prices')return historical&&matches(input,SERVICE_TOOLS.list_prices.fields)?{valid:true,args:{...input} as Arguments}:{valid:false,code:'invalid_arguments'}
   if(tool.includes('task')&&Object.hasOwn(input,'projectId'))return {valid:false,code:'unsupported_linkage'}
   if(TOOLS[tool].write&&['recurrence','rdate','exdate','seriesId',...(!tool.includes('calendar_event')?['recurrenceId','rrule']:[])].some(k=>Object.hasOwn(input,k)))return {valid:false,code:'unsupported_recurrence'}
   if(TOOLS[tool].write&&tool.includes('calendar_event')&&!['single','series'].includes(String(input.scope)))return {valid:false,code:'unsupported_recurrence'}
@@ -128,8 +130,9 @@ export function validateServiceArguments(tool:unknown,input:unknown):{valid:true
 const exact=(value:unknown,keys:string[])=>plainRecord(value)&&Object.keys(value).length===keys.length&&keys.every(k=>Object.hasOwn(value,k))
 // Service projections differ intentionally from the synthetic product: collection
 // task versions, real project enum/fields, and recurrence unknown on cached events.
-export function validServiceResult(command:Command,value:unknown):value is Result {
+export function validServiceResult(command:Command,value:unknown,historical=false):value is Result {
   if(!plainRecord(value))return false
+  if(command.tool==='list_prices')return historical&&(value.state==='ok'?exact(value,['state','data'])&&validExtendedRead(command.tool,command.args,value.data):validResult(command,value))
   if(command.tool==='request_clarification')return validResult(command,value)
   if(command.tool==='get_focus_timer'&&value.state==='ok')return exact(value,['state','data'])&&validTimerSnapshot(value.data)
   if(value.state==='saved')return TOOLS[command.tool].write&&command.tool.includes('calendar_event')&&validSavedResult(value,String(command.args.operationKey))
@@ -180,7 +183,7 @@ function validSavedResult(value:unknown,key:string){
 
 const dailyActionReadDescription='List daily actions within the explicit date window (exclusive end), bounded pages. Optional id is the exact ACTION ID, never a parent/project ID. There is no project filter argument: omit id and match returned projectId when finding a project\'s children. An empty wrong-id read does not resolve a supplied child target; check the supplied action ID or page the requested date window without that filter before concluding it is missing.'
 export function serviceToolDefinitions():Tool[] {
-  return (Object.keys(SERVICE_TOOLS) as ToolName[]).map((name):Tool=>{
+  return ACTIVE_TOOLS.map((name):Tool=>{
     const projectWrite=TOOLS[name].write&&(name.includes('project')||name==='create_assignment')
     const schema=schemaForDefinition(name,SERVICE_TOOLS[name])
     schema.description='DCC service contract: standalone task expectedVersion is the whole collection version (create requires zero or current version). Projects use real planner fields/status; mutations queue planning. Source calendar recurrence must be authoritative, never a caller claim. Actor binding is trusted-source-only, not an argument.'
@@ -189,7 +192,7 @@ export function serviceToolDefinitions():Tool[] {
       schema.description+=' '+dailyActionReadDescription
       Object.assign(schema.properties?.id??{},{description:'Optional exact daily ACTION ID (UUID), NOT its parent/project ID. Omit to page the explicit date window and match returned projectId. An empty result for a parent ID says nothing about its children.'})
     }
-    if(name==='request_clarification')schema.description+=' Request an exact server-generated question for missing calendar/duration/event time, ambiguous project/calendar/relative date, or a DST gap/fold. Supply only the matching reason, never question/success prose. At most three unique questions per invocation; stop writing after asking. Questions do not establish effects or resolve uncertain receipts. The user answers by editing a fresh intent.'
+    if(name==='request_clarification')schema.description+=' Request an exact server-generated question for task_topics/task_names, missing calendar/duration/event time, ambiguous project/calendar/relative date, or a DST gap/fold. Ordinary standalone tasks need no duration or exam date. Supply only the matching reason, never question/success prose. Stop after asking, before any write. Questions establish no effects. The conversation host uniquely binds answers and fixes its supported expected-action checklist before a fresh execution; legacy callers still receive questions without continuation.'
     if(name==='list_calendars')schema.description+=' writable reflects the configured guarded writer, not a guarantee that the provider will permit a write.'
     if(name==='list_preparations')schema.description+=' One plan/page. Topic notes are 512-character slices with nextNotesOffset; use exact plan id, topicId and notesOffset for later slices. Do not overwrite unseen text.'
     if(['get_focus_timer','control_focus_timer','edit_focus_queue'].includes(name))schema.description+=' Originating browser tab only. Read get_focus_timer for expectedVersion before writes. Browser ACK is required; unavailable/uncertain is never a claimed start. control actions start/pause/resume/reset/configure preserve elapsed progress unless reset is explicit; phase selects focus/break only on start. edit_focus_queue add requires name/minutes; remove requires miniId; move requires miniId/beforeId and a reset/idle queue. No generic frontend code or backend timer session.'

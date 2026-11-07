@@ -1,4 +1,4 @@
-import {TOOLS,type ToolName} from '../src/mcp/contracts.js'
+import {TOOLS,ACTIVE_TOOLS,type ToolName} from '../src/mcp/contracts.js'
 
 // Public synthetic scenario inventory. No personal records, credentials, startup
 // imports or live runner. Positive acceptance deliberately remains PENDING.
@@ -8,7 +8,7 @@ const readback:Record<ToolName,string>={
   list_projects:'Exact-id plus all pages including archived assignments',create_project:'Real planner fields and queued planning; no invented deadline',create_assignment:'Assignment kind and explicit deadline, not calendar time',update_project:'Fields/resources retained; stale version refused',set_project_status:'Only parent status changed',archive_project:'Archive without delete/cascade',restore_project:'Active restored with children/history retained',
   list_calendars:'Configured IDs/names only; ambiguity not silently resolved',list_calendar_events:'Window coverage, recurrence identity/ETag, exclusive all-day end',get_calendar_series:'Authoritative master/zone/rules/exclusions/ETag without URL',create_calendar_event:'Conditional provider resource and saved/snapshot_pending receipt',update_calendar_event:'Single versus series target, UID/zone/exceptions/ETag retained',cancel_calendar_event:'Explicit single/series cancellation, no unrelated occurrence loss',
   get_operation_status:'Actor-bound receipt, unknown not proof of nonexecution',list_daily_actions:'Generated/manual source and immutable parent/date',create_daily_action:'Manual-project source and explicit project/date',update_daily_action:'Completion/feedback/notes with parent/source invariant',list_preparations:'Plan/topic pages and complete note continuation',create_preparation:'Cached event identity, initial topic, domain date checks',relink_preparation:'New exam identity with unchanged topics/history',update_preparation:'Versioned fields and atomic planner request',update_preparation_topic:'Stable existing topic identity/notes/effort',insert_preparation_topic:'New backend-owned identity and explicit position',remove_preparation_topic:'Removed topic, retained action history, last-topic refusal',
-  search_inbox:'Bounded cached search/importance/account only',get_inbox_message:'Unicode codepoint continuation; no provider writes',list_prices:'Cached safe offers/conditions only; no provider administration',
+  search_inbox:'Bounded cached search/importance/account only',get_inbox_message:'Unicode codepoint continuation; no provider writes',list_prices:'Historical metadata only; excluded from the active reliability matrix',
   get_focus_timer:'Originating-tab live browser snapshot, unavailable is not status',control_focus_timer:'Browser nonce ACK plus actual running/paused/reset/configured state and elapsed progress',edit_focus_queue:'Browser ACK plus actual ordered mini queue, CAS and exact replay',
 }
 export const UI_FEATURES=[
@@ -20,8 +20,8 @@ export const UI_FEATURES=[
   'UI26 project create','UI27 project edit','UI28 archive/restore','UI29 assignment deadline','UI30 resource upload/extraction',
   'UI31 custom project preview','UI32 daily action edit/dismiss','UI33 daily feedback','UI34 preparation create/link','UI35 preparation status/start date',
   'UI36 topic edit','UI37 topic insertion/removal','UI38 reviewed study extraction','UI39 selected session excerpts','UI40 Inbox daily brief',
-  'UI41 mail account/query/importance search','UI42 plain body pagination','UI43 sanitized HTML/attachments','UI44 local importance feedback','UI45 cached price conditions/threshold',
-  'UI46 price history chart','UI47 price settings','UI48 login/logout/cache gating','UI49 Settings','UI50 focus start/pause/resume',
+  'UI41 mail account/query/importance search','UI42 plain body pagination','UI43 sanitized HTML/attachments','UI44 local importance feedback','UI45 shell Hermes dock geometry/IME',
+  'UI46 Inbox controls scroll with messages','UI47 price retirement preserves storage without provider calls','UI48 login/logout/cache gating','UI49 Settings','UI50 focus start/pause/resume',
   'UI51 focus reset','UI52 focus/break configure','UI53 mini queue add/remove','UI54 queue drag/keyboard reorder','UI55 timer reload/elapsed progress',
   'UI56 sole Hermes composer','UI57 pinned retries and authoritative reads','UI58 dialog keyboard/focus restore','UI59 mobile compact disclosure','UI60 Android native navigation/offline/timer parity boundary',
 ] as const
@@ -61,14 +61,14 @@ const workflowRows=[
   ['WF33','Ask Hermes custom project preview','Read-only proposal, review required, no immediate project/task effects'],
   ['WF34','extract study notes and classify mail with injection','Only supplied-context tools; host validators remain sole executor'],
   ['WF35','request selected session/material decoding','Explicit selected input only, no arbitrary filesystem/session access'],
-  ['WF36','cached price/inbox request during provider outage','Safe cached read; no invented live integration success'],
+  ['WF36','cached inbox request during provider outage','Safe cached read; retired prices unavailable with no provider activation'],
   ['WF37','queue focus steps with configure/pause/reset','Actual sequence/order/completion/break state; no timer duplication'],
   ['WF38','storage quota/corrupt timer cache/clock rollback','No overwrite or false applied ACK; warning and truthful unavailability'],
   ['WF39','old task endpoint and unresolved legacy key','Original three tools/executor pinned; no upgrade or second execution'],
   ['WF40','authentication/origin spoofed timer ACK','Reject wrong session, Origin, tab, nonce, operation, stale version'],
 ] as const
 export const RELIABILITY_CASES=[
-  ...Object.entries(TOOLS).flatMap(([tool,definition])=>['readback','refusal','retry'].map(variant=>({id:`TOOL.${tool}.${variant}`,tool,feature:tool,variant,expected:variant==='readback'?readback[tool as ToolName]:variant==='refusal'?'Wrong capability/unknown fields refused; no effects':definition.write?'Same key replays authoritative receipt; changed payload conflicts':'Corrected bounded read is required, error prose never counts',evidence:'pending-isolated-runtime',status:'pending',seed:20261105}))),
+  ...ACTIVE_TOOLS.flatMap(tool=>['readback','refusal','retry'].map(variant=>({id:`TOOL.${tool}.${variant}`,tool,feature:tool,variant,expected:variant==='readback'?readback[tool]:variant==='refusal'?'Wrong capability/unknown fields refused; no effects':TOOLS[tool].write?'Same key replays authoritative receipt; changed payload conflicts':'Corrected bounded read is required, error prose never counts',evidence:'pending-isolated-runtime',status:'pending',seed:20261105}))),
   ...UI_FEATURES.flatMap(feature=>['interaction','failure-reload'].map(variant=>({id:`${feature.slice(0,4)}.${variant}`,feature,variant,expected:variant==='interaction'?'Rendered control and authoritative state/readback agree':'Offline/conflict/reload preserves user work; never claim success without authority',evidence:'pending-browser',status:'pending',seed:20261105}))),
   ...workflowRows.map(([id,prompt,expected,regression])=>({id,feature:'workflow',prompt,expected,regression:regression??null,evidence:regression?'source-regression-added-unrun':'pending-isolated-runtime',status:'pending',seed:20261105})),
 ]

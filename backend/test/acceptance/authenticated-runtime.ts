@@ -10,6 +10,9 @@ import {SqlIntentStore} from '../../src/mcp/intent-store.js'
 import {COLLECTION,RECEIPT_KIND,canonicalJson} from '../../src/mcp/service-transport.js'
 import {validClarification} from '../../src/mcp/clarification.js'
 import type {IntentSummary} from '../../src/mcp/request-controller.js'
+import {CONVERSATION_PATH} from '../../src/mcp/conversation.js'
+import {validConversationView,type ConversationView} from '../../src/mcp/conversation-wire.js'
+import {nyDate} from '../../src/mcp/conversation-contract.js'
 
 const origin='http://127.0.0.1:18534'
 const seeds=[20261105,20261106] as const
@@ -25,6 +28,9 @@ function check(value:unknown):asserts value {if(!value)throw Error('Acceptance a
 
 async function main(){
   if(process.argv.length!==2||process.env.DCC_QA_RUNTIME_APPROVED!=='synthetic-loopback-model')throw Error('Explicit approval required')
+  const campaign=process.env.DCC_QA_RUNTIME_CAMPAIGN
+  if(campaign!==undefined&&!['clarification','clarification-general'].includes(campaign))throw Error('Unknown finite campaign')
+  const clarificationCampaign=campaign==='clarification'||campaign==='clarification-general',selectedSeeds=clarificationCampaign?[20261107]:seeds
   // Refuse libpq/production endpoint defaults. No private .env is loaded.
   if(Object.keys(process.env).some(k=>k.startsWith('PG')||['DATABASE_URL','NODE_OPTIONS','NODE_EXTRA_CA_CERTS'].includes(k)))throw Error('Ambient database/runtime configuration refused')
   const database=process.env.DCC_QA_DATABASE??'',user=process.env.DCC_QA_PG_USER??''
@@ -53,7 +59,7 @@ async function main(){
     // Bootstrap resolution/preflight occurs before admitting any intent/write.
     stage='official-bootstrap'
     await preflight()
-    for(const seed of seeds){
+    for(const seed of selectedSeeds){
       campaignSeed=seed
       check(!shutdown.signal.aborted)
       let expiryProbe=false,clockOffset=0,seedModelCalls=0
@@ -66,7 +72,7 @@ async function main(){
           }finally{clockOffset=0}
           return {status:'finished'}
         }
-        check(input.mode==='product-action'&&modelCalls<6&&seedModelCalls<3)
+        check(input.mode==='product-action'&&modelCalls<(clarificationCampaign?4:6)&&seedModelCalls<(clarificationCampaign?4:3))
         modelCalls++;seedModelCalls++
         const result=await invoke(input,signal)
         evidence.push(result)
@@ -109,6 +115,57 @@ async function main(){
         check((await request(TASK_ACTION_PATH,admission,true,'http://127.0.0.1:18535')).status===403)
         check((await fetch(origin+TASK_CALLBACK_PATH,{method:'POST',headers:{'Content-Type':'application/json'},body:'{"jsonrpc":"2.0","id":1,"method":"ping"}',redirect:'error',signal:AbortSignal.timeout(5000)})).status===403)
         check(canonicalJson(await rows())===before)
+
+        if(clarificationCampaign){
+          stage='cse-question'
+          const clientId='11111111-1111-4111-a111-111111111111'
+          const prompt='I have an exam coming up for CSE354 I need to study 3 chunks today can you put that in my tasks'
+          const workspaceOwner=String(loginBody.workspaceOwner)
+          const first={op:'start',workspaceOwner,clientId,key:'dcc_qa_cse_question_01',prompt}
+          const call=async(body:unknown)=>{
+            const response=await request(CONVERSATION_PATH,body);check(response.status===200)
+            const v:unknown=await response.json();check(validConversationView(v));return v
+          }
+          const q=await call(first)
+          check(q.receipt.outcome==='question'&&!!q.question&&q.original===prompt)
+          check(!(await rows()).some(r=>r.id===COLLECTION))
+          const general=campaign==='clarification-general'
+          const answer={op:'answer',workspaceOwner,clientId,rootKey:q.rootKey,key:'dcc_qa_cse_answer_01',parentKey:q.turnKey,questionId:q.question.id,answer:general?'just general chunks':'Lectures, practice problems, and review'}
+          const admittedDays=new Set([nyDate(Date.now())])
+          stage='cse-unique-answer-and-write'
+          const competing={...answer,key:'dcc_qa_cse_competing_01'}
+          const concurrent=await Promise.all([request(CONVERSATION_PATH,answer),request(CONVERSATION_PATH,competing)])
+          check(concurrent.filter(r=>r.status===200).length===1&&concurrent.filter(r=>r.status===409).length===1)
+          const winner=concurrent[0]!.status===200?answer:competing
+          const raw:unknown=await concurrent.find(r=>r.status===200)!.json();check(validConversationView(raw));const result:ConversationView=raw
+          check(result.receipt.outcome==='complete'&&result.receipt.verified===3&&result.receipt.expected===3&&result.original===undefined)
+          check(result.receipt.targets.length===3&&new Set(result.receipt.targets.map(t=>t.id)).size===3)
+          const titles=general?['CSE354: Study chunk 1','CSE354: Study chunk 2','CSE354: Study chunk 3']:['CSE354: Lectures','CSE354: practice problems','CSE354: review']
+          check(canonicalJson(result.receipt.targets.map(t=>t.title).sort())===canonicalJson(titles.sort()))
+          admittedDays.add(nyDate(Date.now())) // Handles a legitimate NY-midnight boundary during execution.
+          check(result.receipt.targets.every(t=>typeof t.date==='string'&&admittedDays.has(t.date)&&t.verification==='verified'))
+          const saved=canonicalJson(await rows()),beforeReplay=modelCalls
+          check(canonicalJson(await call(winner))===canonicalJson(result)&&modelCalls===beforeReplay&&canonicalJson(await rows())===saved)
+          check((await request(CONVERSATION_PATH,{...winner,answer:'Changed answer'})).status===409)
+          check((await request(CONVERSATION_PATH,{...winner,clientId:'22222222-2222-4222-a222-222222222222'})).status===409)
+          check((await request(CONVERSATION_PATH,{...winner,workspaceOwner:'c'.repeat(64)})).status===409)
+          check((await request(CONVERSATION_PATH,winner,false)).status===401)
+          check((await request(CONVERSATION_PATH,winner,true,'http://127.0.0.1:18535')).status===403)
+          const journal=await store.read(winner.key)
+          check(journal.guard?.checklist?.tasks.length===3&&journal.calls.filter(c=>c.command.tool==='create_task').length===3)
+          await receiptProof(pool,journal.calls)
+          stage='cse-http-readback'
+          const http=await (await request('/api/v1/planner/manual-tasks')).json() as {data:{tasks:Record<string,unknown>[]}}
+          check(http.data.tasks.length===3&&result.receipt.targets.every(t=>http.data.tasks.some(task=>task.id===t.id&&task.title===t.title&&task.date===t.date&&!task.deleted)))
+          stage='direct-three-names'
+          const direct=await call({op:'start',workspaceOwner,clientId,key:'dcc_qa_direct_named_01',prompt:'Add 3 tasks today: QA lectures; QA problems; QA review'})
+          check(!direct.question&&direct.receipt.outcome==='complete'&&direct.receipt.expected===3&&direct.receipt.verified===3)
+          const directRecord=await store.read(direct.turnKey);await receiptProof(pool,directRecord.calls)
+          check(!directRecord.calls.some(c=>c.command.tool==='request_clarification'))
+          check((await rows()).find(r=>r.id===COLLECTION)?.data.tasks.length===6&&seedModelCalls===3)
+          check((await rows()).filter(r=>r.kind==='dcc-hermes-conversation-v1').every(r=>!Object.hasOwn(r.data,'original')&&!Object.hasOwn(r.data,'prompt')&&canonicalJson(r.data.answers)==='[]'))
+          continue
+        }
 
         stage='model-task-create-complete'
         const taskTitle=`DCC QA task ${seed}`,taskKey=`dcc_qa_${seed}_task_roundtrip`
@@ -168,11 +225,11 @@ async function main(){
       }
     }
     stage='evidence'
-    check(modelCalls===6&&evidence.length===6&&evidence.every(e=>e.model==='gpt-6-luna'&&e.schemaCount===36&&e.schemasUnchanged===true&&/^[a-f0-9]{64}$/.test(e.schemaSha256)))
+    check(modelCalls===(clarificationCampaign?3:6)&&evidence.length===modelCalls&&evidence.every(e=>e.model==='gpt-6-luna'&&e.schemaCount===35&&e.schemasUnchanged===true&&/^[a-f0-9]{64}$/.test(e.schemaSha256)))
     check(new Set(evidence.map(e=>e.schemaSha256)).size===1)
     const final=await rows()
-    check(final.length===25&&final.every(r=>['manual-tasks','project',RECEIPT_KIND,'dcc-request-intent-v1','hermes-command'].includes(r.kind)))
-    console.log(JSON.stringify({status:'passed',stage,seeds,modelCalls,assertions,evidence,rowsRetained:(await rows()).length,publicTLSProven:false,fullMatrixPending:268}))
+    check(final.length===(clarificationCampaign?16:25)&&final.every(r=>['manual-tasks','project',RECEIPT_KIND,'dcc-request-intent-v1','hermes-command',...(clarificationCampaign?['dcc-hermes-conversation-v1','dcc-hermes-client-v1']:[])].includes(r.kind)))
+    console.log(JSON.stringify({status:'passed',stage,seeds:selectedSeeds,campaign:campaign??'core',modelCalls,assertions,evidence,rowsRetained:(await rows()).length,publicTLSProven:false,fullMatrixPending:265}))
   }finally{
     try{if(lock){try{await lock.query('SELECT pg_advisory_unlock(817349)')}finally{lock.release()}}}
     finally{await pool.end()}
@@ -193,7 +250,7 @@ async function preflight(){
 async function invoke(input:Parameters<TaskBridge>[0],signal:AbortSignal){
   const output=await subprocess(script,[],input,signal,true)
   const parsed=JSON.parse(output) as {status:string;evidence:Evidence}
-  check(parsed.status==='finished'&&parsed.evidence.model==='gpt-6-luna'&&parsed.evidence.schemaCount===36&&parsed.evidence.schemasUnchanged===true)
+  check(parsed.status==='finished'&&parsed.evidence.model==='gpt-6-luna'&&parsed.evidence.schemaCount===35&&parsed.evidence.schemasUnchanged===true)
   return parsed.evidence
 }
 function subprocess(path:string,args:string[],input:Parameters<TaskBridge>[0]|undefined,signal:AbortSignal|undefined,model:boolean):Promise<string>{
@@ -221,4 +278,4 @@ function subprocess(path:string,args:string[],input:Parameters<TaskBridge>[0]|un
   })
 }
 
-main().catch(()=>{console.log(JSON.stringify({status:'failed',stage,campaignSeed,modelCalls,assertions,fullMatrixPending:268}));process.exitCode=1}).finally(()=>{process.removeListener('SIGINT',stop);process.removeListener('SIGTERM',stop)})
+main().catch(()=>{console.log(JSON.stringify({status:'failed',stage,campaignSeed,modelCalls,assertions,fullMatrixPending:265}));process.exitCode=1}).finally(()=>{process.removeListener('SIGINT',stop);process.removeListener('SIGTERM',stop)})

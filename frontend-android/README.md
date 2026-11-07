@@ -17,6 +17,13 @@ some changes require a rebuild/restart. Wireless debugging is also available on 
 
 ## Command line
 
+**DCC parent-only build gate:** `app/build.gradle.kts` currently inspects signing
+configuration under JVM `user.home` even for debug builds. Do not run these
+commands with a real signing home. Use the parent's already verified empty JVM
+home for both launcher and Gradle daemon, retain the actual cached
+`GRADLE_USER_HOME`, and use cached Gradle/JDK21/SDK35 offline. No signing-file read,
+SDK/package install, device update or release signing is part of this source task.
+
 Set ANDROID_HOME to your SDK directory or set sdk.dir in ignored local.properties.
 
 ```sh
@@ -29,7 +36,31 @@ Do not commit local.properties, signing keys, credentials, SDKs or generated APK
 ## Scope
 
 See PARITY.md for the implemented vertical slices and remaining web parity gaps.
-Five bottom tabs and Settings/Refresh controls are implemented. HTTPS API code,
+The native shell-bottom Hermes composer and GET-only post-receipt task reconciliation
+share the [bounded server contract](../backend/src/mcp/CLARIFICATION-RECEIPTS.md).
+Hermes requires the online authenticated API; no model/credentials or synthetic
+effects run on the phone. Drafts/receipts use owner-scoped encrypted storage;
+offline manual work and conflict review stay separate.
+
+Parent previously built the feature checkpoint and ran its unit/lint gates;
+subsequent fixes and tests are unverified until rerun. Parent can compile
+`:app:assembleDebugAndroidTest` using that same safe-home/offline setup. Running
+`HermesComposerTest` requires a separately approved disposable emulator only;
+never the daily device/emulator. Its empty ComponentActivity fixture uses no
+WorkspaceModel/network. It covers short scrollable layouts, text/IME interaction,
+question disclosure, View/dismiss, partial/failure editing and activity recreation.
+Real keyboard insets, portrait/landscape visual review and process/Keystore behavior
+still need parent device acceptance; unit success is not Compose verification.
+Four bottom tabs (Today, Inbox, Focus, Projects) and Settings/Refresh controls are implemented.
+Hermes reserves a compact dock immediately above navigation across these screens;
+IME lifts the dock and temporarily hides navigation/header. Expanded details scroll
+inside a viewport-relative bound, never over page content. Inbox controls scroll
+with messages. Prices/navigation/settings/fetching are retired; historical caches
+are preserved and old destination restoration falls back to Today.
+`HermesShellTest` adds synthetic shell geometry, navigation/draft retention, Inbox
+scroll and receipt/recreation regressions; these are UNRUN, including test-APK
+compilation. Parent must verify real IME/rotation on an approved disposable device.
+HTTPS API code,
 encrypted persistent sessions and workspace caches, a durable encrypted planner/calendar
 outbox, snapshot screens, manual-task sync, task checkoff, email importance feedback and
 a persistent focus timer are available. Cold offline sign-in, every web workflow, and full

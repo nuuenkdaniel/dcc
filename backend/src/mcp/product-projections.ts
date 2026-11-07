@@ -3,7 +3,7 @@ import {plainRecord,type Arguments,type ToolName,validDate} from './contracts.js
 const text=(v:unknown,max:number)=>typeof v==='string'&&v.length<=max
 const integer=(v:unknown,min:number,max:number)=>typeof v==='number'&&Number.isInteger(v)&&v>=min&&v<=max
 const exact=(v:unknown,keys:string[]):v is Record<string,unknown>=>plainRecord(v)&&Object.keys(v).length===keys.length&&keys.every(k=>Object.hasOwn(v,k))
-export const EXTENDED_READS=['list_daily_actions','list_preparations','search_inbox','get_inbox_message','list_prices','get_calendar_series'] as const
+export const EXTENDED_READS=['list_daily_actions','list_preparations','search_inbox','get_inbox_message','get_calendar_series'] as const
 export function validActionData(v:unknown):v is Record<string,unknown>{
   return plainRecord(v)&&text(v.id,200)&&text(v.title,240)&&String(v.title).trim().length>0&&validDate(v.date)&&text(v.notes,4000)&&integer(v.minutes,5,180)&&typeof v.completed==='boolean'&&typeof v.dismissed==='boolean'&&(v.feedback===undefined||['','comfortable','review'].includes(String(v.feedback)))&&text(v.projectId,200)
 }
@@ -13,6 +13,8 @@ export function validPreparationData(v:unknown):v is Record<string,unknown>{
   return v.topics.every(t=>{if(!plainRecord(t)||!text(t.id,80)||ids.has(String(t.id))||!text(t.title,240)||!String(t.title).trim()||!text(t.notes,4000)||!integer(t.minutes,5,1800))return false;ids.add(String(t.id));return true})
 }
 export function validExtendedRead(tool:ToolName,args:Arguments,data:unknown):boolean{
+  // list_prices shape below is decode-only for explicitly historical journals;
+  // it is excluded from EXTENDED_READS and rejected by active service validation.
   const serialized=JSON.stringify(data)
   if(typeof serialized!=='string'||Buffer.byteLength(serialized,'utf8')>450000)return false
   if(tool==='get_inbox_message')return exact(data,['id','body','nextOffset'])&&data.id===args.id&&typeof data.body==='string'&&Array.from(data.body).length<=Number(args.limit)&&(data.nextOffset===null||data.nextOffset===Number(args.offset)+Array.from(data.body).length)

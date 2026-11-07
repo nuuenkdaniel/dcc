@@ -4,10 +4,13 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js'
 import type {Transport} from '@modelcontextprotocol/sdk/shared/transport.js'
 import {buildApp} from '../../src/app.js'
 import {TaskActions,TASK_ACTION_PATH,ACTION_PATH,TASK_CALLBACK_PATH,TASK_CALLBACK_URL,type TaskBridge} from '../../src/mcp/task-actions.js'
-import {TOOLS} from '../../src/mcp/contracts.js'
+import {TOOLS,ACTIVE_TOOLS} from '../../src/mcp/contracts.js'
 import {COLLECTION} from '../../src/mcp/service-transport.js'
 import {SqlIntentStore} from '../../src/mcp/intent-store.js'
 import {IntentPool} from './intent-pool.js'
+import {CONVERSATION_PATH} from '../../src/mcp/conversation.js'
+import {validConversationView} from '../../src/mcp/conversation-wire.js'
+import {nyDate} from '../../src/mcp/conversation-contract.js'
 
 const token='a'.repeat(64),origin='https://dcc.home.captnuu.online'
 const input={key:'authenticated_task_request_01',prompt:'Synthetic task request'}
@@ -92,11 +95,39 @@ test('authenticated endpoint -> fake bridge -> official SDK MCP -> real service 
     assert.equal(legacy.statusCode,409,'existing Tell Hermes sees the MCP sentinel instead of parsing/writing')
   }finally{await h.app.close()}
 })
+test('authenticated conversation HTTP owner fence → real SDK question → bound answer → SQL-fake readback and structured three-task receipt',async()=>{
+  const now=Date.parse('2026-11-08T02:00:00Z'),date=nyDate(now),to=new Date(Date.parse(date)+86400000).toISOString().slice(0,10)
+  let turns=0
+  const h=await fixture(async client=>{
+    turns++
+    if(turns===1){assert.equal(result(await client.callTool({name:'request_clarification',arguments:{reason:'task_topics'}})).state,'ok');return}
+    let version=result(await client.callTool({name:'list_tasks',arguments:{from:date,to,limit:10}})).data.collectionVersion
+    for(const title of ['CSE354: Lectures','CSE354: practice problems','CSE354: review']){
+      const write=result(await client.callTool({name:'create_task',arguments:{title,date,expectedVersion:version}}))
+      assert.equal(write.state,'applied');version=write.version
+    }
+    assert.equal(result(await client.callTool({name:'list_tasks',arguments:{from:date,to,limit:10}})).data.items.length,3)
+  },()=>now,ACTION_PATH)
+  try{
+    const session=await h.app.inject({url:'/api/v1/auth/session',cookies:{daymark_session:h.cookie}})
+    const workspaceOwner=session.json().workspaceOwner,clientId='11111111-1111-4111-a111-111111111111'
+    const post=(body:unknown)=>h.app.inject({method:'POST',url:CONVERSATION_PATH,headers:{origin},cookies:{daymark_session:h.cookie},payload:body as any})
+    const first={op:'start',workspaceOwner,clientId,key:'http_conversation_key_01',prompt:'I have an exam coming up for CSE354 I need to study 3 chunks today can you put that in my tasks'}
+    assert.equal((await post({...first,workspaceOwner:'c'.repeat(64)})).statusCode,409);assert.equal(h.invocations(),0)
+    assert.equal((await h.app.inject({method:'POST',url:CONVERSATION_PATH,headers:{origin},payload:first})).statusCode,401)
+    const q=await post(first);assert.equal(q.statusCode,200);assert.ok(validConversationView(q.json()));assert.equal(q.json().receipt.outcome,'question')
+    const answer={op:'answer',workspaceOwner,clientId,rootKey:first.key,key:'http_answer_key_01',parentKey:first.key,questionId:q.json().question.id,answer:'Lectures, practice problems, and review'}
+    const r=await post(answer);assert.equal(r.statusCode,200);assert.ok(validConversationView(r.json()));assert.equal(r.json().receipt.outcome,'complete');assert.equal(r.json().receipt.verified,3)
+    assert.equal(h.db.rows.get(COLLECTION)!.data.tasks.length,3)
+    const snapshot=JSON.stringify([...h.db.rows.values()]);assert.deepEqual((await post(answer)).json(),r.json());assert.equal(h.invocations(),2);assert.equal(JSON.stringify([...h.db.rows.values()]),snapshot)
+    assert.equal((await post({...answer,key:'second_http_answer_01'})).statusCode,409)
+  }finally{await h.app.close()}
+})
 
 test('unified action route preserves the same request-scoped SDK relay and exact catalog, with durable edit/readback/removal',async()=>{
   const h=await fixture(async(client,callback)=>{
     const first=await client.listTools()
-    assert.deepEqual(first.tools.map(t=>t.name).sort(),Object.keys(TOOLS).sort())
+    assert.deepEqual(first.tools.map(t=>t.name).sort(),[...ACTIVE_TOOLS].sort())
     assert.deepEqual(await client.listTools(),first,'discovery schemas remain stable within an invocation')
     for(const tool of first.tools){
       assert.equal(tool.inputSchema.additionalProperties,false)

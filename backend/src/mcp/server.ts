@@ -1,6 +1,6 @@
 import type {Server} from '@modelcontextprotocol/sdk/server/index.js'
 import type {Tool} from '@modelcontextprotocol/sdk/types.js'
-import {TOOLS,type ToolName} from './contracts.js'
+import {TOOLS,ACTIVE_TOOLS,type ToolName} from './contracts.js'
 import {Dispatcher,type Context} from './dispatcher.js'
 import {FakeTransport} from './fake-transport.js'
 import {inputSchema} from './schemas.js'
@@ -42,7 +42,7 @@ const descriptions:Record<ToolName,string>={
   remove_preparation_topic:'Remove one topic without deleting action history; at least one topic must remain. Service composition only.',
   search_inbox:'Bounded cached inbox search, no provider access. Service composition only.',
   get_inbox_message:'Bounded cached plain-text body slice. Service composition only.',
-  list_prices:'Bounded cached price summaries without URLs. Service composition only.',
+  list_prices:'Retired historical journal metadata only; never advertised or dispatched.',
   get_calendar_series:'Guarded authoritative series details. Service composition only.',
   get_focus_timer:'Read current originating-browser timer; unavailable without browser acknowledgment.',
   control_focus_timer:'Control originating-tab timer only after read/version CAS. Browser acknowledgment establishes applied, not model prose. Start/resume never reset progress. Configure accepts explicit durations only.',
@@ -57,7 +57,7 @@ export function createMcpServer(mode:Mode='unconfigured'):Server {
   const dispatcher=mode==='unconfigured'?new Dispatcher():new Dispatcher(new FakeTransport())
   const purpose:Context['purpose']=mode==='synthetic-action-test'?'action':mode==='synthetic-parser'?'parser':mode==='synthetic-planner'?'planner':mode==='synthetic-extraction'?'extraction':'read'
   const context:Context={purpose,capabilities:purpose==='action'?[...reads,...writes]:[...reads]}
-  const tools:Tool[]=(Object.keys(TOOLS) as ToolName[]).map(name=>({
+  const tools:Tool[]=ACTIVE_TOOLS.map(name=>({
     name,description:`${source==='synthetic'?'SYNTHETIC ONLY':'UNCONFIGURED'}. ${descriptions[name]}`,
     inputSchema:inputSchema(name),execution:{taskSupport:'forbidden'},
     annotations:{readOnlyHint:!TOOLS[name].write,destructiveHint:TOOLS[name].write,openWorldHint:false},

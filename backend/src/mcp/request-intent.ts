@@ -1,15 +1,18 @@
 // Pure request policy/reducer. NO auth, storage, runtime, transport or execution.
 // Caller must commit each transition atomically BEFORE following its directive.
 import {createHash} from 'node:crypto'
-import {TOOLS,isTool,plainRecord,isCreation,type ToolName,type Command,type Result} from './contracts.js'
+import {TOOLS,ACTIVE_TOOLS,isTool,isActiveTool,plainRecord,isCreation,type ToolName,type Command,type Result} from './contracts.js'
 import {validateServiceArguments,validServiceResult} from './service-contracts.js'
 import type {Context} from './dispatcher.js'
+import type {Checklist} from './conversation-contract.js'
+import {validGuard} from './conversation-validation.js'
 
 export const REQUEST_INTENT_KIND='dcc-request-intent-v1'
 export const REQUEST_LIMITS=Object.freeze({maxRounds:4,maxCalls:12,maxWrites:4,timeoutMs:120000})
 type Executor='legacy-parser-v1'|'mcp-action-v1'
 export type IntentPolicy={executor:Executor;allowedTools:readonly ToolName[]}
-export type IntentAdmission={actorId:string;purpose:Context['purpose'];key:string;prompt:string;tabId?:string}
+export type ConversationGuard={version:1;binding?:string;checklist?:Checklist;questionOnly?:true;questionReason?:string;readOnly?:true}
+export type IntentAdmission={actorId:string;purpose:Context['purpose'];key:string;prompt:string;tabId?:string;guard?:ConversationGuard}
 type LegacyEvidence={promptHash:string;completed:boolean;mcpIntentId?:string}
 type Call={id:string;fingerprint:string;command:Command;result?:Result}
 export type IntentRecord={
@@ -18,6 +21,7 @@ export type IntentRecord={
   rounds:number;calls:Call[];startedAt?:number
   ownerId?:string // Backend execution fence/correlation, never model authority.
   browserTabId?:string
+  guard?:ConversationGuard
   outcome?:'legacy_receipt'|'no_effects_recorded'|'effects_recorded'|'partial'|'rejected'
 }
 export type IntentPolicyCode='forbidden'|'invalid_arguments'|'intent_conflict'|'executor_conflict'|'inactive'|'budget_exhausted'|'call_mismatch'|'pending_operation'|'invalid_result'|'result_mismatch'|'unsupported_recurrence'|'unsupported_linkage'
@@ -40,16 +44,18 @@ const timely=(r:IntentRecord,now:number)=>Number.isSafeInteger(now)&&r.startedAt
 // actor, purpose, executor and tool policy come from the backend, NOT request JSON.
 // DCC has one shared account; key namespace matches legacy global intent keys.
 export function admitIntent(prior:IntentRecord|undefined,request:IntentAdmission,policy:IntentPolicy,legacy?:LegacyEvidence):Decision {
+  if(request.guard!==undefined&&!validGuard(request.guard))return deny('invalid_arguments')
   if(request.tabId!==undefined&&!/^[a-f0-9-]{36}$/.test(request.tabId))return deny('invalid_arguments')
   if(request.purpose!=='action')return deny('forbidden')
   if(typeof request.actorId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,199}$(?![\s\S])/.test(request.actorId)||typeof request.key!=='string'||!/^\w[\w-]{15,79}$(?![\s\S])/.test(request.key)||typeof request.prompt!=='string'||!request.prompt.trim()||request.prompt.length>4000)return deny('invalid_arguments')
-  if(!['legacy-parser-v1','mcp-action-v1'].includes(policy.executor)||!Array.isArray(policy.allowedTools)||policy.allowedTools.length>Object.keys(TOOLS).length||!policy.allowedTools.every(isTool)||new Set(policy.allowedTools).size!==policy.allowedTools.length)return deny('invalid_arguments')
+  if(!['legacy-parser-v1','mcp-action-v1'].includes(policy.executor)||!Array.isArray(policy.allowedTools)||policy.allowedTools.length>ACTIVE_TOOLS.length||!policy.allowedTools.every(isActiveTool)||new Set(policy.allowedTools).size!==policy.allowedTools.length)return deny('invalid_arguments')
   const promptHash=hash(request.prompt),actorHash=hash(request.actorId)
   const {id,legacyReceiptId}=intentAddress(request.key)
   // Exact same ID formula as tell-hermes.ts, to let its existing receipt fence
   // migration/racing admission. The storage adapter must inspect BOTH records.
   if(legacy&&legacy.promptHash!==promptHash)return deny('intent_conflict')
   if(prior){
+    if(canonical(prior.guard??null)!==canonical(request.guard??null))return deny('intent_conflict')
     if(prior.browserTabId!==request.tabId)return deny('intent_conflict')
     if(prior.version!==1||prior.id!==id||prior.legacyReceiptId!==legacyReceiptId||prior.key!==request.key||prior.actorHash!==actorHash||prior.promptHash!==promptHash||!['legacy-parser-v1','mcp-action-v1'].includes(prior.executor)||!['admitted','active','uncertain','completed'].includes(prior.phase))return deny('intent_conflict')
     if(legacy&&(legacy.mcpIntentId?legacy.mcpIntentId!==id||prior.executor!=='mcp-action-v1':prior.executor!=='legacy-parser-v1'))return deny('executor_conflict')
@@ -59,6 +65,7 @@ export function admitIntent(prior:IntentRecord|undefined,request:IntentAdmission
   if(legacy?.mcpIntentId)return deny('executor_conflict') // Orphan fence: do not re-plan lost state.
   const executor=legacy?'legacy-parser-v1':policy.executor
   const record:IntentRecord={version:1,id,legacyReceiptId,actorHash,key:request.key,promptHash,executor,allowedTools:executor==='mcp-action-v1'?[...policy.allowedTools]:[],phase:legacy?.completed?'completed':'admitted',rounds:0,calls:[],...(request.tabId?{browserTabId:request.tabId}:{})}
+  if(request.guard)record.guard=structuredClone(request.guard)
   if(legacy?.completed)record.outcome='legacy_receipt'
   return decision(record,'new')
 }
@@ -105,7 +112,7 @@ export function reserveIntentCall(record:IntentRecord,callId:string,tool:unknown
     if(creating)args.id=uuid('dcc-request-target-v1:'+record.id+'\0'+callId)
     if(tool==='create_task'&&typeof args.templateId==='string'&&typeof args.sourceDate==='string')args.id=`occ.${args.templateId}.${args.sourceDate}`
   }
-  const validation=validateServiceArguments(tool,args)
+  const validation=validateServiceArguments(tool,args,record.calls.some(call=>call.id===callId))
   if(!validation.valid)return deny(validation.code)
   const command:Command={tool,args:validation.args},fingerprint=hash(canonical(command))
   const old=record.calls.find(call=>call.id===callId)
@@ -116,6 +123,15 @@ export function reserveIntentCall(record:IntentRecord,callId:string,tool:unknown
     return {ok:true,record:next,directive:'reconcile',command:frozen}
   }
   if(record.phase!=='active')return deny('inactive')
+  if(record.guard){
+    if(writing&&(record.guard.questionOnly||record.guard.readOnly))return deny('forbidden')
+    if(tool==='request_clarification'&&(record.guard.checklist||record.guard.questionReason&&args.reason!==record.guard.questionReason))return deny('forbidden')
+    if(tool==='request_clarification'&&record.calls.some(c=>TOOLS[c.command.tool].write))return deny('pending_operation')
+    const checklist=record.guard.checklist
+    if(writing&&checklist){
+      if(tool!=='create_task'||!checklist.tasks.some(t=>t.title===args.title&&t.date===args.date)||Object.keys(input).some(k=>!['title','date','expectedVersion'].includes(k))||record.calls.some(c=>TOOLS[c.command.tool].write&&c.command.args.title===args.title))return deny('forbidden')
+    }
+  }
   if(!timely(record,now)||record.rounds<1||record.calls.length>=REQUEST_LIMITS.maxCalls||writing&&record.calls.filter(call=>TOOLS[call.command.tool].write).length>=REQUEST_LIMITS.maxWrites)return deny('budget_exhausted')
   if(record.calls.some(call=>TOOLS[call.command.tool].write&&(!call.result||call.result.state==='uncertain')))return deny('pending_operation')
   // Once asking a question, do not guess and write later in the same invocation.

@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto'
-import {TOOLS,isTool,validateArguments,validResult,type Command,type Result,type OperationState} from './contracts.js'
+import {TOOLS,isActiveTool,validateArguments,validResult,type Command,type Result,type OperationState} from './contracts.js'
 import {validateServiceArguments,validServiceResult} from './service-contracts.js'
 
 // Supplied by a trusted caller, never extracted from tool arguments or model output.
@@ -17,7 +17,7 @@ export class Dispatcher {
     if(!Number.isSafeInteger(maxOperations)||maxOperations<1||maxOperations>4096)throw Error('Invalid offline operation capacity')
   }
   async dispatch(tool:unknown,input:unknown,context?:Context):Promise<Result> {
-    if(!isTool(tool))return {state:'rejected',code:'unknown_tool'}
+    if(!isActiveTool(tool))return {state:'rejected',code:'unknown_tool'}
     const definition=TOOLS[tool]
     if(!context||!['action','parser','planner','extraction','read'].includes(context.purpose)||!Array.isArray(context.capabilities)||!context.capabilities.includes(definition.capability)||definition.write&&context.purpose!=='action')return {...denied}
     const service=this.transport?.contract==='dcc-service-v1'

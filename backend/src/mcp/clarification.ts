@@ -1,6 +1,8 @@
 // Bounded user questions, not effect receipts or arbitrary model prose. Pure so
 // the browser can validate the exact same public projection.
 export const CLARIFICATION_QUESTIONS={
+  task_topics:'Should these study chunks use specific topics, or just general chunks? Give the task names, or say “just general chunks”.',
+  task_names:'Please give exactly the requested number of task names, separated by semicolons, or say “just general chunks” for study chunks.',
   missing_calendar:'Which calendar should I use?',
   missing_duration:'How many minutes should this take?',
   missing_event_time:'What date and start time should the event use?',

@@ -1,0 +1,36 @@
+{
+  "question": {
+    "version": 1,
+    "rootKey": "conversation_root_01",
+    "turnKey": "conversation_root_01",
+    "expiresAt": 1794189600000,
+    "questions": 1,
+    "original": "I have an exam coming up for CSE354 I need to study 3 chunks today can you put that in my tasks",
+    "question": {
+      "reason": "task_topics",
+      "question": "Should these study chunks use specific topics, or just general chunks? Give the task names, or say “just general chunks”.",
+      "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "receipt": {"version": 1, "key": "conversation_root_01", "outcome": "question", "line": "Should these study chunks use specific topics, or just general chunks? Give the task names, or say “just general chunks”.", "verified": 0, "expected": null, "targets": []}
+  },
+  "complete": {
+    "version": 1,
+    "rootKey": "conversation_root_01",
+    "turnKey": "conversation_answer_01",
+    "expiresAt": 1794189600000,
+    "questions": 1,
+    "receipt": {
+      "version": 1,
+      "key": "conversation_answer_01",
+      "outcome": "complete",
+      "line": "Added 3/3 tasks · 2026-11-07",
+      "verified": 3,
+      "expected": 3,
+      "targets": [
+        {"kind":"task","id":"synthetic-task-1","action":"added","title":"CSE354: Lectures","date":"2026-11-07","state":"applied","verification":"verified","before":{},"after":{"title":"CSE354: Lectures","date":"2026-11-07","important":false,"completed":false,"deleted":false}},
+        {"kind":"task","id":"synthetic-task-2","action":"added","title":"CSE354: practice problems","date":"2026-11-07","state":"applied","verification":"verified","before":{},"after":{"title":"CSE354: practice problems","date":"2026-11-07","important":false,"completed":false,"deleted":false}},
+        {"kind":"task","id":"synthetic-task-3","action":"added","title":"CSE354: review","date":"2026-11-07","state":"applied","verification":"verified","before":{},"after":{"title":"CSE354: review","date":"2026-11-07","important":false,"completed":false,"deleted":false}}
+      ]
+    }
+  }
+}

@@ -2,7 +2,7 @@
 // listener, model/provider invocation or external fallback is imported.
 import assert from 'node:assert/strict'
 import {pathToFileURL} from 'node:url'
-import {TOOLS,type ToolName} from '../src/mcp/contracts.js'
+import {TOOLS,ACTIVE_TOOLS,type ToolName} from '../src/mcp/contracts.js'
 import {Dispatcher} from '../src/mcp/dispatcher.js'
 import {validateServiceArguments} from '../src/mcp/service-contracts.js'
 import {ServiceTransport} from '../src/mcp/service-transport.js'
@@ -18,7 +18,7 @@ export async function runSourceCampaign(seed:number){
   const observations:{scenario:string;evidence:string;assertions:number}[]=[]
   let stage='catalog-refusal'
   try{
-  for(const name of Object.keys(TOOLS) as ToolName[]){
+  for(const name of ACTIVE_TOOLS){
     stage=`TOOL.${name}.refusal`
     assert.deepEqual(await new Dispatcher().dispatch(name,{}, {purpose:'action',capabilities:[]}),{state:'rejected',code:'forbidden'})
     assert.equal(validateServiceArguments(name,{shell:'forbidden'}).valid,false)
@@ -26,7 +26,7 @@ export async function runSourceCampaign(seed:number){
   }
   stage='timer-replay-compaction';const timer=runTimerCampaign(seed)
   observations.push({scenario:'WF02/WF27/WF37/WF38',evidence:timer.evidence,assertions:timer.assertions})
-  stage='intent-idempotency';const policy={executor:'mcp-action-v1' as const,allowedTools:Object.keys(TOOLS) as ToolName[]}
+  stage='intent-idempotency';const policy={executor:'mcp-action-v1' as const,allowedTools:ACTIVE_TOOLS}
   const admission={actorId:'synthetic-campaign',purpose:'action' as const,key:`synthetic_campaign_${seed}`,prompt:'Synthetic bounded task'}
   const admitted=admitIntent(undefined,admission,policy);assert.ok(admitted.ok)
   const started=startIntent(admitted.record,1000);assert.ok(started.ok)
@@ -39,7 +39,7 @@ export async function runSourceCampaign(seed:number){
   assert.equal(reserveIntentCall(recorded.record,'late-call','create_task',args,130000).ok,false)
   observations.push({scenario:'WF16/WF17/WF25',evidence:'executed-pure-intent-key-replay-prompt-and-expiry-fences',assertions:8})
   stage='service-task-readback';const db=new ProductPool(),dispatcher=new Dispatcher(new ServiceTransport({pool:db.pool,actorId:'synthetic-campaign',calendarSnapshot:async()=>db.snapshot,guardedCalendarWriter:createScopedCalendarWriter(db.pool,config,db.fetch)}))
-  const context={purpose:'action' as const,capabilities:[...new Set(Object.values(TOOLS).map(t=>t.capability))]}
+  const context={purpose:'action' as const,capabilities:[...new Set(ACTIVE_TOOLS.map(name=>TOOLS[name].capability))]}
   stage='clarification-readback'
   for(const reason of Object.keys(CLARIFICATION_QUESTIONS) as (keyof typeof CLARIFICATION_QUESTIONS)[])assert.deepEqual(await dispatcher.dispatch('request_clarification',{reason},context),{state:'ok',data:clarification(reason)})
   observations.push({scenario:'TOOL.request_clarification.readback',evidence:'executed-exact-allowlisted-questions-no-domain-effects',assertions:8})
@@ -66,12 +66,12 @@ export async function runSourceCampaign(seed:number){
   assert.equal((await dispatcher.dispatch('remove_preparation_topic',{id:preparationId,expectedVersion:2,topicId:inserted,operationKey:'campaign_remove_'+suffix},context)).state,'applied')
   assert.deepEqual(db.rows.get(preparationId)!.data.topics,before)
   observations.push({scenario:'WF31',evidence:'executed-service-query-fake-topic-identity-readback',assertions:4})
-  for(const [tool,args] of [['list_prices',{limit:1}],['search_inbox',{query:'Synthetic',account:'all',importantOnly:false,limit:1}],['get_calendar_series',{calendarId:'Calendar_A',eventId:'snapshot-event-id'}]] as const){
+  for(const [tool,args] of [['search_inbox',{query:'Synthetic',account:'all',importantOnly:false,limit:1}],['get_calendar_series',{calendarId:'Calendar_A',eventId:'snapshot-event-id'}]] as const){
     stage=`TOOL.${tool}.readback`
     assert.equal((await dispatcher.dispatch(tool,args,context)).state,'ok')
     observations.push({scenario:`TOOL.${tool}.readback`,evidence:'executed-query-fake-safe-projection',assertions:1})
   }
-  return {seed,status:'source-campaign-pass',evidence:'synthetic-source-only',timer,observations,coverage:observations.map(o=>({scenarioIds:o.scenario.split('/'),scope:'partial-source-seam',evidence:o.evidence,assertions:o.assertions})),pendingInventoryCases:268,notProven:['real PostgreSQL','authenticated HTTP/TLS callback','rendered browser','production run_action model','real CalDAV','complete matrix campaign']}
+  return {seed,status:'source-campaign-pass',evidence:'synthetic-source-only',timer,observations,coverage:observations.map(o=>({scenarioIds:o.scenario.split('/'),scope:'partial-source-seam',evidence:o.evidence,assertions:o.assertions})),pendingInventoryCases:265,notProven:['real PostgreSQL','authenticated HTTP/TLS callback','rendered browser','production run_action model','real CalDAV','complete matrix campaign']}
   }catch{throw Object.assign(new Error('source_campaign_failed'),{stage,completedObservations:observations.length})}
 }
 

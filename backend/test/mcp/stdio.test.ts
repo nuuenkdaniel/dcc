@@ -4,7 +4,7 @@ import {fileURLToPath} from 'node:url'
 import {Client} from '@modelcontextprotocol/sdk/client/index.js'
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js'
 import {McpError,ErrorCode,type CallToolResult} from '@modelcontextprotocol/sdk/types.js'
-import {TOOLS} from '../../src/mcp/contracts.js'
+import {TOOLS,ACTIVE_TOOLS} from '../../src/mcp/contracts.js'
 
 const task={operationKey:'stdio_synthetic_task_01',id:'Legacy.Task_AbC%2F',title:'Synthetic SDK test item',date:'2026-11-01'}
 const backend=fileURLToPath(new URL('../../',import.meta.url))
@@ -53,7 +53,7 @@ function envelope(result:CallToolResult){
 test('SDK initializes, discovers all strict tools, and default CLI fails closed with clean stdio', {timeout:20000},async()=>{
   await session([],async client=>{
     const {tools}=await client.listTools()
-    assert.deepEqual(tools.map(t=>t.name).sort(),Object.keys(TOOLS).sort())
+    assert.deepEqual(tools.map(t=>t.name).sort(),[...ACTIVE_TOOLS].sort())
     for(const tool of tools){
       assert.equal(tool.inputSchema.type,'object')
       assert.equal(tool.inputSchema.additionalProperties,false)

@@ -194,7 +194,7 @@ async function main(){
     check(runtime.calls===10&&runtime.evidence.length===10&&provider.events.filter(e=>e.method==='PUT').length===6)
     check(provider.events.every((e,i)=>e.method!=='PUT'||e.code!==412&&(e.ifNoneMatch==='*'||!!e.ifMatch)&&provider.events.slice(0,i).some(g=>g.method==='GET'&&g.path===e.path&&(e.ifNoneMatch==='*'?g.code===404:g.etag===e.ifMatch))))
     check((await rows()).every(r=>['dcc-request-intent-v1','hermes-command',RECEIPT_KIND].includes(r.kind)))
-    console.log(JSON.stringify({status:'passed',stage,assertions,modelCalls:runtime.calls,schemaEvidence:runtime.evidence,measurements,timerEvidence,providerPuts:6,publicTLSProven:false,realCalDAVProven:false,fullMatrixPending:268}))
+    console.log(JSON.stringify({status:'passed',stage,assertions,modelCalls:runtime.calls,schemaEvidence:runtime.evidence,measurements,timerEvidence,providerPuts:6,publicTLSProven:false,realCalDAVProven:false,fullMatrixPending:265}))
   }finally{
     // Bounded known synthetic evidence survives provider listener teardown even
     // on failure. No Authorization, capability, nonce, prompt or arbitrary log.
@@ -277,4 +277,4 @@ async function authLossProbe(browser:JourneyBrowser,store:SqlIntentStore,settled
   }finally{release()}
 }
 
-main().catch(()=>{console.log(JSON.stringify({status:'failed',stage,seed,assertions,modelCalls:runtime.calls,measurements,timerEvidence,providerEvidence,fullMatrixPending:268}));process.exitCode=1}).finally(()=>{process.removeListener('SIGINT',stop);process.removeListener('SIGTERM',stop)})
+main().catch(()=>{console.log(JSON.stringify({status:'failed',stage,seed,assertions,modelCalls:runtime.calls,measurements,timerEvidence,providerEvidence,fullMatrixPending:265}));process.exitCode=1}).finally(()=>{process.removeListener('SIGINT',stop);process.removeListener('SIGTERM',stop)})

@@ -140,6 +140,78 @@ raw profile/provider logs, cookie headers or capabilities during troubleshooting
 
 The parent-executed core checkpoint is recorded above; the source worker ran no
 checks or models. The new guard regression and timer/calendar journey checks are
-**unrun**. All **268 full-matrix cases stay pending**; the six core model
+**unrun**. All **265 full-matrix cases stay pending** (35 active tools; prices retired); the six core model
 invocations are a first integrated checkpoint, not full reliability,
 production/public-TLS acceptance or deployment.
+
+## Clarification/receipt campaign (parent only)
+
+**UNRUN for this feature.** Reuse the same reviewed `authenticated-runtime.ts`,
+official launcher, MCP relay, loopback HTTP fixture and isolated PG17 pool above;
+this is not a second harness. Review/typecheck the current source first, including
+the TS2367 correction in conversation preparation. The earlier core campaign's
+PASS does not certify this campaign or the new web/native clients.
+
+Select **one** finite campaign per explicitly approved run:
+
+- `DCC_QA_RUNTIME_CAMPAIGN=clarification`: CSE354 three-chunk original → real typed
+  question → named answer (`Lectures, practice problems, and review`) → expected
+  three tasks → operation receipts + SQL and HTTP readback → complete 3/3.
+- `DCC_QA_RUNTIME_CAMPAIGN=clarification-general`: same journey with the explicit
+  answer `just general chunks`, verifying three course-prefixed generic labels.
+
+Each selection also executes one clear three-named-task request without a question.
+Exactly **three model invocations are planned**, with a hard guard of **at most
+four**, no automatic retries, no looping both variants, and stop on first failure.
+Running both selections would be separate parent approvals/new disposable DBs,
+not permission for six calls in a single campaign. Same-key replay, changed answer,
+concurrent competing child keys, wrong client/owner, unauthenticated and wrong-Origin
+turns must cause no extra model invocation or duplicate effect. NY-day assertions
+allow only the execution-admission date (or the legitimate midnight boundary),
+not a frozen prior conversation date. The supported checklist still contains
+exactly three titles; model prose cannot underdeclare it as two.
+
+Use a **new empty** `dcc_qa_*` database on the independently verified isolated
+`127.0.0.1:18533` PG17 cluster. The same two existing tables must be its only
+application tables: `planner_entities` empty, `planner_runs` one empty default
+singleton. The definitions/provisioning above are the existing planner schema,
+not a feature migration. The runner performs no DDL, DB creation, deletion or
+truncation. No private `.env`, production DB, normal server/worker, personal
+records, mail/calendar/provider adapter, installation or profile edit is allowed.
+Only the explicitly approved real model transport uses its existing official
+bootstrap; all domain data and endpoints are isolated synthetic fixtures.
+
+Parent-only commands after source review and isolated-target approval:
+
+```sh
+npm --prefix frontend run check
+npm run check:backend
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s backend/deploy -p 'test_task_action_runtime.py'
+backend/node_modules/.bin/tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --esModuleInterop --skipLibCheck backend/test/acceptance/authenticated-runtime.ts
+npm --prefix frontend run test:e2e -- --workers=1 e2e/hermes-conversation.spec.ts
+git diff --check
+```
+
+With the same environment refusals, synthetic role/password and approved port
+18534 ownership as the core guide:
+
+```sh
+DCC_QA_RUNTIME_APPROVED=synthetic-loopback-model DCC_QA_RUNTIME_CAMPAIGN=clarification DCC_QA_DATABASE=dcc_qa_clarification_01 DCC_QA_PG_USER=postgres node --import ./backend/node_modules/tsx/dist/loader.mjs backend/test/acceptance/authenticated-runtime.ts
+```
+
+Do not execute the generic variant automatically; if separately approved, use
+`clarification-general` and a different reviewed empty database. Success requires
+**16 retained rows**: three request journals + three legacy fences, six operation
+receipts, one task collection containing six distinct tasks, two closed compact
+conversation records, and one owner/client slot. Closed conversation rows must
+contain no original/prompt/answer transcript. Saved task IDs/titles/dates must match
+the receipts and HTTP snapshot exactly. The output reports selected campaign,
+stage/seed, assertion/model counts, requested-model/schema evidence and retained
+row count; it does not print raw prompts, cookies, capabilities or exceptions.
+
+Failures retain all partial rows for parent inspection. The existing runner closes
+only its own listener, pool/advisory lock and spawned process groups. Parent owns
+DB cleanup, port verification, real Chromium review, safe-home Android build/test
+APK compilation, approved disposable-emulator IME/recreation/rotation checks,
+APK delivery and LXC deployment. A passing real runner is not a phone UI, public
+TLS, calendar repair or universal natural-language fulfillment claim.

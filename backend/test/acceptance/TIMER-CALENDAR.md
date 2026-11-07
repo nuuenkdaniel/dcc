@@ -158,4 +158,4 @@ runtime process groups and pool/advisory lock. Parent verifies cleanup independe
 including its own SSH forward/PG cluster; the runner never stops them. Failure
 means stop and inspect retained namespace; a later attempt needs another fresh
 approved DB and must not erase the previous failure. Public TLS/proxy, actual
-CalDAV/mail providers and **all 268 full-matrix cases** remain uncertified. No deploy.
+CalDAV/mail providers and **all 265 full-matrix cases** remain uncertified. No deploy.

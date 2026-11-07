@@ -4,7 +4,7 @@
 
 The user now directs finishing and deploying the current usable slice through
 parent-owned gates/review/publication/deployment, not endless matrix expansion.
-All 268 cases remain an honest pending inventory, **not a new mandatory release
+All 265 cases remain an honest pending inventory, **not a new mandatory release
 gate**. The separate timer/calendar campaign source remains unrun unless parent
 chooses it as a critical check; no further workflow expansion is in this fix.
 
@@ -29,7 +29,7 @@ source/browser regressions are **unrun by the worker**.
 ## Latest parent-executed checkpoints (not whole-matrix completion)
 
 Parent reports the following actual results before the new timer/calendar journey
-source below. These are scoped evidence mappings, **not 268 passed cases**; the
+source below. These are scoped evidence mappings, **not 265 passed cases**; the
 inventory's pending statuses remain unchanged until each full expectation runs.
 
 | Checkpoint | Actual result/evidence level | Matrix intersection and remaining scope |
@@ -54,8 +54,8 @@ latest checkpoint table above for current parent-reported execution counts.
 
 The parent reported backend/frontend 208-test gates plus typechecks/builds and diff
 checks PASS before this follow-up; both 35-tool finite source seeds also passed.
-Those results do not cover the current repairs. The original 265 acceptance cases
-remain pending; the clarification tool adds three pending cases (268 total).
+Those results do not cover the current repairs. With clarification included and
+the retired price tool excluded, 265 acceptance cases remain pending.
 
 Current follow-up source changes are **unrun** here:
 - Running/paused default focus retains its identity and elapsed countdown across
@@ -98,7 +98,7 @@ checks, commands, pinned loopback transport and empty-namespace guards. It is
 **unrun** and excluded from ordinary test globs; this does not close any pending
 full-matrix case or certify public TLS/proxy/deployment.
 
-`test/reliability-matrix.ts` exports **268 pending cases**: every current **36 tools × 3**
+`test/reliability-matrix.ts` exports **265 pending cases**: every current **35 tools × 3**
 (readback/refusal/retry), **60 rendered feature groups × 2** (interaction/failure
 and reload), and **40 adversarial workflow cases**. Every case has an ID, expected
 state/readback, evidence kind and explicit pending status. Existing tests referenced
@@ -152,7 +152,7 @@ source regressions do not prove the model will interpret natural dates correctly
 | Legacy parser, custom-project preview, study extraction | Common bridge → supplied-context MCP → host domain validators |
 | Assignment and day planning, mail classification | Same read-only context/proposal boundary; host is sole executor |
 | Material decoding, selected session excerpts | Explicit supplied/selected data, not an inference grant |
-| Mail and price connectors | Existing connector dispatch, not product model administration tools |
+| Mail connector / retired prices | Mail dispatch remains; price dispatch refuses without provider activation |
 
 ## Timer authority and first-slice limits
 
@@ -261,7 +261,7 @@ contains seed, assertion counts, partial source-seam coverage, and an explicit
 not-proven list; failure output contains only stage/code and completed observations.
 No expected inventory entry is converted into a pass. The service portion uses the
 strict query fake/injected synthetic calendar resources, **not** real PostgreSQL,
-CalDAV, authenticated HTTP, a browser or a model. All 268 campaign inventory cases
+CalDAV, authenticated HTTP, a browser or a model. All 265 campaign inventory cases
 remain pending at their required acceptance tier. Node tests execute both finite
 seeds during the parent backend gate; they do not start QA services or load private
 environment files. Source runner results are evidence only after actual execution.
@@ -326,5 +326,5 @@ to isolated scratch first. Prove Luna 6 metadata/provider acceptance with no fal
 then browser prompt→actual timer status/start/pause/resume/configure/reset/queue,
 elapsed clock, reload, duplicated Enter and lost ACK. Capture authoritative receipts
 and isolated DB/CalDAV readback for non-timer writes, not model prose. Only the parent
-publishes source and owns deployment. All 268 positive/fault acceptance statuses
+publishes source and owns deployment. All 265 positive/fault acceptance statuses
 remain pending until actual evidence is recorded outside private data.

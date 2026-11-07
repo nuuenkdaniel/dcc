@@ -38,32 +38,6 @@ def parse(store, text):
         return {**base,'status':'unverified','detail':'Possible matching listing found. Exact configuration and store eligibility need review before recording a price.'}
     return {**base,'status':'unmatched','detail':'No verified matching DA14260 / X7 OLED listing. Older DA14250 models excluded. Local inventory within 10 miles of Stony Brook is not verified.'}
 def dispatch(data):
-    store=data.get('store')
-    if store not in URLS:raise ValueError('Unsupported source')
-    if not LOCK.acquire(blocking=False):raise ValueError('Price browser busy')
-    try:
-        # Only static allowlisted retailer URLs enter the browser. No arbitrary URL or JS input.
-        setup = ''
-        if store=='dell':
-            setup = """import time
-for option in ['J0CF8P-4X26RD','TJD2R4-M43455','MTPMGW-7F1W9D']:
- selector='[data-option-id="'+option+'"]'
- for attempt in range(12):
-  if js('!!document.querySelector('+json.dumps(selector)+')'):break
-  time.sleep(.5)
- if not js('!!document.querySelector('+json.dumps(selector)+')'):raise ValueError('Configuration option missing')
- if not js('document.querySelector('+json.dumps(selector)+').getAttribute("aria-pressed")==="true"'):
-  js('document.querySelector('+json.dumps(selector)+').click()')
-  for attempt in range(20):
-   time.sleep(.5)
-   js('(()=>{const e=document.querySelector("#selection-modal-change-btn");if(e && e.getBoundingClientRect().width>0)e.click()})()')
-   if js('document.querySelector('+json.dumps(selector)+')?.getAttribute("aria-pressed")==="true"'):break
-  else:raise ValueError('Configuration did not update')
-time.sleep(1)
-"""
-        code='import json\ntid=new_tab('+repr(URLS[store])+')\ntry:\n wait_for_load()\n'+''.join(' '+l+'\n' for l in setup.splitlines())+' print("DAYMARK_RESULT="+json.dumps(js("document.body.innerText")))\nfinally:\n cdp("Target.closeTarget",targetId=tid)\n'
-        result=subprocess.run(['/root/.local/share/uv/tools/browser-use/bin/browser-use'],input=code,text=True,capture_output=True,timeout=65,env={**os.environ,'BU_NAME':'daymark-prices','BU_CDP_URL':'http://127.0.0.1:9222','BH_RECORD':'0','BH_DOMAIN_SKILLS':'0'},cwd='/root/.local/share/daymark')
-        line=next((l for l in result.stdout.splitlines() if l.startswith('DAYMARK_RESULT=')),None)
-        if not line:raise ValueError('Browser unavailable or retailer did not load')
-        return parse(store,json.loads(line.split('=',1)[1]))
-    finally:LOCK.release()
+    # Historical parse() remains usable over supplied synthetic/archived text.
+    # No configuration, store selection or old caller may reactivate fetching.
+    raise ValueError('Price tracker retired; no browser or provider request permitted')

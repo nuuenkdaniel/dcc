@@ -19,7 +19,7 @@ export class IntentPool extends ServicePool {
       if(sql.startsWith('SELECT pg_advisory_xact_lock')){
         if(!begun)throw Error('Lock order violation')
         const key=sql+JSON.stringify(args),prior=this.tails.get(key)??Promise.resolve()
-        if(held.has(key))throw Error('Repeated fake lock')
+        if(held.has(key))return client.query(sql,args) // PostgreSQL xact locks are reentrant.
         let resolve!:()=>void
         const latch=new Promise<void>(r=>{resolve=r})
         this.tails.set(key,latch)

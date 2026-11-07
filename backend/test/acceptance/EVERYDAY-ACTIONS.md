@@ -34,7 +34,7 @@ used36 unchanged-within-campaign schemas, digest
 `2d30920d87663dfb1ccfddd582c3d0190cf38e19a9f97f836d6b998c08a5dcea`.
 Description changes intentionally differ from the old campaign digest.
 
-No full268-case, real CalDAV/public TLS, rendered composer, preparation,
+No full265-case, real CalDAV/public TLS, rendered composer, preparation,
 cached inbox/prices, recurrence/all-day/DST or universal reliability claim.
 Historical source-worker UNRUN statements below mean the worker did not execute
 those commands; the parent results above are the current checkpoint.
@@ -73,7 +73,8 @@ window, omit the wrong id filter, page and match returned projectId, or use the
 supplied exact child ID. An unresolved requested edit is not a successful no-op;
 clarify/refuse honestly if it cannot be grounded. No guessed IDs, automatic write
 retry, SQL predicate change or authorization/version relaxation is introduced.
-The36-tool allowlist and structural fields remain unchanged. Description text
+The current 35-tool allowlist excludes retired prices; other structural fields
+remain unchanged. Description text
 intentionally changes the schema digest versus older campaigns; the fresh digest
 must still remain stable within each invocation and throughout the new campaign.
 The original three-tool/legacy runtime does not acquire this product-only guidance.
@@ -261,4 +262,4 @@ parent owns its own PG/tunnel and verifies closed ports. Any later attempt needs
 another reviewed empty DB and retains this failed namespace/report. Provider
 resources are ephemeral fixture state; successful raw ICS and immutable SQL
 payload receipts are asserted before teardown and sanitized hashes remain in the
-report. No full268-case completion, live personal integrations or deployment claim.
+report. No full265-case completion, live personal integrations or deployment claim.
