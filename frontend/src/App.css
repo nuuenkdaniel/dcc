@@ -301,12 +301,37 @@ nav { display: grid; gap: 5px; }
 .tell-hermes input::placeholder { color:var(--muted); }
 .tell-hermes p { margin:8px 0 0; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
 .tell-hermes p:empty { margin:0; }
-.hermes-conversation button, .hermes-conversation summary { min-height:44px; min-width:44px; cursor:pointer; }
-.hermes-conversation summary { display:flex; align-items:center; }
-.hermes-conversation section, .hermes-receipt { min-width:0; overflow-wrap:anywhere; }
-.hermes-conversation dl { margin:8px 0; font-size:12px; }
-.hermes-conversation dd { margin:0 0 6px; overflow-wrap:anywhere; }
-.hermes-receipt > p { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* Conversation-only controls: keep legacy composers and the rest of the app unchanged. */
+.hermes-conversation { display:flex; flex-direction:column; gap:10px; }
+.hermes-conversation button,.hermes-conversation summary { min-height:44px; min-width:44px; max-width:100%; padding:10px 14px; border:1px solid var(--control-border); border-radius:8px; background:var(--control-bg); color:var(--control-text); font:inherit; font-size:14px; line-height:1.4; overflow-wrap:anywhere; cursor:pointer; }
+.hermes-conversation button:hover:not(:disabled),.hermes-conversation summary:hover { border-color:var(--accent); background:var(--accent-soft); }
+.hermes-conversation button:disabled { opacity:.55; cursor:not-allowed; }
+.hermes-conversation button:focus-visible,.hermes-conversation summary:focus-visible,.hermes-conversation input:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.hermes-conversation button.hermes-primary { background:var(--accent); border-color:var(--accent); color:#18162a; font-weight:700; }
+.hermes-conversation button.hermes-primary:hover:not(:disabled) { background:var(--accent); border-color:var(--accent); filter:brightness(1.08); }
+.hermes-conversation .hermes-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; }
+.hermes-conversation .hermes-question-panel,.hermes-conversation .hermes-receipt { min-width:0; padding:14px; border:1px solid var(--control-border); border-radius:12px; background:var(--surface); overflow-wrap:anywhere; }
+.hermes-conversation .hermes-question-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.hermes-conversation .hermes-question-meta { margin:0; color:var(--subtle); font-size:12px; line-height:1.5; }
+.hermes-conversation button.hermes-disclosure { padding-inline:10px; font-size:12px; }
+.hermes-conversation .hermes-question-text { margin:10px 0 12px; color:var(--control-text); font-size:16px; font-weight:500; line-height:1.5; }
+.hermes-conversation summary { display:flex; align-items:center; gap:8px; width:fit-content; list-style:none; }
+.hermes-conversation summary::-webkit-details-marker { display:none; }
+.hermes-conversation summary::before { content:'+'; flex:0 0 auto; color:var(--accent); }
+.hermes-conversation details[open] > summary::before { content:'−'; }
+.hermes-conversation .hermes-original-request p { margin:10px 0 0; color:var(--subtle); font-size:13px; line-height:1.5; }
+.hermes-conversation .hermes-status { margin:0; padding:10px 12px; border-left:3px solid var(--accent); border-radius:4px; background:var(--surface-2); color:var(--control-text); font-size:13px; line-height:1.5; }
+.hermes-conversation .hermes-receipt > p { margin:0 0 10px; color:var(--control-text); font-size:14px; font-weight:600; line-height:1.5; white-space:normal; }
+.hermes-conversation .hermes-receipt[data-outcome="complete"] > p { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.hermes-conversation .hermes-receipt:is([data-outcome="partial"],[data-outcome="uncertain"],[data-outcome="failed"]) { border-color:var(--danger-border); }
+.hermes-conversation .hermes-receipt details { margin-bottom:10px; }
+.hermes-conversation .hermes-receipt details p { color:var(--subtle); font-size:13px; line-height:1.5; }
+.hermes-conversation .hermes-receipt ul { list-style:none; padding:0; margin:12px 0; }
+.hermes-conversation .hermes-receipt li { padding:12px 0; border-top:1px solid var(--border); font-size:14px; line-height:1.5; }
+.hermes-conversation .hermes-receipt strong { color:var(--control-text); }
+.hermes-conversation dl { display:grid; gap:4px; margin:10px 0; font-size:13px; }
+.hermes-conversation dt { color:var(--subtle); }
+.hermes-conversation dd { margin:0 0 6px; color:var(--control-text); overflow-wrap:anywhere; }
 .hermes-origin { margin:12px 22px 0; color:var(--muted); font-size:12px; }
 /* Projects and curator: secondary controls stay out of the daily flow. */
 .projects-view { max-width:1100px; }
