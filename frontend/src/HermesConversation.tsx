@@ -165,6 +165,10 @@ export function HermesConversation({owner,onCreated,initialText,focusEditor=fals
   const question=draft.view?.question,value=question?draft.answer:draft.original
   const status=available?notice:'Hermes is unavailable. You can edit or clear; no request will be sent.'
   return <form className="tell-hermes hermes-conversation" aria-busy={busy} onSubmit={e=>{e.preventDefault();void send()}}>
+    {question&&<section className="hermes-question-panel" aria-label="Details Hermes needs">
+      <div className="hermes-question-heading"><p className="hermes-question-meta">Question {draft.view!.questions} of 3</p><button className="hermes-disclosure" type="button" aria-expanded={expanded} aria-controls="hermes-question-details" onClick={()=>setExpanded(!expanded)}>{expanded?'Close details':'Show question'}</button></div>
+      {expanded&&<div id="hermes-question-details"><p className="hermes-question-text">{question.question}</p><details className="hermes-original-request"><summary>Your request</summary><p>Original request: {draft.original}</p></details></div>}
+    </section>}
     <label className="sr-only" htmlFor="hermes-conversation-input">Ask Hermes about tasks, projects, or calendar</label>
     <input ref={editor} id="hermes-conversation-input" type="text" placeholder={question?'Answer Hermes':'Hermes'} value={value} maxLength={4000} required aria-describedby="hermes-conversation-status" onFocus={()=>{if(question)setExpanded(true)}} onChange={e=>{
       const text=e.target.value;generation.current++;abort.current?.abort();setBusy(false);setFlight(null)
@@ -173,16 +177,18 @@ export function HermesConversation({owner,onCreated,initialText,focusEditor=fals
       const base=current.current
       const next={...base,editedAfterSubmit:base.editedAfterSubmit||!!base.rootKey&&(!question||!!base.attempt),...(question?{answer:text}:{original:text})};try{commit(next)}catch{current.current=next;setDraft(next);setNotice('Draft not saved; sending paused until storage recovers.')}
     }}/>
-    {question&&<><button type="button" onClick={()=>setExpanded(!expanded)}>{expanded?'Close details':'Show question'}</button>{expanded&&<section aria-label="Details Hermes needs"><p>Original request: {draft.original}</p><p>{question.question}</p><p>Question {draft.view!.questions}/3. Answers stay linked to this request.</p><button type="submit" disabled={busy||!draft.answer.trim()}>Answer</button></section>}</>}
-    {status&&<p id="hermes-conversation-status" role="status">{status}</p>}
+    {(question||draft.rootKey||busy||confirmRepeat===draft.original)&&<div className="hermes-actions">
+      {question&&expanded&&<button className="hermes-primary" type="submit" disabled={busy||!draft.answer.trim()}>Send answer</button>}
+      {draft.rootKey&&<button type="button" aria-label="New request / cancel" title="Close this request and start fresh. Earlier saved effects are not rolled back." onClick={()=>void newRequest()}>New request</button>}
+      {draft.rootKey&&!busy&&(draft.attempt||draft.view?.receipt.outcome==='uncertain'||draft.view?.receipt.outcome==='partial')&&<button type="button" onClick={()=>{
+        const base=current.current,g=generation.current
+        void call({op:'read',clientId:base.clientId,rootKey:base.rootKey},AbortSignal.timeout(10000)).then(v=>{if(v.rootKey!==base.rootKey)throw Error('Wrong conversation');if(isCurrent(g))accept(v,base)}).catch(()=>{if(isCurrent(g))setNotice('Receipt not available. No resend; text remains editable.')})
+      }}>Check receipt</button>}
+      {confirmRepeat===draft.original&&<button type="button" disabled={busy} onClick={()=>void send(true)}>Send as new request — may duplicate effects</button>}
+      {busy&&<button type="button" title="Stop waiting for this reply; this does not undo saved or in-flight effects." onClick={()=>abort.current?.abort()}>Stop waiting</button>}
+    </div>}
+    {status&&<p className="hermes-status" id="hermes-conversation-status" role="status">{status}</p>}
     {!status&&<span id="hermes-conversation-status" role="status" className="sr-only">{busy?'Checking DCC':'Hermes ready'}</span>}
     {latest&&latest.outcome!=='question'&&<div className="hermes-receipt" data-outcome={latest.outcome}><p title={latest.line}>{latest.line}</p><details><summary>View</summary><p>Outcome: {latest.outcome}. Verified distinct records: {latest.verified}; expected: {latest.expected??'unresolved'}. Saved effects are not rolled back; do not repeat them.</p><ul>{latest.targets.map((t,i)=><li key={i}><strong>{t.action}: {t.title}</strong>{t.date&&` · ${t.date}`}<p>{t.kind} · {t.id} · {t.state} · {t.verification}</p>{t.before&&t.after&&<dl>{[...new Set([...Object.keys(t.before),...Object.keys(t.after)])].map(field=><div key={field}><dt>{field}</dt><dd>{String(t.before?.[field]??'—')} → {String(t.after?.[field]??'—')}</dd></div>)}</dl>}</li>)}</ul>{latest.targets.length===0&&<p>No verified record targets.</p>}</details><button type="button" onClick={()=>{sessionStorage.removeItem(prefix+owner+'.receipt');setLatest(null)}}>Dismiss</button></div>}
-    {draft.rootKey&&<button type="button" onClick={()=>void newRequest()}>New request / cancel</button>}
-    {draft.rootKey&&!busy&&(draft.attempt||draft.view?.receipt.outcome==='uncertain'||draft.view?.receipt.outcome==='partial')&&<button type="button" onClick={()=>{
-      const base=current.current,g=generation.current
-      void call({op:'read',clientId:base.clientId,rootKey:base.rootKey},AbortSignal.timeout(10000)).then(v=>{if(v.rootKey!==base.rootKey)throw Error('Wrong conversation');if(isCurrent(g))accept(v,base)}).catch(()=>{if(isCurrent(g))setNotice('Receipt not available. No resend; text remains editable.')})
-    }}>Check receipt</button>}
-    {confirmRepeat===draft.original&&<button type="button" disabled={busy} onClick={()=>void send(true)}>Send as new request — may duplicate effects</button>}
-    {busy&&<button type="button" onClick={()=>abort.current?.abort()}>Stop waiting</button>}
   </form>
 }

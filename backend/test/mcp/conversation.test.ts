@@ -16,8 +16,10 @@ import {canonicalJson,RECEIPT_KIND} from '../../src/mcp/service-transport.js'
 import type {Command,Result} from '../../src/mcp/contracts.js'
 const clientId='11111111-1111-4111-a111-111111111111',owner='synthetic-owner'
 const original='I have an exam coming up for CSE354 I need to study 3 chunks today can you put that in my tasks'
+const actual='I am studying for an upcoming midterm I need to study the first 3 chunks today. Can you put that on my task list?'
+const questionRequest=original+' using specific topics'
 const policy={executor:'mcp-action-v1' as const,allowedTools:ACTIVE_TOOLS}
-function setup(limit=3){
+function setup(limit=3,prompt=questionRequest){
   const conversations=new IntentPool(),journal=new IntentPool(),domain=new ServicePool(),store=new SqlIntentStore(journal.pool,'actor-A'),transport=new ServiceTransport({pool:domain.pool,actorId:'actor-A'})
   let calls=0,now=Date.parse('2026-11-08T02:00:00Z')
   const runner:ModelRunner=async request=>{
@@ -29,12 +31,12 @@ function setup(limit=3){
   }
   const controller=new RequestController({store,transport,runner,now:()=>now})
   const api=new Conversations({pool:conversations.pool,store,transport,now:()=>now,run:(input,signal)=>controller.run(input,policy,signal),fence:async input=>{await store.admit({...input,purpose:'action'},policy);await store.fence(input.key,now)}})
-  const start=()=>api.handle({op:'start',clientId,key:'conversation_root_01',prompt:original},owner)
+  const start=()=>api.handle({op:'start',clientId,key:'conversation_root_01',prompt},owner)
   return {api,store,domain,conversations,start,calls:()=>calls,advance:(ms:number)=>{now+=ms}}
 }
-test('original → question → bound answer → three persisted tasks → verified structured receipt; duplicate/conflicting answers',async()=>{
+test('required topics → question → bound names → three persisted tasks → verified receipt; duplicate/conflicting answers',async()=>{
   const h=setup(),q=await h.start()
-  assert.equal(q.receipt.outcome,'question');assert.equal(q.original,original);assert.equal(h.domain.rows.size,0);assert.ok(validConversationView(q))
+  assert.equal(q.receipt.outcome,'question');assert.equal(q.original,questionRequest);assert.equal(h.domain.rows.size,0);assert.ok(validConversationView(q))
   const answer={op:'answer' as const,clientId,rootKey:q.rootKey,key:'conversation_answer_01',parentKey:q.turnKey,questionId:q.question!.id,answer:'Lectures, practice problems, and review'}
   const complete=await h.api.handle(answer,owner)
   assert.equal(complete.receipt.outcome,'complete');assert.equal(complete.receipt.expected,3);assert.equal(complete.receipt.verified,3);assert.equal(complete.original,undefined)
@@ -63,7 +65,7 @@ test('partial two of three cannot borrow model final success; failed readback st
 })
 test('unique parent claim precedes two concurrent child executions',async()=>{
   const h=setup(),q=await h.start()
-  const body={op:'answer' as const,clientId,rootKey:q.rootKey,parentKey:q.turnKey,questionId:q.question!.id,answer:'just general chunks'}
+  const body={op:'answer' as const,clientId,rootKey:q.rootKey,parentKey:q.turnKey,questionId:q.question!.id,answer:'Lectures; practice problems; review'}
   const result=await Promise.allSettled([h.api.handle({...body,key:'concurrent_child_key_01'},owner),h.api.handle({...body,key:'concurrent_child_key_02'},owner)])
   assert.equal(result.filter(r=>r.status==='fulfilled').length,1);assert.equal(h.calls(),2);assert.equal(h.domain.rows.get(COLLECTION)!.data.tasks.length,3)
 })
@@ -111,4 +113,49 @@ test('zero effects is not done; read-only is distinct; calendar saved never mean
   const receipt=await projectConversationReceipt(record,transport)
   assert.equal(receipt.outcome,'uncertain');assert.equal(receipt.verified,0);assert.match(receipt.line,/snapshot confirmation pending/)
   assert.equal(receipt.targets[0]!.kind,'calendar-mutation');assert.match(receipt.targets[0]!.title,/not an event ID/)
+})
+test('exact natural study request and CSE request each admit an immutable three-task guard with no clarification',async()=>{
+  for(const [prompt,prefix] of [[actual,''],[original,'CSE354: ']] as const){
+    const h=setup(3,prompt),r=await h.start()
+    const expected=Array.from({length:3},(_,i)=>({title:`${prefix}Study chunk ${i+1}`,date:'2026-11-07'}))
+    assert.equal(h.calls(),1);assert.equal(r.question,undefined);assert.equal(r.original,undefined)
+    assert.ok(validConversationView(r));assert.equal(r.receipt.outcome,'complete');assert.equal(r.receipt.expected,3);assert.equal(r.receipt.verified,3)
+    const journal=await h.store.read(r.turnKey)
+    assert.deepEqual(journal.guard?.checklist?.tasks,expected)
+    assert.equal(journal.calls.some(c=>c.command.tool==='request_clarification'),false)
+    assert.equal(journal.calls.filter(c=>c.command.tool==='create_task').length,3)
+    assert.deepEqual(r.receipt.targets.map(t=>({title:t.title,date:t.date})),expected)
+    assert.equal(new Set(r.receipt.targets.map(t=>t.id)).size,3)
+    assert.equal(h.domain.rows.get(COLLECTION)!.data.tasks.length,3)
+    assert.deepEqual(await h.start(),r);assert.equal(h.calls(),1)
+  }
+})
+test('generic default still requires all three writes and fresh readback, never a model declaration of completion',async()=>{
+  const h=setup(2,actual),r=await h.start(),record=await h.store.read(r.turnKey)
+  assert.equal(record.guard?.checklist?.tasks.length,3);assert.equal(r.receipt.outcome,'partial')
+  assert.equal(r.receipt.expected,3);assert.equal(r.receipt.verified,2);assert.equal(h.calls(),1)
+  h.domain.rows.get(COLLECTION)!.data.tasks=[]
+  assert.equal((await projectConversationReceipt(record,new ServiceTransport({pool:h.domain.pool,actorId:'actor-A'}))).outcome,'uncertain')
+})
+test('old persisted optional-topics question accepts Just label without another question or duplicate writes',async()=>{
+  const h=setup(),q=await h.start()
+  // Historical pending root: old code asked about optional labels for this exact
+  // plain request. Keep its claimed question/journal, not a new runtime fallback.
+  const row=[...h.conversations.rows.values()].find(r=>r.kind==='dcc-hermes-conversation-v1')!
+  row.data.original=original
+  row.data.turns[0].fingerprint=createHash('sha256').update(original).digest('hex')
+  const answer={op:'answer' as const,clientId,rootKey:q.rootKey,key:'legacy_label_answer_01',parentKey:q.turnKey,questionId:q.question!.id,answer:'Just label'}
+  const result=await h.api.handle(answer,owner)
+  assert.equal(result.question,undefined);assert.equal(result.receipt.outcome,'complete');assert.equal(result.receipt.expected,3);assert.equal(result.receipt.verified,3)
+  assert.deepEqual(result.receipt.targets.map(t=>t.title),['CSE354: Study chunk 1','CSE354: Study chunk 2','CSE354: Study chunk 3'])
+  assert.equal(h.calls(),2);assert.deepEqual(await h.api.handle(answer,owner),result);assert.equal(h.calls(),2)
+  assert.equal(h.domain.rows.get(COLLECTION)!.data.tasks.length,3)
+})
+test('generic study dates are fixed at each execution admission using the backend NY day',async()=>{
+  const h=setup(3,actual),first=await h.start()
+  assert.ok(first.receipt.targets.every(t=>t.date==='2026-11-07'))
+  h.advance(3*60*60*1000)
+  const next=await h.api.handle({op:'start',clientId,key:'next_day_study_01',prompt:actual},owner)
+  assert.equal(next.receipt.outcome,'complete');assert.ok(next.receipt.targets.every(t=>t.date==='2026-11-08'))
+  assert.equal(h.calls(),2)
 })

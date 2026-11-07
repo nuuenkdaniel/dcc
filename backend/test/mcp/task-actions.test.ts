@@ -112,7 +112,7 @@ test('authenticated conversation HTTP owner fence → real SDK question → boun
     const session=await h.app.inject({url:'/api/v1/auth/session',cookies:{daymark_session:h.cookie}})
     const workspaceOwner=session.json().workspaceOwner,clientId='11111111-1111-4111-a111-111111111111'
     const post=(body:unknown)=>h.app.inject({method:'POST',url:CONVERSATION_PATH,headers:{origin},cookies:{daymark_session:h.cookie},payload:body as any})
-    const first={op:'start',workspaceOwner,clientId,key:'http_conversation_key_01',prompt:'I have an exam coming up for CSE354 I need to study 3 chunks today can you put that in my tasks'}
+    const first={op:'start',workspaceOwner,clientId,key:'http_conversation_key_01',prompt:'I have an exam coming up for CSE354 I need to study 3 chunks today can you put that in my tasks using specific topics'}
     assert.equal((await post({...first,workspaceOwner:'c'.repeat(64)})).statusCode,409);assert.equal(h.invocations(),0)
     assert.equal((await h.app.inject({method:'POST',url:CONVERSATION_PATH,headers:{origin},payload:first})).statusCode,401)
     const q=await post(first);assert.equal(q.statusCode,200);assert.ok(validConversationView(q.json()));assert.equal(q.json().receipt.outcome,'question')

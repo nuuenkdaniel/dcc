@@ -17,33 +17,53 @@ export function nyDate(now:number){
   const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(now))
   return ['year','month','day'].map(k=>parts.find(p=>p.type===k)!.value).join('-')
 }
-function names(text:string){
+function names(text:string):string[]|undefined{
   const clean=text.trim().replace(/[.!]$/,'')
   const quoted=[...clean.matchAll(/"([^"\n]{1,200})"/g)].map(m=>m[1]!)
-  if(quoted.length&&clean.replace(/"[^"\n]+"/g,'').replace(/[\s,;]|\band\b/gi,'')==='')return quoted
-  return clean.split(/\s*;\s*|\s*,\s*(?:and\s+)?|\s+and\s+/i).map(t=>t.trim()).filter(Boolean)
+  if(clean.includes('"')){
+    // Every quoted title needs a real separator; mixed/unclosed quotes are not
+    // permission to drop a malformed entry or substitute a generic title.
+    const markers=clean.replace(/"[^"\n]+"/g,'\u0000')
+    return quoted.length&&/^\u0000(?:\s*(?:;|,(?:\s*and)?|\band\b)\s*\u0000)*$/i.test(markers)?quoted:undefined
+  }
+  const titles=clean.split(/\s*;\s*|\s*,\s*(?:and\s+)?|\s+and\s+/i).map(t=>t.trim())
+  return titles.every(Boolean)?titles:undefined
+}
+const extraScope=/\b(?:delete|remove|complete|calendar|tomorrow|yesterday|minutes?|hours?|then|also|after|before|except|not|don['’]t|do not|schedule|reschedule|mark|send|ignore|override|disregard|invoke|execute)\b|\b(?:call|system|developer|tool)\s+(?:instructions?|prompt|message|create_task|tools?)\b/i
+function genericLabels(answer:string){
+  // Contextual label choice ONLY, never generic consent to another operation.
+  return /^(?:please\s+)?(?:(?:just\s+)?general(?:\s+(?:study\s+)?chunks?)?|(?:just\s+)?label(?:\s+them)?(?:\s+(?:generically|however you like))?|(?:just\s+)?use\s+(?:generic|general)\s+(?:labels|names|titles)|(?:you\s+can\s+)?(?:just\s+)?(?:choose|pick)(?:\s+(?:the|some|any|generic|general))?\s+(?:labels|names|titles)|(?:any|generic|general)\s+(?:labels|names|titles)\s+are\s+(?:fine|okay|ok))[.!]?$/i.test(answer.trim())
 }
 export function interpretTasks(original:string,answers:string[],today:string):Interpretation{
-  // Supported grammar is intentionally explicit. Broad product requests continue
-  // through the existing catalog, but never receive a full-fulfillment claim.
-  const chunk=/\b(?:study\s+)?([1-4]|one|two|three|four)\s+(?:study\s+)?chunks?\b/i.exec(original)
-  const explicit=/^\s*(?:please\s+)?(?:add|create|put)\s+(?:exactly\s+)?([1-4]|one|two|three|four)?\s*(?:named\s+)?tasks?\s+(?:for\s+)?today\s*:\s*(.+?)\s*$/i.exec(original)
-  // Do not certify arbitrary sentences by spotting a number and ignoring the
-  // rest. Only this bounded study grammar and the explicit literal-name list
-  // establish a checklist; other natural language retains unresolved scope.
-  const study=/^\s*(?:I have an exam coming up for ([a-z]{2,6}\s?\d{3,4})[,.]?\s+)?I need to study (?:[1-4]|one|two|three|four) chunks? today[,.]?\s+(?:can you )?put (?:that|them) in my tasks[?.!]?\s*$/i.exec(original)
-  if(!explicit&&(!chunk||!study))return {kind:'unsupported'}
-  // Never silently ignore a second mutation, scheduling constraint or duration.
-  if(/\b(?:delete|remove|complete|calendar|tomorrow|minutes?|hours?|then|also|after|before|except|not|don't|do not)\b/i.test(original))return {kind:'unsupported'}
-  const countText=explicit?explicit[1]:chunk?.[1]
+  // Full anchored task-only clauses, not number/keyword spotting. Strip only an
+  // allowlisted exam context immediately preceding the supported study clause.
+  // Unsupported broader requests retain unresolved scope in the existing catalog.
+  if(extraScope.test(original)||answers.some(a=>extraScope.test(a)))return {kind:'unsupported'}
+  const text=original.trim()
+  const context=/^I (?:have an (?:exam|midterm) coming up|am studying for an upcoming (?:exam|midterm))(?: for (?<course>[a-z]{2,6}\s?\d{3,4}))?[,.]?\s+(?=I need to study\b)/i.exec(text)
+  const body=context?text.slice(context[0].length):text
+  const explicit=/^(?:please\s+)?(?:add|create|put)\s+(?:exactly\s+)?(?<count>[1-4]|one|two|three|four)?\s*(?:named\s+)?tasks?\s+(?:for\s+)?today\s*:\s*(?<titles>.*?)\s*$/i.exec(text)
+  const sentence=/^I need to study (?:the\s+first\s+|first\s+)?(?<count>[1-4]|one|two|three|four)\s+(?:study\s+)?chunks? today(?<beforeTopics>\s+using specific topics)?[,.]?\s+(?:can you\s+)?put (?:that|them) (?:in my tasks|on my task list)(?<topics>\s+using specific topics)?(?:\s*:\s*(?<titles>.*?))?[?.!]?\s*$/i.exec(body)
+  const command=!context?/^(?:please\s+)?(?:add|create|put)\s+(?:exactly\s+)?(?:the\s+first\s+|first\s+)?(?<count>[1-4]|one|two|three|four)\s+(?:study\s+)?chunks?\s+(?:for\s+)?today(?<topics>\s+using specific topics)?(?:\s*:\s*(?<titles>.*?))?[.!]?\s*$/i.exec(body):null
+  const study=sentence??command
+  if(!explicit&&!study)return {kind:'unsupported'}
+  const countText=(explicit??study)?.groups?.count
   const words:Record<string,number>={one:1,two:2,three:3,four:4}
   const requested=countText?(words[countText.toLowerCase()]??Number(countText)):undefined
+  const course=context?.groups?.course?.replace(/\s/g,'').toUpperCase()
+  const supplied=(explicit??study)?.groups?.titles
+  const topics=!!(study?.groups?.topics||study?.groups?.beforeTopics)
+  const valid=(titles:string[]|undefined):titles is string[]=>!!titles&&titles.length>=1&&titles.length<=4&&(requested===undefined||titles.length===requested)&&titles.every(t=>t.length<=200&&!!t&&!/[\n\r:]/.test(t))&&new Set(titles.map(t=>t.toLowerCase())).size===titles.length
+  const checklist=(titles:string[]):Interpretation=>({kind:'checklist',checklist:{version:1,kind:'create_tasks',tasks:titles.map(title=>({title:course?`${course}: ${title}`:title,date:today}))}})
+  const literal=supplied!==undefined?names(supplied):undefined
+  if(valid(literal))return checklist(literal) // Never genericize valid user titles.
   const answer=answers.at(-1)
-  const list=answer??explicit?.[2]??original.split(/\b(?:topics?|named|called)\s*:\s*/i)[1]
-  const course=study?.[1]?.replace(/\s/g,'').toUpperCase()
-  const general=!!study&&answer!==undefined&&/^(?:just\s+)?general(?:\s+(?:study\s+)?chunks?)?[.!]?$/i.test(answer.trim())
-  if(!list&&!general)return {kind:'question',reason:'task_topics'}
-  const titles=general&&requested?Array.from({length:requested},(_,i)=>`Study chunk ${i+1}`):names(list??'')
-  if(titles.length<1||titles.length>4||requested!==undefined&&titles.length!==requested||titles.some(t=>t.length>200||!t||/[\n\r:]/.test(t))||new Set(titles.map(t=>t.toLowerCase())).size!==titles.length)return {kind:'question',reason:'task_names'}
-  return {kind:'checklist',checklist:{version:1,kind:'create_tasks',tasks:titles.map(title=>({title:course?`${course}: ${title}`:title,date:today}))}}
+  if(answer!==undefined&&!genericLabels(answer)){
+    const titles=names(answer)
+    return valid(titles)?checklist(titles):{kind:'question',reason:'task_names'}
+  }
+  // Generic defaults/legacy label-choice replies are valid only for a bounded
+  // study request without supplied names or a request to select actual topics.
+  if(study&&supplied===undefined&&!topics&&requested!==undefined)return checklist(Array.from({length:requested},(_,i)=>`Study chunk ${i+1}`))
+  return {kind:'question',reason:topics&&supplied===undefined?'task_topics':'task_names'}
 }
