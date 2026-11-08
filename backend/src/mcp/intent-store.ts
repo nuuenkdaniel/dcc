@@ -118,6 +118,18 @@ export class SqlIntentStore {
     })
   }
   async read(key:string){return this.transaction(key,async(_c,row,legacy)=>this.load(row,legacy,key))}
+  // Guarded conversation supersession only: caller already owns the slot/root
+  // transaction. Reuse that connection, retaining the legacy -> journal order.
+  // No checkout or transaction lifecycle here; the caller commits or rolls back.
+  async readInTransaction(c:PoolClient,key:string){
+    const address=intentAddress(key)
+    try{
+      await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,817343))',[address.legacyReceiptId])
+      const legacy=(await c.query<Row>('SELECT id,kind,version,data FROM planner_entities WHERE id=$1 FOR UPDATE',[address.legacyReceiptId])).rows[0]
+      const row=(await c.query<Row>('SELECT id,kind,version,data FROM planner_entities WHERE id=$1 FOR UPDATE',[address.id])).rows[0]
+      return this.load(row,legacy,key)
+    }catch(error){if(error instanceof IntentStoreError)throw error;throw new IntentStoreError('storage_failure')}
+  }
   private async change(key:string,transition:(r:IntentRecord)=>IntentDecision){
     return this.transaction(key,async(c,row,legacy)=>{
       const next=requireIntent(transition(this.load(row,legacy,key)))

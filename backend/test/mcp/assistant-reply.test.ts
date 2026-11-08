@@ -74,7 +74,8 @@ test('Done prose never certifies zero effects, conflicts or interrupted writes; 
   concurrentChange=()=>{h.db.rows.get(COLLECTION)!.version++}
   try{
     const zero=(await h.post(h.start('reply_lying_zero_01','Move all my tasks tomorrow'))).json()
-    assert.equal(zero.assistantReply.text,'Done with everything.');assert.equal(zero.receipt.outcome,'uncertain');assert.equal(zero.receipt.expected,null);assert.equal(zero.continuable,false)
+    assert.equal(zero.assistantReply.text,'Done with everything.');assert.equal(zero.receipt.outcome,'read-only');assert.equal(zero.receipt.line,'No actions performed.')
+    assert.equal(zero.receipt.verified,0);assert.deepEqual(zero.receipt.targets,[]);assert.equal(zero.receipt.expected,null);assert.equal(zero.continuable,false)
     await h.post({op:'start',clientId,key:'reply_seed_task_01',prompt:'Add 1 study chunk today'})
     mode='update'
     const update=(await h.post(h.start('reply_real_update_01','Move the study chunk tomorrow'))).json()

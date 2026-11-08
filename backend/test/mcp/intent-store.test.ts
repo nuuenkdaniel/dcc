@@ -8,6 +8,65 @@ export const input={key:'durable_request_key_01',prompt:'Synthetic create reques
 export const policy={executor:'mcp-action-v1' as const,allowedTools:['list_tasks','create_task'] as const}
 const task={title:'Synthetic item',date:'2026-11-01',expectedVersion:0}
 
+test('transaction-owned journal read uses one checkout and leaves commit and release to the caller',async()=>{
+  const db=new IntentPool(),store=new SqlIntentStore(db.pool,'actor-A')
+  await store.admit({...input,purpose:'action'},policy)
+  const claim=await store.start(input.key,1000);assert.ok(claim.owner)
+  await store.round(input.key,claim.owner,1001);await store.finish(input.key,claim.owner)
+  const expected=await store.read(input.key),address=intentAddress(input.key)
+  assert.equal(expected.phase,'completed')
+  const c=await db.pool.connect(),connect=db.connect
+  try{
+    await c.query('BEGIN')
+    await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,817350))',['synthetic-conversation-slot'])
+    await c.query('INSERT INTO planner_entities(id,kind,data) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING version',['synthetic-caller-marker','synthetic-marker',{value:true}])
+    db.connect=async()=>{throw Error('A caller-owned read must not check out another connection')}
+    const start=db.statements.length
+    assert.deepEqual(await store.readInTransaction(c,input.key),expected)
+    assert.equal(db.connections,1,'The read must not release the caller connection')
+    assert.deepEqual(db.statements.slice(start),[
+      {sql:'SELECT pg_advisory_xact_lock(hashtextextended($1,817343))',args:[address.legacyReceiptId]},
+      {sql:'SELECT id,kind,version,data FROM planner_entities WHERE id=$1 FOR UPDATE',args:[address.legacyReceiptId]},
+      {sql:'SELECT id,kind,version,data FROM planner_entities WHERE id=$1 FOR UPDATE',args:[address.id]}
+    ])
+    assert.equal(db.rows.has('synthetic-caller-marker'),false,'The read must not commit the caller transaction')
+    await c.query('COMMIT')
+    assert.equal(db.rows.has('synthetic-caller-marker'),true,'The read must not roll back the caller transaction')
+  }finally{db.connect=connect;await c.query('ROLLBACK');c.release()}
+  assert.equal(db.connections,0)
+  assert.deepEqual(await store.read(input.key),expected,'The ordinary read API is unchanged')
+})
+
+test('transaction-owned reads retain actor, journal codec and legacy fence refusal without owning rollback',async()=>{
+  for(const mode of ['missing','actor','version','command','legacy-missing','legacy-mismatch'] as const){
+    const db=new IntentPool(),store=new SqlIntentStore(db.pool,'actor-A'),address=intentAddress(input.key)
+    await store.admit({...input,purpose:'action'},policy)
+    if(mode==='missing')db.rows.delete(address.id)
+    else if(mode==='version')db.rows.get(address.id)!.data.version=2
+    else if(mode==='command')db.rows.get(address.id)!.data.calls=[{id:'bad',command:{tool:'create_task',args:task},fingerprint:'bad'}]
+    else if(mode==='legacy-missing')db.rows.delete(address.legacyReceiptId)
+    else if(mode==='legacy-mismatch')db.rows.get(address.legacyReceiptId)!.data.fingerprint='0'.repeat(64)
+    const reader=mode==='actor'?new SqlIntentStore(db.pool,'actor-B'):store
+    const before=structuredClone([...db.rows.values()]),c=await db.pool.connect(),connect=db.connect
+    try{
+      await c.query('BEGIN')
+      await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,817350))',['synthetic-conversation-slot'])
+      db.connect=async()=>{throw Error('No second checkout')}
+      const start=db.statements.length
+      await assert.rejects(reader.readInTransaction(c,input.key),/intent_conflict|executor_conflict/,mode)
+      assert.equal(db.connections,1,mode)
+      const queries=db.statements.slice(start)
+      assert.equal(queries.length,3,mode)
+      assert.equal(queries[0]!.sql,'SELECT pg_advisory_xact_lock(hashtextextended($1,817343))',mode)
+      assert.equal(queries[1]!.args[0],address.legacyReceiptId,mode)
+      assert.equal(queries[2]!.args[0],address.id,mode)
+      assert.deepEqual([...db.rows.values()],before,mode)
+      await c.query('ROLLBACK')
+    }finally{db.connect=connect;c.release()}
+    assert.equal(db.connections,0,mode)
+  }
+})
+
 test('two SQL adapters admit one intent/sentinel and atomically choose only one execution owner',async()=>{
   const db=new IntentPool(),a=new SqlIntentStore(db.pool,'actor-A'),b=new SqlIntentStore(db.pool,'actor-A')
   const admitted=await Promise.all([a.admit({...input,purpose:'action'},policy),b.admit({...input,purpose:'action'},{executor:'legacy-parser-v1',allowedTools:[]})])

@@ -70,7 +70,7 @@ export async function projectConversationReceipt(record:IntentRecord,transport:S
   const matched=checklist?.tasks.filter(g=>targets.some(t=>t.kind==='task'&&t.action==='added'&&t.title===g.title&&t.date===g.date&&t.state==='applied'&&t.verification==='verified')).length??0
   const complete=record.phase==='completed'&&expected!==null&&matched===expected&&writes.length===expected&&targets.every(t=>t.verification==='verified'&&t.state==='applied')
   const uncertain=record.phase!=='completed'||targets.some(t=>t.state==='uncertain'||t.verification!=='verified'&&t.state==='applied'||t.verification==='snapshot_pending')
-  const noAction=replyEnabled&&record.guard?.readOnly&&record.phase==='completed'&&record.calls.length===0
+  const noAction=replyEnabled&&record.phase==='completed'&&record.calls.length===0
   const readOnly=noAction||(record.guard?.readOnly||record.guard?.contextual)&&record.phase==='completed'&&!writes.length&&record.calls.some(c=>c.command.tool!=='request_clarification'&&c.result?.state==='ok')
   if(readOnly){
     for(const call of record.calls){
@@ -145,7 +145,18 @@ export class Conversations {
           if(slot.kind!==SLOT||!plainRecord(slot.data)||typeof slot.data.rootKey!=='string')return fail('conversation_conflict')
           const oldId=address(KIND+owner+slot.data.rootKey),oldRow=(await c.query<Row>('SELECT id,kind,version,data FROM planner_entities WHERE id=$1 FOR UPDATE',[oldId])).rows[0]
           const old=this.decode(oldRow,owner,input.clientId,slot.data.rootKey)
-          if(old.status!=='closed'&&old.expiresAt>now)return fail('active_conversation')
+          if(old.status!=='closed'&&old.expiresAt>now){
+            if(old.status!=='question'||old.receipt.outcome!=='question'||!old.question||old.receipt.key!==old.turnKey||old.turns.at(-1)?.key!==old.turnKey)return fail('active_conversation')
+            // Slot/root locks precede the existing strict journal read. A
+            // completed no-write clarification has no execution left to fence;
+            // missing, corrupt or inconclusive journals never authorize reuse.
+            let record:IntentRecord
+            try{record=await store.readInTransaction(c,old.turnKey)}catch{return fail('active_conversation')}
+            if(record.phase!=='completed'||record.guard?.binding!==hash(canonicalJson([owner,input.clientId,old.rootKey]))||record.calls.some(call=>TOOLS[call.command.tool].write))return fail('active_conversation')
+            old.receipt=blank(old.turnKey,'Clarification superseded by a new request. No writes were admitted; nothing was replayed.','failed')
+            discardText(old)
+            await this.put(c,oldId,KIND,old)
+          }
         }
         const context=input.context?referenceAt(input.context,now):undefined
         pending={version:1,owner,clientId:input.clientId,rootKey,createdAt:now,expiresAt:Math.min(now+CONVERSATION_LIMITS.ttlMs,...(context?.entries.map(e=>e.at+CONVERSATION_LIMITS.ttlMs)??[])),status:'running',original:input.prompt,answers:[],questions:0,turns:[{key:input.key,fingerprint:startFingerprint(input)}],turnKey:input.key,receipt:blank(input.key,'Request not confirmed.'),...(input.tabId?{tabId:input.tabId}:{}),...(context?{context,contextual:true as const}:{})}
