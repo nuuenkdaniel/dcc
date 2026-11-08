@@ -301,6 +301,47 @@ class HermesShellTest {
         compose.onNodeWithTag("inbox-list").performScrollToIndex(0)
         compose.onNodeWithText("Search email").assertIsDisplayed()
     }
+    @OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+    @Test @SdkSuppress(minSdkVersion=30)
+    fun realBackAndExternalImeHideKeepChatSelectionAndExactInboxUntilX(){
+        val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate);var sends=0
+        val memory=object:SessionStorage{var raw:String?=null;override fun read()=raw;override fun write(value:String){raw=value};override fun clear(){error("No clear")}}
+        val controller=HermesConversationController(scope,{memory},{sends++;error("No real transport")})
+        fun back(){InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);compose.waitForIdle()}
+        fun assertSelection(){assertEquals(androidx.compose.ui.text.TextRange(2,7),compose.onNodeWithTag("hermes-chat-editor").fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange])}
+        try{
+            compose.activityRule.scenario.onActivity{it.enableEdgeToEdge();controller.bind("a".repeat(64));controller.availability(true);controller.edit("Synthetic keyboard draft")}
+            compose.setContent{val state by controller.state.collectAsStateWithLifecycle();Shell(state,controller::edit,controller::send,onRead=controller::readReceipt)}
+            compose.onNodeWithTag("inbox-list").performScrollToNode(hasText("Synthetic message 29"))
+            val before=inboxGeometry("keyboard-before-open")
+            openChat();stableFullWindowGeometry("keyboard-before-back",expectIme=true)
+            compose.onNodeWithTag("hermes-chat-editor").performTextInputSelection(androidx.compose.ui.text.TextRange(2,7));assertSelection()
+            back();compose.onNodeWithTag("hermes-chat").assertIsDisplayed()
+            captureFullWindow("keyboard-back-keeps-chat",expectIme=false);assertSelection()
+            back();compose.onNodeWithTag("hermes-chat").assertIsDisplayed();stableFullWindowGeometry("keyboard-second-back",expectIme=false);assertSelection()
+            compose.onNodeWithTag("hermes-chat-editor").performTouchInput{click()}
+            stableFullWindowGeometry("keyboard-tap-reopens",expectIme=true);assertSelection()
+            // Actual IME hide on the Dialog's token, bypassing our Back handler:
+            // the same inset/focus lifecycle as the keyboard's down-chevron.
+            compose.runOnIdle{
+                val decor=checkNotNull(android.view.inspector.WindowInspector.getGlobalWindowViews().firstOrNull{
+                    it!==compose.activity.window.decorView&&it.rootWindowInsets?.isVisible(WindowInsets.Type.ime())==true
+                })
+                (compose.activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(decor.windowToken,0)
+            }
+            captureFullWindow("keyboard-external-hide-keeps-chat",expectIme=false);assertSelection()
+            compose.onNodeWithTag("hermes-chat-editor").performTouchInput{click()}
+            stableFullWindowGeometry("keyboard-external-hide-reopened",expectIme=true);assertSelection()
+            back();stableFullWindowGeometry("keyboard-final-back",expectIme=false)
+            closeChat();assertReservedGeometry()
+            val after=inboxGeometry("keyboard-after-X")
+            assertEquals(before,after)
+            compose.onNodeWithTag("hermes-editor").assertTextContains("Synthetic keyboard draft")
+            compose.runOnIdle{assertEquals(0,sends);assertNull(controller.state.value.submitted);assertEquals("Synthetic keyboard draft",controller.state.value.draft)}
+        }catch(error:Throwable){
+            failureArtifacts.capture(error,org.junit.runner.Description.createTestDescription(HermesShellTest::class.java,"keyboard-before-cleanup"));throw error
+        }finally{scope.cancel()}
+    }
     @Test fun fullWindowQuestionAndPinnedEditorSurviveActivityRecreationAndStayOpenOnReceipt(){
         val fixture=fixtures();val q=fixture.getJSONObject("question");val done=fixture.getJSONObject("complete")
         var hermes by mutableStateOf(HermesState(draft=q.getString("original"),view=q.toString(),rootKey=q.getString("rootKey"),available=true))

@@ -33,7 +33,7 @@ class WorkspaceModel(application:Application):AndroidViewModel(application) {
     private val sessions=PersistentSessionJar(EncryptedSessionStorage(application),ORIGIN.toHttpUrl())
     private val client = OkHttpClient.Builder().callTimeout(20,TimeUnit.SECONDS)
         .followRedirects(false).followSslRedirects(false).cookieJar(sessions).build()
-    val hermes=HermesConversationController(viewModelScope,{owner->EncryptedSessionStorage(application,"hermes-$owner.enc",strict=true)},{body->api("/api/v1/hermes/conversation",body)})
+    val hermes=HermesConversationController(viewModelScope,{owner->EncryptedSessionStorage(application,"hermes-$owner.enc",strict=true)},{body->api("/api/v1/hermes/conversation",body)},recoveryStorageFor={owner->EncryptedSessionStorage(application,"hermes-$owner-separate-v1.enc",strict=true,existingKeyOnly=true)})
     private suspend fun bindHermes(session:JSONObject){
         val owner=session.optString("workspaceOwner")
         if(Regex("^[a-f0-9]{64}$").matches(owner))hermes.bind(owner) else hermes.unbind()

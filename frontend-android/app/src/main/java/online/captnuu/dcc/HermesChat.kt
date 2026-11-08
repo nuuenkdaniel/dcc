@@ -64,7 +64,7 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
 /** Modal window, not a replacement composition for the workspace. Dismissal is
  * deliberately presentation-only: no controller close, abort, edit or network. */
 @OptIn(ExperimentalComposeUiApi::class,ExperimentalLayoutApi::class)
-@Composable internal fun HermesChatHost(state:HermesState,onEdit:(String)->Unit,onSend:()->Unit,onNew:()->Unit,onRead:()->Unit,onClearChat:()->Unit,modifier:Modifier){
+@Composable internal fun HermesChatHost(state:HermesState,onEdit:(String)->Unit,onSend:()->Unit,onNew:()->Unit,onRead:()->Unit,onClearChat:()->Unit,modifier:Modifier,onRecover:()->Unit){
     val modalVisibility=LocalHermesModalVisibility.current
     key(state.ownerKey){
         var open by rememberSaveable{mutableStateOf(false)}
@@ -83,7 +83,8 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
         val list=rememberLazyListState();var displayed by rememberSaveable{mutableStateOf("")}
         val showChat={modalVisibility(true);closing.value=false;open=true}
         val close={closing.value=true;workspaceFocus.clearFocus(force=true);keyboard?.hide();open=false;modalVisibility(false)}
-        val send={showChat();onSend()}
+        val canSend=state.storageReady&&state.available&&!state.busy&&text.isNotBlank()&&state.attemptKey==null&&(state.rootKey==null||answering(state))
+        val send={if(canSend){showChat();onSend()}}
         // This is a typeable entrance, not a second selection owner. Focus/click
         // and blur may collapse its cursor without editing text; those callbacks
         // must not replace the chat's saved range or reopen a dismissed window.
@@ -97,7 +98,7 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
             }
             },keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),keyboardActions=KeyboardActions(onSend={send()}))
         LaunchedEffect(open){if(open)workspaceFocus.clearFocus(force=true)}
-        if(open)Dialog(onDismissRequest=close,properties=DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false,dismissOnClickOutside=false)){
+        if(open)Dialog(onDismissRequest={},properties=DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false,dismissOnClickOutside=false,dismissOnBackPress=false)){
             // Menu ownership must outlive either adaptive trigger/editor node.
             var menuOpen by remember{mutableStateOf(false)}
             val imeInsets=WindowInsets.ime
@@ -106,6 +107,11 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
             var menuHadKeyboard by remember{mutableStateOf(false)}
             var restoreMenuKeyboard by remember{mutableStateOf(false)}
             var editorFocusAllowed by remember{mutableStateOf(true)}
+            var keyboardDismissed by remember{mutableStateOf(false)}
+            var keyboardHidePending by remember{mutableStateOf(false)}
+            var hadEditorIme by remember{mutableStateOf(false)}
+            var confirmClose by remember{mutableStateOf(false)}
+            var confirmRecovery by remember{mutableStateOf(false)}
             var menuSelection by remember{mutableStateOf(value.selection)}
             var menuSelectionFenced by remember{mutableStateOf(false)}
             var editorLayoutIme by remember{mutableStateOf(-1)}
@@ -119,7 +125,7 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
             val menuEvent:(String)->Unit={event->menuEvents=(menuEvents+event).takeLast(12)}
             val dismissMenu:(String)->Unit={reason->
                 menuEvent("dismiss:$reason")
-                restoreMenuKeyboard=menuHadKeyboard&&reason!="close-request"&&reason!="new"&&!closing.value
+                restoreMenuKeyboard=menuHadKeyboard&&reason!="close-request"&&reason!="new"&&reason!="recover"&&!closing.value
                 editorFocusAllowed=restoreMenuKeyboard
                 menuOpen=false
             }
@@ -132,11 +138,17 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
             val chatFocus=LocalFocusManager.current;val chatKeyboard=LocalSoftwareKeyboardController.current
             // Fence synchronous selection-collapse callbacks before clearing focus.
             val closeDialog={closing.value=true;restoreMenuKeyboard=false;editorFocusAllowed=false;chatFocus.clearFocus(force=true);chatKeyboard?.hide();close()}
-            val backDialog={if(menuOpen)dismissMenu("back") else closeDialog()}
+            val hideEditorKeyboard={
+                if(!menuSelectionFenced)menuSelection=value.selection
+                menuHadKeyboard=false;menuSelectionFenced=true
+                keyboardDismissed=true;keyboardHidePending=imeBottom>0||imeTarget>0;restoreMenuKeyboard=false;editorFocusAllowed=false
+                chatKeyboard?.hide()
+            }
+            val backDialog={when{confirmRecovery->confirmRecovery=false;confirmClose->confirmClose=false;menuOpen->dismissMenu("back");else->hideEditorKeyboard()}}
             val latestClose by rememberUpdatedState(backDialog)
             val dialogView=LocalView.current
-            // Back dismisses the menu first, otherwise closes only the chat UI,
-            // even with the IME open. The overlay-priority
+            // Back dismisses transient controls or only the IME, never chat.
+            // The overlay-priority
             // callback precedes the IME on gesture-back platforms; pre-IME key
             // handling below covers older Android/hardware Back.
             DisposableEffect(dialogView){
@@ -157,18 +169,31 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
             }
             val focus=remember{FocusRequester()}
             val entries=visibleChat(state)
-            var confirmClose by remember{mutableStateOf(false)}
             var requestedKeyboard by remember{mutableStateOf(false)}
+            LaunchedEffect(imeBottom,imeTarget,menuOpen,confirmClose,confirmRecovery,windowFocused){
+                if(!menuOpen&&!confirmClose&&!confirmRecovery&&windowFocused){
+                    if(keyboardDismissed&&imeBottom==0&&imeTarget==0)keyboardHidePending=false
+                    if(keyboardDismissed&&!keyboardHidePending&&imeTarget>0){
+                        // An editor tap requested IME again. Preserve the saved
+                        // range through that tap/focus/layout transition.
+                        keyboardDismissed=false;menuHadKeyboard=true;restoreMenuKeyboard=true;editorFocusAllowed=true
+                    }else if(hadEditorIme&&imeTarget==0&&!restoreMenuKeyboard&&!keyboardDismissed){
+                        menuSelection=value.selection;menuSelectionFenced=true;menuHadKeyboard=false
+                        keyboardDismissed=true;keyboardHidePending=imeBottom>0;editorFocusAllowed=false
+                    }
+                    if(imeBottom>0)hadEditorIme=true
+                }
+            }
             val editorChange:(TextFieldValue)->Unit={v->
                 if(v.text!=text){
                     // Genuine edits supersede the snapshot, even during focus
                     // restoration. Never replay a stale selection over new text.
                     menuSelectionFenced=false;restoreMenuKeyboard=false;menuSelection=v.selection
                     change(v)
-                }else if(!menuOpen&&!menuSelectionFenced)change(v)
+                }else if(!menuOpen&&!menuSelectionFenced&&!keyboardDismissed&&!(hadEditorIme&&imeTarget==0))change(v)
             }
             LaunchedEffect(menuSelectionFenced,menuOpen,confirmClose,windowFocused,editorFocused,imeBottom,imeTarget,editorLayoutIme){
-                if(menuSelectionFenced&&!menuOpen&&!confirmClose&&!closing.value&&windowFocused&&
+                if(menuSelectionFenced&&!keyboardDismissed&&!menuOpen&&!confirmClose&&!confirmRecovery&&!closing.value&&windowFocused&&
                     (!menuHadKeyboard||editorFocused&&imeBottom>0)&&imeBottom==imeTarget&&editorLayoutIme==imeBottom){
                     // The same editor has regained focus and has been laid out
                     // at the final IME inset, not merely requested focus/show.
@@ -178,18 +203,18 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
             }
             Surface(Modifier.fillMaxSize().testTag("hermes-chat").semantics{
                 this[HermesChatImeBottom]=imeBottom
-                this[HermesChatMenuState]="open=$menuOpen editorFocused=$editorFocused restoreIme=$restoreMenuKeyboard selectionFenced=$menuSelectionFenced layoutIme=$editorLayoutIme imeTarget=$imeTarget windowFocused=$windowFocused viewport=$menuViewport anchor=$menuAnchor events=${menuEvents.joinToString(" > ")}"
+                this[HermesChatMenuState]="open=$menuOpen editorFocused=$editorFocused keyboardDismissed=$keyboardDismissed hidePending=$keyboardHidePending restoreIme=$restoreMenuKeyboard selectionFenced=$menuSelectionFenced layoutIme=$editorLayoutIme imeTarget=$imeTarget windowFocused=$windowFocused viewport=$menuViewport anchor=$menuAnchor events=${menuEvents.joinToString(" > ")}"
             },color=MaterialTheme.colorScheme.background){
                 Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars).imePadding()){
                 BoxWithConstraints(Modifier.fillMaxSize().testTag("hermes-chat-content").onGloballyPositioned{menuViewport=it.boundsInWindow()}){
                 val shortViewport=maxHeight<320.dp
                 // The editor node survives short/normal layout transitions.
                 // Never steal focus from an intentionally open menu.
-                LaunchedEffect(shortViewport,menuOpen,confirmClose,windowFocused,restoreMenuKeyboard){
+                LaunchedEffect(shortViewport,menuOpen,confirmClose,confirmRecovery,windowFocused,restoreMenuKeyboard,keyboardDismissed){
                     menuEvent("layout:short=$shortViewport menu=$menuOpen ime=$imeBottom")
                     // Wait for the Dialog's actual window focus after popup
                     // removal; showing IME in the popup window is ineffective.
-                    if(!menuOpen&&!confirmClose&&!closing.value&&windowFocused&&editorFocusAllowed){
+                    if(!menuOpen&&!confirmClose&&!confirmRecovery&&!keyboardDismissed&&!(hadEditorIme&&imeTarget==0&&!restoreMenuKeyboard)&&!closing.value&&windowFocused&&editorFocusAllowed){
                         if(restoreMenuKeyboard&&menuSelectionFenced){start=menuSelection.start;end=menuSelection.end}
                         focus.requestFocus()
                         if(!requestedKeyboard||restoreMenuKeyboard){chatKeyboard?.show();requestedKeyboard=true}
@@ -224,7 +249,7 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
                             editorLayoutIme=imeInsets.getBottom(density)
                         }.onFocusChanged{
                             if(editorFocused!=it.isFocused){menuEvent("editor:focus=${it.isFocused} menu=$menuOpen");editorFocused=it.isFocused}
-                            if(it.isFocused&&!menuOpen&&!confirmClose)editorFocusAllowed=true
+                            if(it.isFocused&&!menuOpen&&!confirmClose&&!confirmRecovery&&!keyboardDismissed)editorFocusAllowed=true
                         }.onPreInterceptKeyBeforeSoftKeyboard{event->
                             if(event.key==Key.Back){if(event.type==KeyEventType.KeyUp)backDialog();true}else false
                         }.testTag("hermes-chat-editor")
@@ -239,7 +264,7 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
                                 }
                             }
                         })
-                        Button(onClick=send,enabled=!state.busy&&text.isNotBlank(),modifier=Modifier.height(48.dp).testTag("hermes-chat-send"),contentPadding=PaddingValues(horizontal=12.dp,vertical=0.dp)){Text("Send",maxLines=1)}
+                        Button(onClick=send,enabled=canSend,modifier=Modifier.height(48.dp).testTag("hermes-chat-send"),contentPadding=PaddingValues(horizontal=12.dp,vertical=0.dp)){Text("Send",maxLines=1)}
                         if(shortViewport)HermesChatActionsTrigger(openMenu,{menuAnchor=it})
                         if(shortViewport)IconButton(onClick=closeDialog,modifier=Modifier.size(48.dp).testTag("hermes-chat-close").semantics{contentDescription="Close chat"}){Text("×",fontSize=28.sp)}
                     }
@@ -248,8 +273,9 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
                 }
             }
             // One stable popup callsite, outside both adaptive layout branches.
-            if(menuOpen)HermesChatActionsMenu(state,menuViewport,menuAnchor,dismissMenu,menuEvent,onRead,{confirmClose=true},onClearChat)
+            if(menuOpen)HermesChatActionsMenu(state,menuViewport,menuAnchor,dismissMenu,menuEvent,onRead,{confirmClose=true},onClearChat,{confirmRecovery=true})
             if(confirmClose)AlertDialog(onDismissRequest={confirmClose=false},title={Text("Close unresolved request?")},text={Text("This fences further work, not a rollback. Earlier effects may have saved. The draft, history and recovery records are retained.")},confirmButton={TextButton(onClick={confirmClose=false;onNew()}){Text("Close request")}},dismissButton={TextButton(onClick={confirmClose=false}){Text("Keep request")}})
+            if(confirmRecovery)AlertDialog(onDismissRequest={confirmRecovery=false},title={Text("Start separate local chat?")},text={Text("The original protected record will remain untouched. Earlier requests may have effects and are not reconciled. The current memory-only draft will be kept in a separate owner-bound record. Nothing is sent until a new explicit Send.")},confirmButton={TextButton(onClick={confirmRecovery=false;onRecover()}){Text("Start separate chat")}},dismissButton={TextButton(onClick={confirmRecovery=false}){Text("Keep original")}})
         }
     }
 }
@@ -258,7 +284,7 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
     IconButton(onClick=onOpen,modifier=Modifier.size(48.dp).onGloballyPositioned{onAnchor(it.boundsInWindow())}.testTag("hermes-chat-actions").semantics{contentDescription="Conversation actions"}){Text("⋮",fontSize=24.sp)}
 }
 
-@Composable private fun HermesChatActionsMenu(state:HermesState,viewport:Rect,anchor:Rect,onDismiss:(String)->Unit,onEvent:(String)->Unit,onRead:()->Unit,onCloseRequest:()->Unit,onClearChat:()->Unit){
+@Composable private fun HermesChatActionsMenu(state:HermesState,viewport:Rect,anchor:Rect,onDismiss:(String)->Unit,onEvent:(String)->Unit,onRead:()->Unit,onCloseRequest:()->Unit,onClearChat:()->Unit,onRecover:()->Unit){
     val density=LocalDensity.current
     val position=remember(viewport,anchor){object:PopupPositionProvider{
         override fun calculatePosition(anchorBounds:IntRect,windowSize:IntSize,layoutDirection:LayoutDirection,popupContentSize:IntSize):IntOffset{
@@ -280,9 +306,10 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
         DisposableEffect(Unit){onEvent("popup:enter");onDispose{onEvent("popup:dispose")}}
         Surface(modifier=Modifier.widthIn(max=with(density){viewport.width.toDp()}).heightIn(max=with(density){viewport.height.toDp()}).testTag("hermes-chat-actions-menu"),shape=MaterialTheme.shapes.extraSmall,tonalElevation=3.dp,shadowElevation=3.dp){
             Column(Modifier.width(IntrinsicSize.Max).verticalScroll(rememberScrollState()).testTag("hermes-chat-actions-list").padding(vertical=4.dp)){
-                if(state.rootKey!=null||state.submitted!=null)DropdownMenuItem(text={Text("Check receipt")},enabled=!state.busy,onClick={onDismiss("receipt");onRead()})
-                DropdownMenuItem(text={Text("New conversation")},enabled=!state.busy&&state.rootKey==null,onClick={onDismiss("new");onClearChat()})
-                if(state.rootKey!=null)DropdownMenuItem(text={Text("Close unresolved request")},enabled=!state.busy,onClick={onDismiss("close-request");onCloseRequest()})
+                if(state.rootKey!=null||state.submitted!=null)DropdownMenuItem(text={Text("Check receipt")},enabled=state.storageReady&&!state.busy,onClick={onDismiss("receipt");onRead()})
+                DropdownMenuItem(text={Text("New conversation")},enabled=state.storageReady&&!state.busy&&state.rootKey==null,onClick={onDismiss("new");onClearChat()})
+                if(state.rootKey!=null)DropdownMenuItem(text={Text("Close unresolved request")},enabled=state.storageReady&&!state.busy,onClick={onDismiss("close-request");onCloseRequest()})
+                if(state.canRecoverSeparately)DropdownMenuItem(text={Text("Start separate local chat")},onClick={onDismiss("recover");onRecover()})
             }
         }
     }

@@ -35,6 +35,65 @@ Do not commit local.properties, signing keys, credentials, SDKs or generated APK
 
 ## Scope
 
+### Android Send/recovery and keyboard repair candidate
+
+Source changes require fresh parent verification; they do not diagnose the exact
+cause of a handset restore failure or prove upgrade compatibility with real data.
+Both published 0.2.3 and 0.2.4 emitted composer version 2 / history version 1;
+the earlier composer-version-1 migration remains supported. Restore validates
+owner, versions, identities, receipts, view, history and references before any
+write. Read, decode, version, validation, history-capacity and write failures have
+finite content-free status codes, not a shared claim of bad encryption.
+
+Blocked recovery disables Send and all persistence/clear/request paths. Editing
+is memory-only. Original client/root/turn identities and uncertain claims are
+never reconstructed with new keys. Valid expired text is discarded separately
+from claim/receipt evidence. Increased history reply reservation can make valid
+older unresolved history capacity-blocked; it must not be labelled corruption.
+
+`Conversation actions → Start separate local chat` requires local confirmation.
+It preserves the original `hermes-<owner>.enc` file and creates only
+`hermes-<owner>-separate-v1.enc`, using the existing protected-storage key/AAD and
+AtomicFile primitives, with owner-bound recovery-version metadata. The current
+memory draft is written/read-validated there before readiness is published.
+Later binds prefer the separate file, even after logout/reload, and never fall
+back over or overwrite an unreadable separate record. No stored request is
+replayed; the next request requires an explicit Send. Earlier effects are not
+reconciled by local recovery. There is intentionally no repeated-fork/reset or
+deletion path. If the existing key is absent/unusable, recovery stays blocked;
+no key rotation/provisioning or data deletion is authorized by this interaction.
+Strict reads do not generate missing keys and recognize legacy AtomicFile
+backups; orphaned strict in-progress records are not treated as an empty store.
+
+Android Back dismisses transient controls or hides the keyboard, **never chat**.
+IME hiding (including an external/down-chevron lifecycle) suppresses automatic
+focus/show on viewport changes. An editor tap reopens it; draft/selection remain
+controlled. A second Back with IME hidden still leaves chat open. X alone closes
+the chat presentation and restores the composed workspace, without fencing work.
+The stable `BasicTextField(singleLine=false)` and adaptive maxLines are retained.
+
+Parent signing-free/offline gate (existing empty JVM home for launcher **and**
+daemon, cached SDK35/JDK21/Gradle; never the signing home):
+`:app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest`.
+New JVM class: `HermesRecoveryTest` (11 methods; expected total 89 from baseline
+78). Instrumentation discovery now has **27** methods from baseline 24:
+
+- `HermesComposerTest.blockedRestoreDisablesSendAndExplicitSeparateRecoveryKeepsDraftWithoutSending`
+- `HermesShellTest.realBackAndExternalImeHideKeepChatSelectionAndExactInboxUntilX`
+- `SecureStorageTest.separateHermesRecoveryPreservesCorruptCiphertextAndRestoresUpdatedDraft`
+
+Existing `firstCharacterOpensWithoutSendAndSelectionDraftSurviveCloseAndAndroidBack`
+and busy-close/completion tests retain draft/no-resend coverage with the new Back
+contract. Rerun the complete dedicated `online.captnuu.dcc.contextqa` suite, not a
+personal app. The shell test captures `keyboard-back-keeps-chat.png` and
+`keyboard-external-hide-keeps-chat.png` in `externalFilesDir/qa-ui-captures/` and
+uses pre-cleanup failure artifacts. The external hide test uses the actual Dialog
+IME token via InputMethodManager (the down-chevron lifecycle seam); it does not
+claim an automated tap on an IME-vendor-specific chevron. No new screenshots or
+RED/GREEN results exist until parent execution. The earlier initial-activity
+"no Compose hierarchies" failure, followed by passing exact/full reruns without
+changes, remains a test-startup limitation rather than evidence of this repair.
+
 See PARITY.md for the implemented vertical slices and remaining web parity gaps.
 The native shell-bottom Hermes composer and GET-only post-receipt task reconciliation
 share the [bounded server contract](../backend/src/mcp/CLARIFICATION-RECEIPTS.md).

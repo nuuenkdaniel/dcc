@@ -87,6 +87,14 @@ class HermesComposerTest {
         compose.onNodeWithContentDescription("Close chat").performClick();openChat()
         assertEquals(TextRange(2,7),compose.onNodeWithTag("hermes-chat-editor").fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange])
         pressAndroidBack()
+        compose.waitUntil(5000){compose.onNodeWithTag("hermes-chat").fetchSemanticsNode().config[HermesChatImeBottom]==0}
+        compose.onNodeWithTag("hermes-chat").assertIsDisplayed()
+        assertEquals(TextRange(2,7),compose.onNodeWithTag("hermes-chat-editor").fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange])
+        pressAndroidBack();compose.onNodeWithTag("hermes-chat").assertIsDisplayed()
+        compose.onNodeWithTag("hermes-chat-editor").performTouchInput{click()}
+        compose.waitUntil(5000){compose.onNodeWithTag("hermes-chat").fetchSemanticsNode().config[HermesChatImeBottom]>0}
+        assertEquals(TextRange(2,7),compose.onNodeWithTag("hermes-chat-editor").fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange])
+        compose.onNodeWithContentDescription("Close chat").performClick()
         compose.onNodeWithTag("hermes-chat").assertDoesNotExist()
         compose.onNodeWithTag("hermes-editor").assertTextContains("Synthetic draft")
         compose.runOnIdle{assertEquals(0,sends);assertEquals(0,cancels);assertEquals(0,clears)}
@@ -222,11 +230,34 @@ class HermesComposerTest {
             compose.runOnIdle{assertEquals(1,requests.size);assertEquals(2,controller.state.value.timeline.size)}
             }
             trace.stage("actual Android Back"){pressAndroidBack()}
-            trace.stage("assert Back closes and reopen retains draft"){
-            compose.onNodeWithTag("hermes-chat").assertDoesNotExist()
-            openChat();compose.onNodeWithTag("hermes-chat-editor").assertTextContains("Fresh unsent draft")
+            trace.stage("assert Back keeps chat and X reopen retains draft"){
+            compose.onNodeWithTag("hermes-chat").assertIsDisplayed()
+            compose.onNodeWithTag("hermes-chat-editor").assertTextContains("Fresh unsent draft")
+            compose.onNodeWithContentDescription("Close chat").performClick();openChat()
+            compose.onNodeWithTag("hermes-chat-editor").assertTextContains("Fresh unsent draft")
             }
         }finally{trace.stage("cancel synthetic scope"){scope.cancel()}}
+    }
+    @Test fun blockedRestoreDisablesSendAndExplicitSeparateRecoveryKeepsDraftWithoutSending(){
+        class Memory(var raw:String?):SessionStorage{override fun read()=raw;override fun write(value:String){raw=value};override fun clear(){error("No clear")}}
+        val original=Memory("synthetic malformed JSON");val separate=Memory(null);val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate);var calls=0
+        val controller=HermesConversationController(scope,{original},{calls++;error("Synthetic unavailable")},recoveryStorageFor={separate})
+        try{
+            compose.activityRule.scenario.onActivity{controller.bind("a".repeat(64));controller.availability(true)}
+            compose.setContent{val state by controller.state.collectAsStateWithLifecycle();DccTheme{HermesComposer(state,controller::edit,controller::send,controller::newRequest,controller::dismiss,onRecover=controller::recoverSeparately)}}
+            openChat();compose.onNodeWithTag("hermes-chat-send").assertIsNotEnabled()
+            compose.onNodeWithTag("hermes-chat-editor").performTextInput("Synthetic memory-only draft")
+            compose.onNodeWithTag("hermes-chat-editor").performImeAction();compose.runOnIdle{assertEquals(0,calls)}
+            compose.onNodeWithContentDescription("Conversation actions").performClick()
+            compose.onNodeWithText("Start separate local chat").assertIsDisplayed().performClick()
+            compose.onNodeWithText("Start separate local chat?").assertIsDisplayed()
+            compose.onNodeWithText("Start separate chat").performClick()
+            compose.onNodeWithTag("hermes-chat-editor").assertTextContains("Synthetic memory-only draft")
+            compose.onNodeWithTag("hermes-chat-send").assertIsEnabled()
+            compose.runOnIdle{assertEquals(0,calls);assertEquals("synthetic malformed JSON",original.raw);assertNotNull(separate.raw)}
+            compose.onNodeWithTag("hermes-chat-send").performClick()
+            compose.runOnIdle{assertEquals(1,calls);assertEquals("synthetic malformed JSON",original.raw)}
+        }finally{scope.cancel()}
     }
     @Test fun submittedPartialItemKeepsFreshEditorAndReceiptRecoveryWithoutClaimingSaved(){
         val fixture=fixtures().getJSONObject("complete");val receipt=JSONObject(fixture.getJSONObject("receipt").toString())

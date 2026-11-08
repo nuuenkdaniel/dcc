@@ -85,7 +85,7 @@ fun JSONArray?.objects():List<JSONObject> = if(this==null) emptyList() else (0 u
    if(hermesContent!=null)hermesContent(dockModifier)
    else if(projectModel!=null){
     val hermes by projectModel.hermes.state.collectAsStateWithLifecycle()
-     HermesComposer(hermes,projectModel.hermes::edit,projectModel.hermes::send,projectModel.hermes::newRequest,projectModel.hermes::dismiss,projectModel.hermes::readReceipt,modifier=dockModifier,docked=true,onClearChat=projectModel.hermes::newConversation)
+     HermesComposer(hermes,projectModel.hermes::edit,projectModel.hermes::send,projectModel.hermes::newRequest,projectModel.hermes::dismiss,projectModel.hermes::readReceipt,modifier=dockModifier,docked=true,onClearChat=projectModel.hermes::newConversation,onRecover=projectModel.hermes::recoverSeparately)
     }
     }
   }
