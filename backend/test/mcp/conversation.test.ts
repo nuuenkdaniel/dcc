@@ -31,6 +31,15 @@ function setup(limit=3,prompt=questionRequest){
     return {calls:tasks.slice(0,limit).map((task,i)=>({id:'create'+i,tool:'create_task',arguments:{...task,expectedVersion:version++}})),done:true,final:'All three done!'}
   }
   const controller=new RequestController({store,transport,runner,now:()=>now})
+  // Resolved checklists no longer ask the runner to choreograph writes. Preserve
+  // partial-persistence coverage by failing the next authoritative version read.
+  const execute=transport.execute.bind(transport);let writes=0
+  transport.execute=async(command,context)=>{
+    if(command.tool==='list_tasks'&&limit<3&&writes>=limit)throw Error('Synthetic collection read interruption')
+    const result=await execute(command,context)
+    if(command.tool==='create_task'&&result.state==='applied')writes++
+    return result
+  }
   const api=new Conversations({pool:conversations.pool,store,transport,now:()=>now,run:(input,signal)=>controller.run(input,policy,signal),fence:async input=>{await store.admit({...input,purpose:'action'},policy);await store.fence(input.key,now)}})
   const start=()=>api.handle({op:'start',clientId,key:'conversation_root_01',prompt},owner)
   return {api,store,domain,conversations,start,calls:()=>calls,advance:(ms:number)=>{now+=ms}}
@@ -44,7 +53,7 @@ test('required topics → question → bound names → three persisted tasks →
   assert.ok(validConversationView(complete));assert.equal(h.domain.rows.get(COLLECTION)!.data.tasks.length,3)
   assert.deepEqual(complete.receipt.targets.map(t=>[t.title,t.date]),[['CSE354: Lectures','2026-11-07'],['CSE354: practice problems','2026-11-07'],['CSE354: review','2026-11-07']])
   assert.equal(new Set(complete.receipt.targets.map(t=>t.id)).size,3)
-  assert.deepEqual(await h.api.handle(answer,owner),complete);assert.equal(h.calls(),2)
+  assert.deepEqual(await h.api.handle(answer,owner),complete);assert.equal(h.calls(),1)
   await assert.rejects(h.api.handle({...answer,answer:'Changed answer'},owner),/conversation_conflict/)
   await assert.rejects(h.api.handle({...answer,key:'different_child_key_01'},owner),/closed_question/)
   await assert.rejects(h.api.handle({...answer,clientId:'22222222-2222-4222-a222-222222222222'},owner),/conversation_conflict/)
@@ -54,10 +63,10 @@ test('required topics → question → bound names → three persisted tasks →
     assert.equal(row.data.original,undefined);assert.deepEqual(row.data.answers,[]);assert.equal(row.data.prompt,undefined)
   }
 })
-test('partial two of three cannot borrow model final success; failed readback stays uncertain',async()=>{
+test('interrupted two of three cannot claim completion; failed readback stays uncertain',async()=>{
   const h=setup(2),q=await h.start()
   const r=await h.api.handle({op:'answer',clientId,rootKey:q.rootKey,key:'partial_answer_key_01',parentKey:q.turnKey,questionId:q.question!.id,answer:'Lectures; practice problems; review'},owner)
-  assert.equal(r.receipt.outcome,'partial');assert.equal(r.receipt.expected,3);assert.equal(r.receipt.verified,2)
+  assert.equal(r.receipt.outcome,'uncertain');assert.equal(r.receipt.expected,3);assert.equal(r.receipt.verified,2)
   assert.equal(h.domain.rows.get(COLLECTION)!.data.tasks.length,2)
   const record=await h.store.read(r.turnKey)
   h.domain.rows.get(COLLECTION)!.data.tasks=[]
@@ -68,7 +77,7 @@ test('unique parent claim precedes two concurrent child executions',async()=>{
   const h=setup(),q=await h.start()
   const body={op:'answer' as const,clientId,rootKey:q.rootKey,parentKey:q.turnKey,questionId:q.question!.id,answer:'Lectures; practice problems; review'}
   const result=await Promise.allSettled([h.api.handle({...body,key:'concurrent_child_key_01'},owner),h.api.handle({...body,key:'concurrent_child_key_02'},owner)])
-  assert.equal(result.filter(r=>r.status==='fulfilled').length,1);assert.equal(h.calls(),2);assert.equal(h.domain.rows.get(COLLECTION)!.data.tasks.length,3)
+  assert.equal(result.filter(r=>r.status==='fulfilled').length,1);assert.equal(h.calls(),1);assert.equal(h.domain.rows.get(COLLECTION)!.data.tasks.length,3)
 })
 test('three questions can be answered, never a fourth; expiration scrubs text not effect journals',async()=>{
   const h=setup();let q=await h.start()
@@ -83,7 +92,7 @@ test('three questions can be answered, never a fourth; expiration scrubs text no
 })
 test('clear three named tasks go directly; one active per owner/client; malformed inputs rejected',async()=>{
   const h=setup(),r=await h.api.handle({op:'start',clientId,key:'direct_named_tasks_01',prompt:'Add 3 tasks today: Lectures; practice problems; review'},owner)
-  assert.equal(r.receipt.outcome,'complete');assert.equal(h.calls(),1)
+  assert.equal(r.receipt.outcome,'complete');assert.equal(h.calls(),0)
   const pending=setup();await pending.start()
   await assert.rejects(pending.api.handle({op:'start',clientId,key:'another_active_key_01',prompt:original},owner),/active_conversation/)
   for(const bad of [null,{}, {op:'start',clientId,key:'x',prompt:original},{op:'start',clientId,key:'malformed_long_key_01',prompt:'a'.repeat(4001)}, {op:'start',clientId,key:'malformed_actor_key_01',prompt:original,actor:'fake'}])assert.equal(validConversationInput(bad),false)
@@ -119,7 +128,7 @@ test('exact natural study request and CSE request each admit an immutable three-
   for(const [prompt,prefix] of [[actual,''],[original,'CSE354: '],[mobile,'CSE354: ']] as const){
     const h=setup(3,prompt),r=await h.start()
     const expected=Array.from({length:3},(_,i)=>({title:`${prefix}Study chunk ${i+1}`,date:'2026-11-07'}))
-    assert.equal(h.calls(),1);assert.equal(r.question,undefined);assert.equal(r.original,undefined)
+    assert.equal(h.calls(),0);assert.equal(r.question,undefined);assert.equal(r.original,undefined)
     assert.ok(validConversationView(r));assert.equal(r.receipt.outcome,'complete');assert.equal(r.receipt.expected,3);assert.equal(r.receipt.verified,3)
     const journal=await h.store.read(r.turnKey)
     assert.deepEqual(journal.guard?.checklist?.tasks,expected)
@@ -128,14 +137,14 @@ test('exact natural study request and CSE request each admit an immutable three-
     assert.deepEqual(r.receipt.targets.map(t=>({title:t.title,date:t.date})),expected)
     assert.equal(new Set(r.receipt.targets.map(t=>t.id)).size,3)
     assert.equal(h.domain.rows.get(COLLECTION)!.data.tasks.length,3)
-    assert.deepEqual(await h.start(),r);assert.equal(h.calls(),1)
+    assert.deepEqual(await h.start(),r);assert.equal(h.calls(),0)
   }
 })
-test('generic default still requires all three writes and fresh readback, never a model declaration of completion',async()=>{
+test('generic default stops on interrupted reads and still requires all three verified writes',async()=>{
   for(const prompt of [actual,mobile]){
     const h=setup(2,prompt),r=await h.start(),record=await h.store.read(r.turnKey)
-    assert.equal(record.guard?.checklist?.tasks.length,3);assert.equal(r.receipt.outcome,'partial')
-    assert.equal(r.receipt.expected,3);assert.equal(r.receipt.verified,2);assert.equal(h.calls(),1)
+    assert.equal(record.guard?.checklist?.tasks.length,3);assert.equal(r.receipt.outcome,'uncertain')
+    assert.equal(r.receipt.expected,3);assert.equal(r.receipt.verified,2);assert.equal(h.calls(),0)
     h.domain.rows.get(COLLECTION)!.data.tasks=[]
     assert.equal((await projectConversationReceipt(record,new ServiceTransport({pool:h.domain.pool,actorId:'actor-A'}))).outcome,'uncertain')
   }
@@ -151,7 +160,7 @@ test('old persisted optional-topics question accepts Just label without another 
   const result=await h.api.handle(answer,owner)
   assert.equal(result.question,undefined);assert.equal(result.receipt.outcome,'complete');assert.equal(result.receipt.expected,3);assert.equal(result.receipt.verified,3)
   assert.deepEqual(result.receipt.targets.map(t=>t.title),['CSE354: Study chunk 1','CSE354: Study chunk 2','CSE354: Study chunk 3'])
-  assert.equal(h.calls(),2);assert.deepEqual(await h.api.handle(answer,owner),result);assert.equal(h.calls(),2)
+  assert.equal(h.calls(),1);assert.deepEqual(await h.api.handle(answer,owner),result);assert.equal(h.calls(),1)
   assert.equal(h.domain.rows.get(COLLECTION)!.data.tasks.length,3)
 })
 test('generic study dates are fixed at each execution admission using the backend NY day',async()=>{
@@ -160,5 +169,5 @@ test('generic study dates are fixed at each execution admission using the backen
   h.advance(3*60*60*1000)
   const next=await h.api.handle({op:'start',clientId,key:'next_day_study_01',prompt:actual},owner)
   assert.equal(next.receipt.outcome,'complete');assert.ok(next.receipt.targets.every(t=>t.date==='2026-11-08'))
-  assert.equal(h.calls(),2)
+  assert.equal(h.calls(),0)
 })
