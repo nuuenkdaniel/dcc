@@ -35,6 +35,62 @@ Do not commit local.properties, signing keys, credentials, SDKs or generated APK
 
 ## Scope
 
+### Unresolved-turn receipt feedback and fresh-message candidate
+
+An unresolved earlier claim is never retried by Send. A different unsent draft
+now has an actionable Send choice: **Keep draft** does nothing to the server;
+**Close earlier request** explicitly calls the existing fence/cancel operation
+(not a rollback). Only after its response validates and the closed local state
+is written successfully can a separate, later Send create a new root for the
+fresh text. Client identity is unchanged. Earlier uncertain receipt/details stay
+uncertain and inspectable; failed close/save cannot unlock a new submission.
+Literal/whitespace-equivalent repeats of retained unconfirmed requests instead
+offer receipt review, not a safe-retry claim. This is not semantic duplicate
+detection, and expired text is not retained just to compare future drafts.
+
+Check receipt publishes **Checking receipt…** immediately and a terminal checked
+result even when the server returns the identical uncertain receipt. It is
+deduplicated while active and performs only `op:read`. No-request, storage,
+authentication, inactive scope, busy execution, HTTP, network, decode, validation,
+correlation and timeout outcomes use fixed content-free feedback. No raw error,
+header, body, ID or prompt is logged. Compact feedback remains above the editor
+instead of depending on an offscreen/history change. It is not persisted as an
+effect receipt or fed into recent-reference context. Original claim identities
+survive failed/unchanged reads; owner/turn fences discard late callbacks.
+
+Only the conversation transport changes: start/answer keep the existing 180s
+whole-call allowance and explicitly use a 180s socket read timeout instead of
+OkHttp's inherited 10s default. Server 90s/bridge 105s execution budgets and the
+four-write cap are unchanged. Reads use 12s read/call bounds plus a 15s controller
+bound; cancel uses 20s read/call plus a 22s controller bound. The cancellable
+async adapter cancels the actual call and closes its response body,
+disables retry/redirects and shares the existing cookie jar/owner checks. Other
+workspace transports retain their prior timeout settings. These source findings
+do not establish the transport/effects or install version of a reported handset.
+
+Parent focused JVM targets (signing-free cached/offline setup only):
+
+- `online.captnuu.dcc.HermesSubmissionTest.receiptRecheckAfterStartTimeoutImmediatelyShowsCheckingThenIdenticalUnconfirmedResultWithoutReplay`
+- `online.captnuu.dcc.HermesReceiptJourneyTest`
+- `online.captnuu.dcc.HermesConversationTransportTest`
+
+The first target is the preserved missing-progress regression. New coverage also
+checks bounded failure/recheck, inactive/storage/auth guards, durable-close
+failure, unchanged client/new-root identity, repeated-request refusal, reload
+and late owner/turn feedback. No fixture opens a real endpoint or runs a model.
+
+New dedicated-QA instrumentation target:
+`HermesShellTest.unresolvedDraftChecksReceiptThenExplicitlyClosesBeforeSeparateFreshSend`.
+It hosts the production Workspace/full-window composer with a synthetic
+controller, the actual HTTP adapter/codec and a terminating OkHttp application
+interceptor (no DNS/socket). It checks the real overflow lookup, visible progress,
+draft/selection, dismiss-without-HTTP, explicit old-close only, later fresh Send,
+truthful historical details and X/Inbox restoration. Success captures are
+`unresolved-receipt-checked.png` and `unresolved-fresh-turn.png` under
+`externalFilesDir/qa-ui-captures/`; failures use the existing pre-cleanup artifact
+helper. New GREEN/full/native results and screenshots require parent execution.
+No live task/provider/model acceptance is implied.
+
 ### Android Send/recovery and keyboard repair candidate
 
 Source changes require fresh parent verification; they do not diagnose the exact

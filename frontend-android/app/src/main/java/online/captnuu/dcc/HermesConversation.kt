@@ -7,6 +7,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
@@ -101,15 +105,17 @@ internal fun submittedOf(v:JSONObject):HermesSubmitted {
     if(v.has("closed"))require(v.get("closed") is Boolean)
     return HermesSubmitted(v.getString("rootKey"),v.getString("turnKey"),v.getString("text"),answer,v.getLong("expiresAt"),parent,question,v.optBoolean("closed",false),context)
 }
-data class HermesState(val draft:String="",val answer:String="",val view:String?=null,val receipt:String?=null,val busy:Boolean=false,val notice:String="",val available:Boolean=false,val rootKey:String?=null,val attemptKey:String?=null,val editedAfterSubmit:Boolean=false,val submitted:HermesSubmitted?=null,val timeline:List<HermesChatEntry> = emptyList(),val historyPruned:Boolean=false,val historyReady:Boolean=false,val ownerKey:String?=null,val contextVersion:Int=0,val settledReceiptKey:String?=null,val draftContext:String?=null,val replyVersion:Int=0,val storageStatus:HermesStorageStatus=HermesStorageStatus.READY,val canRecoverSeparately:Boolean=false){
+data class HermesState(val draft:String="",val answer:String="",val view:String?=null,val receipt:String?=null,val busy:Boolean=false,val notice:String="",val available:Boolean=false,val rootKey:String?=null,val attemptKey:String?=null,val editedAfterSubmit:Boolean=false,val submitted:HermesSubmitted?=null,val timeline:List<HermesChatEntry> = emptyList(),val historyPruned:Boolean=false,val historyReady:Boolean=false,val ownerKey:String?=null,val contextVersion:Int=0,val settledReceiptKey:String?=null,val draftContext:String?=null,val replyVersion:Int=0,val storageStatus:HermesStorageStatus=HermesStorageStatus.READY,val canRecoverSeparately:Boolean=false,val receiptCheck:HermesReceiptCheck=HermesReceiptCheck.IDLE){
     val storageReady:Boolean get()=storageStatus==HermesStorageStatus.READY
+    val receiptChecking:Boolean get()=receiptCheck==HermesReceiptCheck.CHECKING
 }
 internal fun answering(s:HermesState)=s.view?.let{JSONObject(it).has("question")}==true&&s.attemptKey==null&&(s.submitted==null||s.draft.isEmpty())
 data class HermesOwnerFence(val owner:String,val generation:Long)
 
 /** Bounded encrypted client state. It is not an outbox: reconnection ONLY reads
  * receipts, and cannot replay a start or answer. All AI/effects stay on server. */
-class HermesConversationController(private val scope:CoroutineScope,private val storageFor:(String)->SessionStorage,private val api:suspend (JSONObject)->JSONObject,private val now:()->Long={System.currentTimeMillis()},private val recoveryStorageFor:((String)->SessionStorage)?=null) {
+class HermesConversationController(private val scope:CoroutineScope,private val storageFor:(String)->SessionStorage,private val api:suspend (JSONObject)->JSONObject,private val now:()->Long={System.currentTimeMillis()},private val recoveryStorageFor:((String)->SessionStorage)?=null,private val receiptTimeoutMillis:Long=HERMES_RECEIPT_TIMEOUT_MS) {
+    init{require(receiptTimeoutMillis in 1..HERMES_RECEIPT_TIMEOUT_MS)}
     private val mutable=MutableStateFlow(HermesState())
     val state=mutable.asStateFlow()
     private var storage:SessionStorage?=null
@@ -124,6 +130,7 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
     private var operationGeneration=0L
     private var job:Job?=null
     private var readJob:Job?=null
+    private var readSequence=0L
     private var expiryJob:Job?=null
     private var usingRecovery=false
     private var separateAbsent=false
@@ -148,7 +155,7 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
     private var retained=JSONArray()
     fun ownerFence():HermesOwnerFence?=owner?.let{HermesOwnerFence(it,generation)}
     fun isCurrent(fence:HermesOwnerFence):Boolean=owner==fence.owner&&generation==fence.generation
-    fun unbind(){generation++;operationGeneration++;job?.cancel();readJob?.cancel();expiryJob?.cancel();owner=null;storage=null;clientId=UUID.randomUUID().toString();usedChars=0;usedBytes=0;expiresAt=now()+HERMES_TTL_MS;retained=JSONArray();mutable.value=HermesState()}
+    fun unbind(){generation++;operationGeneration++;readSequence++;job?.cancel();readJob?.cancel();expiryJob?.cancel();owner=null;storage=null;clientId=UUID.randomUUID().toString();usedChars=0;usedBytes=0;expiresAt=now()+HERMES_TTL_MS;retained=JSONArray();mutable.value=HermesState()}
     private fun scheduleExpiry(){
         if(!mutable.value.storageReady){expiryJob?.cancel();return}
         expiryJob?.cancel();val contextExpiry=mutable.value.draftContext?.let{JSONObject(it).getJSONArray("entries").objects().minOfOrNull{e->e.getLong("at")+HERMES_TTL_MS}}?:Long.MAX_VALUE
@@ -165,8 +172,8 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         if(!mutable.value.storageReady||owner==null)return
         val time=now();val s=mutable.value
         if(expiresAt<=time){
-            generation++;operationGeneration++;job?.cancel();readJob?.cancel();usedChars=0;usedBytes=0;expiresAt=time+HERMES_TTL_MS
-            mutable.value=s.copy(draft="",draftContext=null,answer="",view=null,busy=false,submitted=s.submitted?.copy(text="",context=null),notice="Pending text expired after 24 hours and was cleared. Receipts are unchanged; nothing resent.")
+            generation++;operationGeneration++;readSequence++;job?.cancel();readJob?.cancel();usedChars=0;usedBytes=0;expiresAt=time+HERMES_TTL_MS
+            mutable.value=s.copy(draft="",draftContext=null,answer="",view=null,busy=false,submitted=s.submitted?.copy(text="",context=null),receiptCheck=if(s.receiptChecking)HermesReceiptCheck.CANCELLED else s.receiptCheck,notice="Pending text expired after 24 hours and was cleared. Receipts are unchanged; nothing resent.")
         }else if(s.submitted?.expiresAt?.let{it<=time}==true)mutable.value=s.copy(submitted=s.submitted?.copy(text="",context=null))
         try{persist()}catch(_:Exception){/* Finite storage diagnostic already published. */}
     }
@@ -199,7 +206,7 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         try{
             val separate=recoveryStorageFor?.invoke(boundOwner)?:return
             require(separate.read()==null) // Never overwrite an existing recovery.
-            generation++;operationGeneration++;job?.cancel();readJob?.cancel();expiryJob?.cancel()
+            generation++;operationGeneration++;readSequence++;job?.cancel();readJob?.cancel();expiryJob?.cancel()
             usingRecovery=true;separateAbsent=false;storage=separate;clientId=UUID.randomUUID().toString();retained=JSONArray();usedChars=0;usedBytes=0;expiresAt=now()+HERMES_TTL_MS
             val fresh=HermesState(draft=if(answering(before))before.answer else before.draft,available=before.available,contextVersion=before.contextVersion,replyVersion=before.replyVersion,
                 ownerKey=boundOwner,historyReady=true,notice="Separate local chat. Original record retained; earlier work is not reconciled. Press Send only for a new request.")
@@ -269,32 +276,60 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         persist()
         scheduleExpiry()
     }
+    private fun checked(status:HermesReceiptCheck){
+        val s=mutable.value
+        if(status!=HermesReceiptCheck.CHECKING)readJob=null
+        mutable.value=s.copy(receiptCheck=status,notice=if(s.storageReady)status.message else s.notice)
+    }
     fun readReceipt(){
-        if(!mutable.value.storageReady)return
-        val s=mutable.value;val root=s.rootKey?:s.submitted?.rootKey?:return
-        val boundOwner=owner?:return
-        if(s.busy||readJob?.isActive==true)return
-        val op=operationGeneration;readJob=scope.launch {
+        val s=mutable.value
+        if(s.receiptChecking||readJob?.isActive==true)return
+        if(!s.storageReady){checked(HermesReceiptCheck.STORAGE);return}
+        val boundOwner=owner?:run{checked(HermesReceiptCheck.AUTH);return}
+        val root=s.rootKey?:s.submitted?.rootKey?:run{checked(HermesReceiptCheck.NO_REQUEST);return}
+        if(!scope.isActive){checked(HermesReceiptCheck.INACTIVE);return}
+        if(s.busy){checked(HermesReceiptCheck.BUSY);return}
+        val op=operationGeneration;val sequence=++readSequence
+        fun current()=op==operationGeneration&&owner==boundOwner&&sequence==readSequence
+        checked(HermesReceiptCheck.CHECKING)
+        // Install the job before starting it, including with an unconfined scope.
+        val lookup=scope.launch(start=CoroutineStart.LAZY){
             try{
-                val v=api(JSONObject().put("op","read").put("workspaceOwner",boundOwner).put("clientId",clientId).put("rootKey",root))
-                require(validHermesView(v)&&v.getString("rootKey")==root)
-                if(op==operationGeneration&&owner==boundOwner){
-                    val claim=mutable.value.attemptKey
-                    if(claim!=null&&v.getString("turnKey")!=claim)mutable.value=mutable.value.copy(notice="Latest submitted turn is not confirmed. Nothing was resent.")
-                    else accept(v)
-                }
-            }catch(_:Exception){if(op==operationGeneration&&owner==boundOwner&&mutable.value.storageReady)mutable.value=mutable.value.copy(notice="Hermes unavailable. No automatic resend; submitted request retained.")}
+                val v=withTimeout(receiptTimeoutMillis){api(JSONObject().put("op","read").put("workspaceOwner",boundOwner).put("clientId",clientId).put("rootKey",root))}
+                if(!current())return@launch
+                if(!validHermesView(v)){checked(HermesReceiptCheck.INVALID);return@launch}
+                val claim=mutable.value.attemptKey
+                if(v.getString("rootKey")!=root||claim!=null&&v.getString("turnKey")!=claim){checked(HermesReceiptCheck.CORRELATION);return@launch}
+                if(!mutable.value.storageReady){checked(HermesReceiptCheck.STORAGE);return@launch}
+                accept(v)
+                checked(if(!mutable.value.storageReady)HermesReceiptCheck.STORAGE else if(v.getLong("expiresAt")<=now())HermesReceiptCheck.EXPIRED else when(v.getJSONObject("receipt").getString("outcome")){
+                    "uncertain"->HermesReceiptCheck.UNCONFIRMED;"partial"->HermesReceiptCheck.PARTIAL;"failed"->HermesReceiptCheck.FAILED;"question"->HermesReceiptCheck.QUESTION;else->HermesReceiptCheck.CHECKED
+                })
+            }catch(_:TimeoutCancellationException){if(current())checked(HermesReceiptCheck.TIMEOUT)}
+            catch(error:CancellationException){if(current())checked(HermesReceiptCheck.CANCELLED);throw error}
+            catch(error:Exception){if(current())checked(if(!mutable.value.storageReady)HermesReceiptCheck.STORAGE else when(error){
+                is HermesHttpFailure->if(error.auth)HermesReceiptCheck.AUTH else HermesReceiptCheck.HTTP
+                is java.io.InterruptedIOException->HermesReceiptCheck.TIMEOUT
+                is org.json.JSONException->HermesReceiptCheck.DECODE
+                is java.io.IOException->HermesReceiptCheck.NETWORK
+                else->HermesReceiptCheck.INVALID
+            })}
         }
+        readJob=lookup
+        lookup.invokeOnCompletion{if(current()&&mutable.value.receiptChecking)checked(if(scope.isActive)HermesReceiptCheck.CANCELLED else HermesReceiptCheck.INACTIVE)}
+        lookup.start()
     }
     fun send(){
-        val s=mutable.value;if(s.busy||owner==null||!s.storageReady)return
+        val s=mutable.value;if(s.busy||!s.storageReady)return
+        if(owner==null){mutable.value=s.copy(notice="Sign in to send. Nothing sent. [AUTH]");return}
         val boundOwner=owner?:return
         val v=s.view?.let{JSONObject(it)};val question=if(answering(s))v?.optJSONObject("question") else null
         val text=if(question!=null)s.answer else s.draft
         if(text.isBlank())return
         if(!scope.isActive){mutable.value=s.copy(notice="Composer unavailable. Nothing sent.");return}
+        if(!s.available){mutable.value=s.copy(notice="Hermes needs an online server. No effects simulated or queued. [UNAVAILABLE]");return}
+        if(repeatsUnconfirmedHermesRequest(s)){mutable.value=s.copy(notice="This repeats an unconfirmed earlier request. Check its receipt and details before repeating. Nothing sent.");return}
         if(s.attemptKey!=null){mutable.value=s.copy(notice="This turn was already submitted and is not confirmed. No resend. Check receipt or start a new request.");return}
-        if(!s.available){mutable.value=s.copy(notice="Hermes needs an online server. No effects simulated or queued.");return}
         if(expiresAt<=now()){mutable.value=s.copy(notice="Conversation expired. Start a new request; nothing was resent.");return}
         val chars=if(question!=null)usedChars+text.length else text.length
         val bytes=if(question!=null)usedBytes+text.toByteArray(Charsets.UTF_8).size else text.toByteArray(Charsets.UTF_8).size
@@ -309,12 +344,12 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         val previousChars=usedChars;val previousBytes=usedBytes
         val contextExpiry=context?.let{JSONObject(it).getJSONArray("entries").objects().minOfOrNull{e->e.getLong("at")+HERMES_TTL_MS}}?:expiresAt
         val submitted=HermesSubmitted(s.rootKey?:key,key,text,question!=null,minOf(expiresAt,contextExpiry),question?.let{v!!.getString("turnKey")},question?.getString("id"),context=context)
-        val next=s.copy(draft=if(question==null)"" else s.draft,draftContext=if(question==null)null else s.draftContext,answer="",rootKey=s.rootKey?:key,attemptKey=key,editedAfterSubmit=false,busy=true,notice="",submitted=submitted)
+        val next=s.copy(draft=if(question==null)"" else s.draft,draftContext=if(question==null)null else s.draftContext,answer="",rootKey=s.rootKey?:key,attemptKey=key,editedAfterSubmit=false,busy=true,notice="",submitted=submitted,receiptCheck=HermesReceiptCheck.IDLE)
         usedChars=chars;usedBytes=bytes
         val durable=try{persist(next)}catch(_:Exception){usedChars=previousChars;usedBytes=previousBytes;if(mutable.value.storageReady)block(HermesStorageStatus.WRITE_BLOCKED);mutable.value=mutable.value.copy(notice=mutable.value.notice+" Nothing sent for this draft.");return}
         // Submitting a restored answer need not involve edit(). Older receipt
         // reads (including failures) must become stale before starting this turn.
-        generation++;val op=++operationGeneration;mutable.value=durable;scheduleExpiry()
+        generation++;val op=++operationGeneration;readSequence++;readJob?.cancel();mutable.value=durable;scheduleExpiry()
         job=scope.launch {
             try{val response=api(body);require(response.getString("rootKey")== (s.rootKey?:key)&&response.getString("turnKey")==key);if(op==operationGeneration&&owner==boundOwner)accept(response)}
             catch(_:Exception){if(op==operationGeneration&&owner==boundOwner){mutable.value=mutable.value.copy(busy=false,notice=if(mutable.value.storageReady)"Action not confirmed; effects may have saved. Check receipt before repeating. No automatic resend." else mutable.value.notice);try{persist()}catch(_:Exception){/* The durable submitted claim remains intact. */}}}
@@ -322,12 +357,20 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
     }
     fun newRequest(){
         val s=mutable.value;if(owner==null||!s.storageReady)return
+        if(!scope.isActive){mutable.value=s.copy(busy=false,notice="Close unavailable: composer is inactive. Nothing new sent. [INACTIVE]");return}
         val boundOwner=owner?:return
-        val root=s.rootKey;generation++;val op=++operationGeneration;job?.cancel();readJob?.cancel()
-        mutable.value=s.copy(busy=true,notice="Closing request; earlier effects are not rolled back.")
+        val root=s.rootKey;generation++;val op=++operationGeneration;readSequence++;job?.cancel();readJob?.cancel()
+        mutable.value=s.copy(busy=true,receiptCheck=HermesReceiptCheck.IDLE,notice="Closing request; earlier effects are not rolled back.")
         job=scope.launch {
             try{
-                val closed=if(root!=null)api(JSONObject().put("op","cancel").put("workspaceOwner",boundOwner).put("clientId",clientId).put("rootKey",root)).also{require(validHermesView(it)&&it.getString("rootKey")==root)} else null
+                val closed=if(root!=null)withTimeout(HERMES_CLOSE_TIMEOUT_MS){api(JSONObject().put("op","cancel").put("workspaceOwner",boundOwner).put("clientId",clientId).put("rootKey",root))}.also{
+                    require(validHermesView(it)&&it.getString("rootKey")==root&&!it.has("question"))
+                    val turn=it.getString("turnKey")
+                    val submitted=s.submitted?.takeIf{sent->sent.rootKey==root&&(s.attemptKey==null||sent.turnKey==s.attemptKey)}
+                    // Cancel fences the root, even if the saved answer never
+                    // arrived. Its ACK may name known ancestry, not that answer.
+                    require(turn==root||turn==s.attemptKey||turn==submitted?.turnKey||submitted?.isAnswer==true&&turn==submitted.parentKey)
+                } else null
                 if(op!=operationGeneration||owner!=boundOwner)return@launch
                 if(!mutable.value.storageReady){mutable.value=mutable.value.copy(busy=false,receipt=closed?.getJSONObject("receipt")?.toString()?:mutable.value.receipt);return@launch}
                 val current=mutable.value
@@ -335,8 +378,14 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
                     retained=JSONArray(retained.objects().filter{it.optString("key")!=r.getString("key")}.takeLast(19)+r)
                 }
                 usedChars=0;usedBytes=0;expiresAt=now()+HERMES_TTL_MS
-                mutable.value=HermesState(draft=current.draft.ifEmpty{current.answer},receipt=closed?.getJSONObject("receipt")?.toString()?:current.receipt,available=current.available,submitted=current.submitted?.copy(closed=true),notice="Earlier effects were not rolled back. Check before repeating.",timeline=current.timeline,historyPruned=current.historyPruned,historyReady=true,ownerKey=owner,contextVersion=current.contextVersion,settledReceiptKey=current.settledReceiptKey,draftContext=current.draftContext,replyVersion=current.replyVersion);persist();scheduleExpiry()
-            }catch(_:Exception){if(op==operationGeneration&&owner==boundOwner)mutable.value=mutable.value.copy(busy=false,notice=if(mutable.value.storageReady)"Could not close the server request. Draft retained; nothing new sent." else mutable.value.notice)}
+                val next=HermesState(draft=current.draft.ifEmpty{current.answer},receipt=closed?.getJSONObject("receipt")?.toString()?:current.receipt,available=current.available,submitted=current.submitted?.copy(closed=true),notice="Earlier request closed for further work, not rolled back. Draft retained. Press Send separately for a new request.",timeline=current.timeline,historyPruned=current.historyPruned,historyReady=true,ownerKey=owner,contextVersion=current.contextVersion,settledReceiptKey=current.settledReceiptKey,draftContext=current.draftContext,replyVersion=current.replyVersion)
+                val durable=persist(next)
+                mutable.value=durable;scheduleExpiry()
+            }catch(error:Exception){if(op==operationGeneration&&owner==boundOwner)mutable.value=mutable.value.copy(busy=false,notice=if(mutable.value.storageReady)when(error){
+                is TimeoutCancellationException,is java.io.InterruptedIOException->"Close timed out. Old claim and draft retained; no new submission. [CLOSE_TIMEOUT]"
+                is HermesHttpFailure->if(error.auth)"Close unavailable: sign in again. Old claim retained. [AUTH]" else "Close failed. Old claim and draft retained. [HTTP]"
+                else->"Could not close the server request. Old claim and draft retained; nothing new sent. [CLOSE_FAILED]"
+            } else mutable.value.notice)}
         }
     }
     fun dismiss(){

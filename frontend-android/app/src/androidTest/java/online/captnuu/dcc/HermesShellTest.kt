@@ -31,6 +31,14 @@ import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.rules.RuleChain
 import org.junit.Test
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.ResponseBody.Companion.toResponseBody
+import java.util.concurrent.CopyOnWriteArrayList
 
 // Real shell/composer/LazyColumn geometry, synthetic wire data only. No real
 // WorkspaceModel, auth cookie, mail/provider request, timer service or signing.
@@ -231,6 +239,99 @@ class HermesShellTest {
         trace.stage("capture full-window-closed-tasks"){captureFullWindow("full-window-closed-tasks",expectIme=false)}
         trace.stage("assert no extra API operations"){assertEquals(listOf("start","answer"),requests.map{it.getString("op")})}
         }finally{trace.stage("cancel synthetic scope"){scope.cancel()}}
+    }
+    @OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+    @Test @SdkSuppress(minSdkVersion=30)
+    fun unresolvedDraftChecksReceiptThenExplicitlyClosesBeforeSeparateFreshSend(){
+        val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate)
+        val memory=object:SessionStorage{var raw:String?=null;override fun read()=raw;override fun write(value:String){raw=value};override fun clear(){error("No clear")}}
+        val requests=CopyOnWriteArrayList<JSONObject>();val readGate=CompletableDeferred<Unit>()
+        val time=1794016800000L
+        fun response(key:String,outcome:String)=JSONObject().put("version",1).put("rootKey",key).put("turnKey",key).put("expiresAt",time+HERMES_TTL_MS).put("questions",0)
+            .put("receipt",JSONObject().put("version",1).put("key",key).put("outcome",outcome).put("line",if(outcome=="uncertain")"Earlier synthetic effects remain unconfirmed." else "Synthetic read-only result.")
+                .put("verified",0).put("expected",JSONObject.NULL).put("targets",JSONArray()))
+        // Application interceptor terminates every request: no DNS/socket/server.
+        // The real conversation client + async adapter + JSON codec are exercised.
+        val client=OkHttpClient.Builder().addInterceptor{chain->
+            val buffer=okio.Buffer();checkNotNull(chain.request().body).writeTo(buffer)
+            val body=JSONObject(buffer.readUtf8());requests+=body
+            var status=200
+            val result=when(body.getString("op")){
+                "start"->if(requests.count{it.getString("op")=="start"}==1){status=504;JSONObject()} else response(body.getString("key"),"read-only")
+                "read"->{runBlocking{readGate.await()};response(body.getString("rootKey"),"uncertain")}
+                "cancel"->response(body.getString("rootKey"),"uncertain")
+                else->error("Unexpected synthetic operation")
+            }
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(status).message("Synthetic")
+                .body(result.toString().toResponseBody("application/json".toMediaType())).build()
+        }.build()
+        val controller=HermesConversationController(scope,{memory},{body->
+            val http=awaitHermesHttp(hermesConversationClient(client,body.getString("op")),Request.Builder().url("https://synthetic.invalid/api/v1/hermes/conversation").post(body.toString().toRequestBody("application/json".toMediaType())).build())
+            if(http.code !in 200..299)throw HermesHttpFailure(auth=http.code==401)
+            JSONObject(http.body)
+        },{time})
+        try{
+            compose.activityRule.scenario.onActivity{it.enableEdgeToEdge();controller.bind("a".repeat(64));controller.availability(true)}
+            compose.setContent{
+                val hermes by controller.state.collectAsStateWithLifecycle()
+                CompositionLocalProvider(LocalInspectionMode provides true){DccTheme{
+                    Workspace(workspace(),{_,_->},{},{},{_,_->},{_,_->},initialDestination=Destination.Inbox,hermesContent={modifier->
+                        HermesComposer(hermes,controller::edit,controller::send,controller::newRequest,controller::dismiss,controller::readReceipt,modifier=modifier,docked=true,onClearChat=controller::newConversation,onRecover=controller::recoverSeparately)
+                    })
+                }}
+            }
+            val before=inboxGeometry("unresolved-before-open")
+            openChat();compose.onNodeWithTag("hermes-chat-editor").performTextInput("Synthetic earlier request")
+            compose.onNodeWithTag("hermes-chat-editor").performImeAction()
+            compose.waitUntil(5000){!controller.state.value.busy&&controller.state.value.submitted!=null}
+            val original=controller.state.value.submitted!!
+            compose.onNodeWithTag("hermes-chat-editor").performTextInput("Different fresh synthetic draft")
+            compose.onNodeWithTag("hermes-chat-editor").performTextInputSelection(androidx.compose.ui.text.TextRange(2,7))
+            compose.onNodeWithTag("hermes-chat-send").assertIsEnabled().performClick()
+            compose.onNodeWithText("Continue with a new request?").assertIsDisplayed()
+            val held=controller.state.value
+            compose.onNodeWithText("Keep draft").performClick()
+            compose.runOnIdle{assertEquals(held,controller.state.value);assertEquals(listOf("start"),requests.map{it.getString("op")})}
+            compose.onNodeWithTag("hermes-chat-editor").performTouchInput{click()}
+            stableFullWindowGeometry("unresolved-draft-before-check",expectIme=true)
+            compose.onNodeWithContentDescription("Conversation actions").performClick()
+            compose.onNodeWithText("Check receipt").assertIsDisplayed().performClick()
+            compose.onNodeWithTag("hermes-receipt-feedback").assertIsDisplayed().assertTextContains("Checking receipt",substring=true)
+            compose.waitUntil(5000){requests.any{it.getString("op")=="read"}}
+            assertEquals(listOf("start","read"),requests.map{it.getString("op")})
+            assertEquals(setOf("op","workspaceOwner","clientId","rootKey"),requests.last().keys().asSequence().toSet())
+            readGate.complete(Unit)
+            compose.waitUntil(5000){controller.state.value.receiptCheck==HermesReceiptCheck.UNCONFIRMED}
+            compose.onNodeWithTag("hermes-receipt-feedback").assertIsDisplayed().assertTextContains("still unconfirmed",substring=true)
+            compose.onNodeWithTag("hermes-chat-editor").assertTextContains("Different fresh synthetic draft")
+            assertEquals(androidx.compose.ui.text.TextRange(2,7),compose.onNodeWithTag("hermes-chat-editor").fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange])
+            captureFullWindow("unresolved-receipt-checked",expectIme=true)
+            compose.runOnIdle{assertEquals(original,controller.state.value.submitted);assertEquals(original.turnKey,controller.state.value.attemptKey)}
+            compose.onNodeWithTag("hermes-chat-send").assertIsEnabled().performClick()
+            compose.onNodeWithText("Close earlier request").performClick()
+            compose.waitUntil(5000){!controller.state.value.busy&&controller.state.value.rootKey==null}
+            compose.runOnIdle{
+                assertEquals(listOf("start","read","cancel"),requests.map{it.getString("op")})
+                assertEquals("Different fresh synthetic draft",controller.state.value.draft);assertTrue(controller.state.value.submitted!!.closed)
+            }
+            show("Earlier synthetic effects remain unconfirmed.")
+            compose.onNodeWithTag("hermes-chat-history").performScrollToNode(hasText("View"))
+            compose.onNodeWithText("View").assertIsDisplayed().performClick()
+            show("Outcome: uncertain. Verified: 0; expected: null.")
+            compose.onNodeWithTag("hermes-chat-editor").performTouchInput{click()}
+            stableFullWindowGeometry("unresolved-before-separate-send",expectIme=true)
+            compose.onNodeWithTag("hermes-chat-send").assertIsEnabled().performClick()
+            compose.waitUntil(5000){requests.count{it.getString("op")=="start"}==2&&!controller.state.value.busy}
+            val fresh=requests.last()
+            assertEquals(listOf("start","read","cancel","start"),requests.map{it.getString("op")})
+            assertNotEquals(original.turnKey,fresh.getString("key"));assertEquals(requests[0].getString("clientId"),fresh.getString("clientId"))
+            assertEquals("Different fresh synthetic draft",fresh.getString("prompt"));assertFalse(fresh.has("answer"))
+            compose.runOnIdle{assertEquals("uncertain",JSONObject(controller.state.value.timeline.single{it.id=="receipt:${original.turnKey}"}.receipt!!).getString("outcome"))}
+            captureFullWindow("unresolved-fresh-turn",expectIme=true)
+            closeChat();assertEquals(before,inboxGeometry("unresolved-after-X"))
+        }catch(error:Throwable){
+            failureArtifacts.capture(error,org.junit.runner.Description.createTestDescription(HermesShellTest::class.java,"unresolved-journey-before-cleanup"));throw error
+        }finally{readGate.complete(Unit);scope.cancel();client.dispatcher.executorService.shutdownNow();client.connectionPool.evictAll()}
     }
     @Test fun lowerDockSurvivesNavigationWithoutLosingDraftOrInboxQuery(){
         var hermes by mutableStateOf(HermesState(available=true))

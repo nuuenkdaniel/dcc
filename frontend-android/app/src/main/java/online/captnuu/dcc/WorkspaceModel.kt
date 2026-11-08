@@ -70,23 +70,25 @@ class WorkspaceModel(application:Application):AndroidViewModel(application) {
       return withContext(Dispatchers.IO) {
         val builder=Request.Builder().url(ORIGIN+path).header("Origin",ORIGIN)
         if(body!=null) builder.post(body.toString().toRequestBody("application/json".toMediaType()))
-        val callClient=if(path=="/api/v1/hermes/conversation")client.newBuilder().callTimeout(180,TimeUnit.SECONDS).retryOnConnectionFailure(false).build() else if(path.endsWith("/extract")||path.endsWith("/session")||path.endsWith("/material"))client.newBuilder().callTimeout(180,TimeUnit.SECONDS).build() else client
-        callClient.newCall(builder.build()).execute().use { response ->
+        val conversation=path=="/api/v1/hermes/conversation"
+        val callClient=if(conversation)hermesConversationClient(client,body?.optString("op")) else if(path.endsWith("/extract")||path.endsWith("/session")||path.endsWith("/material"))client.newBuilder().callTimeout(180,TimeUnit.SECONDS).build() else client
+        val response=if(conversation)awaitHermesHttp(callClient,builder.build()) else callClient.newCall(builder.build()).execute().use{HermesHttpResult(it.code,if(it.isSuccessful)it.body?.string()?:"{}" else "{}")}
             if(response.code==401) {
                 withContext(Dispatchers.Main.immediate){
                     // A delayed response from a prior Hermes/account generation
                     // must not erase a subsequently restored or signed-in session.
                     if(!scoped||fence!=null&&hermes.isCurrent(fence)){
                         hermes.unbind();sessions.clear();clearWorkspaceCache()
-                        mutable.value=WorkspaceState(busy=true)
+                        mutable.value=WorkspaceState(busy=true,notice="Sign-in required [AUTH]. Saved requests were not resent.")
                     }
                 }
+                if(conversation)throw HermesHttpFailure(auth=true)
                 throw IllegalStateException("Sign-in required. Check credentials or sign in again.")
             }
+            if(conversation&&response.code !in 200..299)throw HermesHttpFailure()
             if(response.code==409) throw IllegalStateException("Changed on another device. Refresh before retrying.")
-            check(response.isSuccessful) { "Request failed (HTTP ${response.code})." }
-            response.body?.string() ?: "{}"
-        }
+            check(response.code in 200..299) { "Request failed (HTTP ${response.code})." }
+            response.body
       }
     }
     suspend fun hermesTaskReadback(fence:HermesOwnerFence):ManualTaskReadback {

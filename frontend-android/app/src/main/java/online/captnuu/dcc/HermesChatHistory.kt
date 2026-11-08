@@ -78,7 +78,8 @@ internal fun projectChat(s:HermesState,now:Long):HermesState {
         val hasResult=entries.any{it.turnKey==sent.turnKey&&it.kind in setOf("question","receipt")}
         if(!hasResult&&!sent.closed){
             val pending=s.busy
-            put(HermesChatEntry("status:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant",if(pending)"pending" else "unknown",if(pending)"Sending — no saved effects confirmed." else s.notice.ifBlank{"Submitted turn is unconfirmed. Check receipt before repeating."},sent.expiresAt))
+            val unknown=if(s.receiptCheck!=HermesReceiptCheck.IDLE)"Submitted turn is unconfirmed. Check receipt before repeating." else s.notice.ifBlank{"Submitted turn is unconfirmed. Check receipt before repeating."}
+            put(HermesChatEntry("status:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant",if(pending)"pending" else "unknown",if(pending)"Sending — no saved effects confirmed." else unknown,sent.expiresAt))
         }
     }
     for(i in entries.indices){
