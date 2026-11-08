@@ -11,6 +11,7 @@ import {serviceToolDefinitions} from './service-contracts.js'
 import {composeSdkServer} from './sdk-server.js'
 import {REQUEST_LIMITS,requestContext,type IntentRecord,type IntentPolicy,type ConversationGuard} from './request-intent.js'
 import {validClarification,type Clarification} from './clarification.js'
+import {validGuard} from './conversation-validation.js'
 
 // A testable in-process port, NOT a Hermes CLI output format or transport adapter.
 export type ModelRound={calls:{id:string;tool:string;arguments:Record<string,unknown>}[];done:boolean;final?:unknown}
@@ -88,11 +89,11 @@ export class RequestController {
     const check=()=>{if(abort.signal.aborted||now()>=deadline)throw new IntentStoreError('interrupted')}
     const dispatcher=new Dispatcher(transport),tools=requestTools(claim.record)
     let expectedId:string|undefined
-    const server=composeSdkServer({name:'dcc-request-action',instructions:'Bounded admitted request actions. Backend receipts alone establish effects.',source:'dcc-service',tools:()=>tools,dispatch:async(tool,args,meta)=>{
+    // All execution lanes share the same durable reservation/result boundary.
+    // Only the SDK adapter below accepts transport correlation metadata.
+    const dispatch=async(id:string,tool:unknown,args:unknown):Promise<Result>=>{
       check()
-      const correlated=nativeRunner?meta?.hostCallId:expectedId
-      if(typeof correlated!=='string'||(!nativeRunner&&meta?.nativeCallId!==expectedId))return {state:'rejected',code:'forbidden'}
-      const id=correlated,reserved=await store.reserve(input.key,owner,id,tool,args,now())
+      const reserved=await store.reserve(input.key,owner,id,tool,args,now())
       if(reserved.directive==='replay')return reserved.result!
       if(reserved.directive==='reconcile'){
         const result=await transport.reconcile(reserved.command!,requestContext(reserved.record))
@@ -104,11 +105,50 @@ export class RequestController {
       const result=await dispatcher.dispatch(tool,reserved.command!.args,requestContext(reserved.record))
       await store.result(input.key,owner,id,result) // Preserve late backend receipts.
       return result
+    }
+    const server=composeSdkServer({name:'dcc-request-action',instructions:'Bounded admitted request actions. Backend receipts alone establish effects.',source:'dcc-service',tools:()=>tools,dispatch:async(tool,args,meta)=>{
+      check()
+      const correlated=nativeRunner?meta?.hostCallId:expectedId
+      if(typeof correlated!=='string'||(!nativeRunner&&meta?.nativeCallId!==expectedId))return {state:'rejected',code:'forbidden'}
+      return dispatch(correlated,tool,args)
     }})
     const client=new Client({name:'dcc-request-host',version:'0.1.0'})
     const [clientWire,serverWire]=InMemoryTransport.createLinkedPair()
     const history:{id:string;result:Result}[]=[]
     const work=async()=>{
+      const guard=claim.record.guard
+      // Only a new owner of an immutable, bound, fully resolved host checklist.
+      // Existing active/uncertain/legacy claims returned above, never enter here.
+      if(validGuard(guard)&&guard.binding&&guard.checklist&&!guard.questionOnly&&!guard.questionReason&&!guard.readOnly&&claim.record.allowedTools.includes('list_tasks')&&claim.record.allowedTools.includes('create_task')){
+        check();await store.round(input.key,owner,now());check()
+        const goals=guard.checklist.tasks
+        const verified=async(record:IntentRecord)=>{
+          const writes=record.calls.filter(c=>TOOLS[c.command.tool].write)
+          if(writes.length!==goals.length||new Set(writes.map(c=>c.command.args.id)).size!==goals.length)return false
+          for(const goal of goals){
+            check()
+            const call=writes.find(c=>c.command.tool==='create_task'&&c.command.args.title===goal.title&&c.command.args.date===goal.date)
+            if(!call||call.result?.state!=='applied')return false
+            const target=await transport.inspect(call.command,call.result,true)
+            check()
+            if(target.kind!=='task'||target.action!=='added'||target.id!==call.command.args.id||target.title!==goal.title||target.date!==goal.date||target.state!=='applied'||target.verification!=='verified')return false
+          }
+          return true
+        }
+        for(const [index,goal] of goals.entries()){
+          // list_tasks exposes the global collection version independent of its
+          // date filter/page. Item text is never used to choose another action.
+          const read=await dispatch(`checklist_read_${index+1}`,'list_tasks',{from:'2000-01-01',to:'2000-01-02',limit:1})
+          if(read.state!=='ok'||!plainRecord(read.data)||!Number.isInteger(read.data.collectionVersion))throw new IntentStoreError('checklist_read_failed')
+          const result=await dispatch(`checklist_create_${index+1}`,'create_task',{title:goal.title,date:goal.date,expectedVersion:read.data.collectionVersion})
+          if(result.state!=='applied')throw new IntentStoreError('checklist_incomplete')
+          check()
+        }
+        const record=await store.read(input.key)
+        if(record.phase!=='active'||record.ownerId!==owner||!await verified(record))throw new IntentStoreError('checklist_unverified')
+        check()
+        return summarizeIntent((await store.finish(input.key,owner)).record)
+      }
       if(nativeRunner){
         check();await store.round(input.key,owner,now());check()
         await nativeRunner({server,prompt:input.prompt,signal:abort.signal,expiresAt:deadline,

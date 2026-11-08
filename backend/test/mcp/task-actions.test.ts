@@ -95,18 +95,12 @@ test('authenticated endpoint -> fake bridge -> official SDK MCP -> real service 
     assert.equal(legacy.statusCode,409,'existing Tell Hermes sees the MCP sentinel instead of parsing/writing')
   }finally{await h.app.close()}
 })
-test('authenticated conversation HTTP owner fence → real SDK question → bound answer → SQL-fake readback and structured three-task receipt',async()=>{
-  const now=Date.parse('2026-11-08T02:00:00Z'),date=nyDate(now),to=new Date(Date.parse(date)+86400000).toISOString().slice(0,10)
+test('authenticated conversation HTTP owner fence → real SDK question → host-owned bound answer → SQL-fake three-task receipt',async()=>{
+  const now=Date.parse('2026-11-08T02:00:00Z'),date=nyDate(now)
   let turns=0
   const h=await fixture(async client=>{
-    turns++
-    if(turns===1){assert.equal(result(await client.callTool({name:'request_clarification',arguments:{reason:'task_topics'}})).state,'ok');return}
-    let version=result(await client.callTool({name:'list_tasks',arguments:{from:date,to,limit:10}})).data.collectionVersion
-    for(const title of ['CSE354: Lectures','CSE354: practice problems','CSE354: review']){
-      const write=result(await client.callTool({name:'create_task',arguments:{title,date,expectedVersion:version}}))
-      assert.equal(write.state,'applied');version=write.version
-    }
-    assert.equal(result(await client.callTool({name:'list_tasks',arguments:{from:date,to,limit:10}})).data.items.length,3)
+    assert.equal(++turns,1,'Only unresolved clarification may invoke the bridge')
+    assert.equal(result(await client.callTool({name:'request_clarification',arguments:{reason:'task_topics'}})).state,'ok')
   },()=>now,ACTION_PATH)
   try{
     const session=await h.app.inject({url:'/api/v1/auth/session',cookies:{daymark_session:h.cookie}})
@@ -119,7 +113,8 @@ test('authenticated conversation HTTP owner fence → real SDK question → boun
     const answer={op:'answer',workspaceOwner,clientId,rootKey:first.key,key:'http_answer_key_01',parentKey:first.key,questionId:q.json().question.id,answer:'Lectures, practice problems, and review'}
     const r=await post(answer);assert.equal(r.statusCode,200);assert.ok(validConversationView(r.json()));assert.equal(r.json().receipt.outcome,'complete');assert.equal(r.json().receipt.verified,3)
     assert.equal(h.db.rows.get(COLLECTION)!.data.tasks.length,3)
-    const snapshot=JSON.stringify([...h.db.rows.values()]);assert.deepEqual((await post(answer)).json(),r.json());assert.equal(h.invocations(),2);assert.equal(JSON.stringify([...h.db.rows.values()]),snapshot)
+    assert.deepEqual(h.db.rows.get(COLLECTION)!.data.tasks.map((t:{title:string;date:string})=>[t.title,t.date]),['CSE354: Lectures','CSE354: practice problems','CSE354: review'].map(title=>[title,date]))
+    const snapshot=JSON.stringify([...h.db.rows.values()]);assert.deepEqual((await post(answer)).json(),r.json());assert.equal(h.invocations(),1);assert.equal(JSON.stringify([...h.db.rows.values()]),snapshot)
     assert.equal((await post({...answer,key:'second_http_answer_01'})).statusCode,409)
   }finally{await h.app.close()}
 })
