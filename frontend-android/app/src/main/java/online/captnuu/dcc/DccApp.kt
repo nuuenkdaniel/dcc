@@ -59,17 +59,35 @@ fun JSONArray?.objects():List<JSONObject> = if(this==null) emptyList() else (0 u
  var local by rememberSaveable { mutableStateOf(false) }
  val destination=restoredDestination(selected)
  val pages=rememberSaveableStateHolder()
- val keyboardVisible=WindowInsets.ime.getBottom(LocalDensity.current)>0
- BoxWithConstraints(Modifier.fillMaxSize().imePadding()) {
- val dockLimit=maxHeight*0.55f
+  var hermesModalOpen by remember{mutableStateOf(false)}
+  var hermesOwnsIme by remember{mutableStateOf(false)}
+  val modalVisibility=remember { {visible:Boolean->
+   hermesModalOpen=visible
+   if(visible)hermesOwnsIme=true
+  } }
+  val workspaceIme=WindowInsets.ime
+  val density=LocalDensity.current
+  val imeBottom=workspaceIme.getBottom(density)
+  // Do not release on X/Back alone: the dismissing Dialog's IME may still be
+  // animating. Releasing only once hidden avoids a transient background reflow.
+  LaunchedEffect(hermesModalOpen,imeBottom){
+   if(!hermesModalOpen&&imeBottom==0){
+    withFrameNanos{}
+    if(!hermesModalOpen&&workspaceIme.getBottom(density)==0)hermesOwnsIme=false
+   }
+  }
+  val keyboardVisible=!hermesOwnsIme&&imeBottom>0
+   Box(Modifier.fillMaxSize().windowInsetsPadding(if(hermesOwnsIme)WindowInsets(0,0,0,0) else workspaceIme)) {
  Scaffold(bottomBar={Column {
   if(state.signedIn&&(projectModel!=null||hermesContent!=null))Surface(modifier=Modifier.testTag("hermes-dock"),tonalElevation=3.dp) {
-   val dockModifier=Modifier.fillMaxWidth().heightIn(max=dockLimit).padding(horizontal=12.dp,vertical=4.dp)
+    val dockModifier=Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=4.dp)
+    CompositionLocalProvider(LocalHermesModalVisibility provides modalVisibility){
    if(hermesContent!=null)hermesContent(dockModifier)
    else if(projectModel!=null){
     val hermes by projectModel.hermes.state.collectAsStateWithLifecycle()
-    HermesComposer(hermes,projectModel.hermes::edit,projectModel.hermes::send,projectModel.hermes::newRequest,projectModel.hermes::dismiss,projectModel.hermes::readReceipt,modifier=dockModifier,docked=true)
-   }
+     HermesComposer(hermes,projectModel.hermes::edit,projectModel.hermes::send,projectModel.hermes::newRequest,projectModel.hermes::dismiss,projectModel.hermes::readReceipt,modifier=dockModifier,docked=true,onClearChat=projectModel.hermes::newConversation)
+    }
+    }
   }
   // Keyboard owns the lower inset while editing; restore the same selection
   // afterwards, rather than covering navigation or consuming another nav height.

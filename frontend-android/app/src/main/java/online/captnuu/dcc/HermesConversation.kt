@@ -1,18 +1,7 @@
 package online.captnuu.dcc
 
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -104,8 +93,8 @@ private fun submittedOf(v:JSONObject):HermesSubmitted {
     require(if(answer)parent!=null&&key.matches(parent)&&question!=null&&Regex("^[a-f0-9]{64}$").matches(question) else parent==null&&question==null)
     return HermesSubmitted(v.getString("rootKey"),v.getString("turnKey"),v.getString("text"),answer,v.getLong("expiresAt"),parent,question,v.optBoolean("closed",false))
 }
-data class HermesState(val draft:String="",val answer:String="",val view:String?=null,val receipt:String?=null,val busy:Boolean=false,val notice:String="",val available:Boolean=false,val rootKey:String?=null,val attemptKey:String?=null,val editedAfterSubmit:Boolean=false,val submitted:HermesSubmitted?=null)
-private fun answering(s:HermesState)=s.view?.let{JSONObject(it).has("question")}==true&&s.attemptKey==null&&(s.submitted==null||s.draft.isEmpty())
+data class HermesState(val draft:String="",val answer:String="",val view:String?=null,val receipt:String?=null,val busy:Boolean=false,val notice:String="",val available:Boolean=false,val rootKey:String?=null,val attemptKey:String?=null,val editedAfterSubmit:Boolean=false,val submitted:HermesSubmitted?=null,val timeline:List<HermesChatEntry> = emptyList(),val historyPruned:Boolean=false,val historyReady:Boolean=false,val ownerKey:String?=null)
+internal fun answering(s:HermesState)=s.view?.let{JSONObject(it).has("question")}==true&&s.attemptKey==null&&(s.submitted==null||s.draft.isEmpty())
 data class HermesOwnerFence(val owner:String,val generation:Long)
 
 /** Bounded encrypted client state. It is not an outbox: reconnection ONLY reads
@@ -132,7 +121,7 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
     fun isCurrent(fence:HermesOwnerFence):Boolean=owner==fence.owner&&generation==fence.generation
     fun unbind(){generation++;operationGeneration++;job?.cancel();readJob?.cancel();expiryJob?.cancel();owner=null;storage=null;clientId=UUID.randomUUID().toString();usedChars=0;usedBytes=0;expiresAt=now()+HERMES_TTL_MS;retained=JSONArray();mutable.value=HermesState()}
     private fun scheduleExpiry(){
-        expiryJob?.cancel();val deadline=minOf(expiresAt,mutable.value.submitted?.takeIf{it.text.isNotEmpty()}?.expiresAt?:Long.MAX_VALUE);val boundOwner=owner
+        expiryJob?.cancel();val deadline=minOf(expiresAt,mutable.value.submitted?.takeIf{it.text.isNotEmpty()}?.expiresAt?:Long.MAX_VALUE,mutable.value.timeline.filter{it.text.isNotEmpty()}.minOfOrNull{it.expiresAt}?:Long.MAX_VALUE);val boundOwner=owner
         expiryJob=scope.launch {
             delay((deadline-now()).coerceAtLeast(1L))
             if(owner==boundOwner){
@@ -176,19 +165,23 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
                             restored=if(restored.attemptKey!=null)restored.copy(draft=answer,answer="") else restored.copy(draft="")
                         }
                     }
-                    mutable.value=restored.copy(notice=if(restored.attemptKey!=null)"Submitted turn is not confirmed. Check receipt; nothing was resent." else "")
+                    mutable.value=restored.copy(notice=if(restored.attemptKey!=null)"Submitted turn is not confirmed. Check receipt; nothing was resent." else "",timeline=d.optJSONArray("timeline")?.let(::readChat)?:emptyList(),historyReady=d.has("timeline"),historyPruned=d.optBoolean("historyPruned",false),ownerKey=nextOwner)
                     persist()
-                }else{expiresAt=now()+HERMES_TTL_MS;usedChars=0;usedBytes=0;mutable.value=HermesState(receipt=receipt,rootKey=d.optString("rootKey").takeIf{it.isNotEmpty()},attemptKey=d.optString("attemptKey").takeIf{it.isNotEmpty()},submitted=d.optJSONObject("submitted")?.let(::submittedOf)?.copy(text=""));persist()}
+                }else{expiresAt=now()+HERMES_TTL_MS;usedChars=0;usedBytes=0;mutable.value=HermesState(receipt=receipt,rootKey=d.optString("rootKey").takeIf{it.isNotEmpty()},attemptKey=d.optString("attemptKey").takeIf{it.isNotEmpty()},submitted=d.optJSONObject("submitted")?.let(::submittedOf)?.copy(text=""),timeline=d.optJSONArray("timeline")?.let(::readChat)?:emptyList(),historyReady=d.has("timeline"),historyPruned=d.optBoolean("historyPruned",false),ownerKey=nextOwner);persist()}
             }
+            mutable.value=mutable.value.copy(ownerKey=nextOwner,historyReady=true)
             scheduleExpiry()
-        }catch(_:Exception){paused=true;mutable.value=HermesState(notice="Encrypted Hermes draft unreadable and preserved. Sending is paused.")}
+        }catch(_:Exception){paused=true;mutable.value=HermesState(notice="Encrypted Hermes draft unreadable and preserved. Sending is paused.",ownerKey=nextOwner,historyReady=true)}
     }
-    private fun persist(s:HermesState=mutable.value){
-        val d=JSONObject().put("composerVersion",2).put("owner",owner).put("clientId",clientId).put("expiresAt",expiresAt).put("usedChars",usedChars).put("usedBytes",usedBytes).put("draft",s.draft).put("answer",s.answer).put("editedAfterSubmit",s.editedAfterSubmit).put("retained",retained)
-        s.rootKey?.let{d.put("rootKey",it)};s.view?.let{d.put("view",JSONObject(it))};s.receipt?.let{d.put("receipt",JSONObject(it))}
-        s.attemptKey?.let{d.put("attemptKey",it)}
-        s.submitted?.let{d.put("submitted",it.json())}
+    private fun persist(s:HermesState=mutable.value):HermesState{
+        val projected=projectChat(s.copy(ownerKey=owner),now())
+        val d=JSONObject().put("composerVersion",2).put("owner",owner).put("clientId",clientId).put("expiresAt",expiresAt).put("usedChars",usedChars).put("usedBytes",usedBytes).put("draft",projected.draft).put("answer",projected.answer).put("editedAfterSubmit",projected.editedAfterSubmit).put("retained",retained).put("timelineVersion",1).put("timeline",chatJson(projected.timeline)).put("historyPruned",projected.historyPruned)
+        projected.rootKey?.let{d.put("rootKey",it)};projected.view?.let{d.put("view",JSONObject(it))};projected.receipt?.let{d.put("receipt",JSONObject(it))}
+        projected.attemptKey?.let{d.put("attemptKey",it)}
+        projected.submitted?.let{d.put("submitted",it.json())}
         storage?.write(d.toString())?:error("Sign in required")
+        if(s===mutable.value)mutable.value=projected
+        return projected
     }
     fun availability(available:Boolean){mutable.value=mutable.value.copy(available=available)}
     fun edit(text:String){
@@ -216,7 +209,7 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         if(complete){
             val fresh=before.draft.ifEmpty{if(previousQuestion!=null&&claimed==null)before.answer else ""}
             usedChars=0;usedBytes=0;expiresAt=now()+HERMES_TTL_MS
-            mutable.value=HermesState(draft=fresh,receipt=r.toString(),available=before.available,submitted=sent)
+            mutable.value=HermesState(draft=fresh,receipt=r.toString(),available=before.available,submitted=sent,timeline=before.timeline,historyPruned=before.historyPruned,historyReady=true,ownerKey=owner)
         }else if(before.submitted?.closed==true&&before.rootKey==null){
             mutable.value=before.copy(receipt=r.toString(),view=null,busy=false,submitted=sent,notice="Earlier request closed. Saved effects are not rolled back.")
         }else{
@@ -263,10 +256,10 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         val submitted=HermesSubmitted(s.rootKey?:key,key,text,question!=null,expiresAt,question?.let{v!!.getString("turnKey")},question?.getString("id"))
         val next=s.copy(draft=if(question==null)"" else s.draft,answer="",rootKey=s.rootKey?:key,attemptKey=key,editedAfterSubmit=false,busy=true,notice="",submitted=submitted)
         usedChars=chars;usedBytes=bytes
-        try{persist(next)}catch(_:Exception){usedChars=previousChars;usedBytes=previousBytes;mutable.value=s.copy(notice="Could not persist the request. Nothing sent.");return}
+        val durable=try{persist(next)}catch(error:Exception){usedChars=previousChars;usedBytes=previousBytes;mutable.value=s.copy(notice=if(error is HermesHistoryLimit)error.message.orEmpty() else "Could not persist the request. Nothing sent.");return}
         // Submitting a restored answer need not involve edit(). Older receipt
         // reads (including failures) must become stale before starting this turn.
-        generation++;val op=++operationGeneration;mutable.value=next
+        generation++;val op=++operationGeneration;mutable.value=durable
         job=scope.launch {
             try{val response=api(body);require(response.getString("rootKey")== (s.rootKey?:key)&&response.getString("turnKey")==key);if(op==operationGeneration&&owner==boundOwner)accept(response)}
             catch(_:Exception){if(op==operationGeneration&&owner==boundOwner){mutable.value=mutable.value.copy(busy=false,notice="Action not confirmed; effects may have saved. Check receipt before repeating. No automatic resend.");try{persist()}catch(_:Exception){/* The durable submitted claim remains intact. */}}}
@@ -286,7 +279,7 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
                     retained=JSONArray(retained.objects().filter{it.optString("key")!=r.getString("key")}.takeLast(19)+r)
                 }
                 usedChars=0;usedBytes=0;expiresAt=now()+HERMES_TTL_MS
-                mutable.value=HermesState(draft=current.draft.ifEmpty{current.answer},receipt=closed?.getJSONObject("receipt")?.toString()?:current.receipt,available=current.available,submitted=current.submitted?.copy(closed=true),notice="Earlier effects were not rolled back. Check before repeating.");persist();scheduleExpiry()
+                mutable.value=HermesState(draft=current.draft.ifEmpty{current.answer},receipt=closed?.getJSONObject("receipt")?.toString()?:current.receipt,available=current.available,submitted=current.submitted?.copy(closed=true),notice="Earlier effects were not rolled back. Check before repeating.",timeline=current.timeline,historyPruned=current.historyPruned,historyReady=true,ownerKey=owner);persist();scheduleExpiry()
             }catch(_:Exception){if(op==operationGeneration&&owner==boundOwner)mutable.value=mutable.value.copy(busy=false,notice="Could not close the server request. Draft retained; nothing new sent.")}
         }
     }
@@ -298,69 +291,17 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         mutable.value=s.copy(receipt=null,submitted=if(confirmed)null else s.submitted)
         try{persist()}catch(_:Exception){mutable.value=mutable.value.copy(notice="Receipt dismissal could not be saved.")}
     }
+    fun newConversation(){
+        val s=mutable.value
+        if(s.busy||s.rootKey!=null){mutable.value=s.copy(notice="Check the current receipt or explicitly close the unresolved request first. Chat history was not cleared.");return}
+        val protected=s.timeline.filter{!it.settled}.map{it.rootKey?:it.turnKey}.toSet()
+        mutable.value=s.copy(timeline=s.timeline.filter{(it.rootKey?:it.turnKey) in protected},historyPruned=false,historyReady=true,submitted=s.submitted?.takeIf{it.rootKey in protected},receipt=s.receipt?.takeIf{r->s.timeline.any{!it.settled&&it.turnKey==JSONObject(r).getString("key")}},notice=if(protected.isEmpty())"Settled local chat cleared. Saved records were not changed." else "Settled local chat cleared; unresolved receipts and claims were retained.")
+        try{persist()}catch(_:Exception){mutable.value=s.copy(notice="Could not save the local history change; earlier history retained.")}
+    }
 }
 
-@Composable fun HermesComposer(state:HermesState,onEdit:(String)->Unit,onSend:()->Unit,onNew:()->Unit,onDismiss:()->Unit,onRead:()->Unit={},modifier:Modifier=Modifier,docked:Boolean=false){
-    val view=state.view?.let{JSONObject(it)};val question=if(state.attemptKey==null)view?.optJSONObject("question") else null
-    val answerEditor=answering(state)
-    var expanded by rememberSaveable(view?.optString("turnKey")){mutableStateOf(question!=null)}
-    var receiptOpen by rememberSaveable(state.receipt){mutableStateOf(false)}
-    var sentOpen by rememberSaveable(state.submitted?.turnKey){mutableStateOf(false)}
-    val keyboard=LocalSoftwareKeyboardController.current;val focus=LocalFocusManager.current
-    LaunchedEffect(state.submitted?.turnKey){if(state.submitted!=null&&state.draft.isEmpty()&&state.answer.isEmpty()){keyboard?.hide();focus.clearFocus()}}
- val editor:@Composable ()->Unit={
-        OutlinedTextField(if(answerEditor)state.answer else state.draft,onValueChange=onEdit,label={Text(if(answerEditor)"Answer Hermes" else "Hermes")},singleLine=true,modifier=Modifier.fillMaxWidth().testTag("hermes-editor"),keyboardOptions=androidx.compose.foundation.text.KeyboardOptions(imeAction=androidx.compose.ui.text.input.ImeAction.Send),keyboardActions=androidx.compose.foundation.text.KeyboardActions(onSend={onSend()}))
- }
- val details:@Composable ColumnScope.()->Unit={
-  state.submitted?.takeIf{it.text.isNotEmpty()}?.let { sent->
-    val r=state.receipt?.let{JSONObject(it)}?.takeIf{it.getString("key")==sent.turnKey}
-    val phase=when{
-      state.busy->if(state.notice.startsWith("Closing"))"Closing — not rolled back" else "Sending — not confirmed saved"
-      r?.optString("outcome")=="complete"->"Saved · ${r.getInt("verified")}/${r.getInt("expected")}"
-      sent.closed->"Closed — effects not rolled back"
-      r?.optString("outcome")=="question"->"Details needed"
-      r?.optString("outcome")=="partial"->if(r.isNull("expected"))"Partial · ${r.getInt("verified")} verified" else "Partial · ${r.getInt("verified")}/${r.getInt("expected")}"
-      r?.optString("outcome")=="read-only"->"Read-only"
-      else->"Unconfirmed — check receipt"
-    }
-    TextButton(onClick={sentOpen=!sentOpen},modifier=Modifier.fillMaxWidth().testTag("hermes-submitted").semantics{stateDescription=if(sentOpen)"Expanded submitted text" else "Collapsed submitted text"}){
-      Column(Modifier.fillMaxWidth()){
-        Text("${if(sent.isAnswer)"Sent answer" else "Sent request"} · $phase",style=MaterialTheme.typography.labelSmall)
-        Row(Modifier.fillMaxWidth()){
-          Text(sent.text,modifier=Modifier.weight(1f),maxLines=if(sentOpen)Int.MAX_VALUE else 1,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis,style=MaterialTheme.typography.bodySmall)
-          Text(if(sentOpen)"−" else "+",modifier=Modifier.padding(start=8.dp))
-        }
-      }
-    }
-  }
-  if(question!=null){
-            TextButton(onClick={expanded=!expanded}){Text(if(expanded)"Close details" else "Show question")}
-            if(expanded){Text("Original request: ${view!!.getString("original")}");Text(question.getString("question"));Text("Question ${view.getInt("questions")}/3");TextButton(onClick=onSend,enabled=answerEditor&&!state.busy&&state.answer.isNotBlank()){Text("Answer")}}
-        }
-        if(state.notice.isNotBlank())Text(state.notice,style=MaterialTheme.typography.bodySmall)
-        state.receipt?.let { raw->val receipt=JSONObject(raw)
-             if(receipt.getString("outcome")!="question"){
-                if(state.submitted!=null&&receipt.getString("key")!=state.submitted.turnKey)Text("Earlier receipt · ${receipt.getString("key")}",style=MaterialTheme.typography.labelSmall)
-                Text(receipt.getString("line"),style=MaterialTheme.typography.bodySmall,maxLines=1,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                Row {TextButton(onClick={receiptOpen=!receiptOpen}){Text(if(receiptOpen)"Hide receipt" else "View")};TextButton(onClick=onDismiss){Text("Dismiss")}}
-                if(receiptOpen){
-                    Text(receipt.getString("line"),style=MaterialTheme.typography.bodySmall)
-                    val targets=receipt.getJSONArray("targets").objects()
-                    if(targets.isEmpty())Text("No verified record targets.")
-                    targets.forEach { t->
-                        Text("${t.getString("action")}: ${t.getString("title")}${if(t.has("date"))" · "+t.getString("date") else ""}")
-                        Text("${t.getString("kind")} · ${t.getString("id")} · ${t.getString("state")} · ${t.getString("verification")}",style=MaterialTheme.typography.bodySmall)
-                        val before=t.optJSONObject("before");val after=t.optJSONObject("after")
-                        if(before!=null&&after!=null)(before.keys().asSequence().toSet()+after.keys().asSequence().toSet()).forEach { k->Text("$k: ${before.opt(k)?:"—"} → ${after.opt(k)?:"—"}",style=MaterialTheme.typography.bodySmall) }
-                    }
-                }
-            }
-        }
-        if(state.rootKey!=null)TextButton(onClick=onNew){Text("New request / cancel")}
-  if(!state.busy&&(state.rootKey!=null||state.submitted?.closed==true)&&(state.attemptKey!=null||state.submitted?.closed==true||state.receipt?.let{JSONObject(it).getString("outcome") in setOf("uncertain","partial")}==true))TextButton(onClick=onRead){Text("Check receipt")}
- }
- Column(modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(4.dp)) {
-  if(docked){Column(Modifier.weight(1f,fill=false).verticalScroll(rememberScrollState()),content=details);editor()}
-  else{editor();details()}
- }
+// The legacy signature remains for source fixtures; all actual presentation is
+// the compact field + modal host, never an expanded dock or a second chat router.
+@Composable fun HermesComposer(state:HermesState,onEdit:(String)->Unit,onSend:()->Unit,onNew:()->Unit,onDismiss:()->Unit,onRead:()->Unit={},modifier:Modifier=Modifier,docked:Boolean=false,onClearChat:()->Unit={}){
+    HermesChatHost(state,onEdit,onSend,onNew,onRead,onClearChat,modifier)
 }

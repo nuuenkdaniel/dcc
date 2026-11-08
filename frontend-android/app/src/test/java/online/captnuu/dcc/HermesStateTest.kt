@@ -54,7 +54,7 @@ class HermesStateTest {
         val edited=controller.ownerFence()!!;controller.unbind();controller.bind("c".repeat(64));controller.unbind();controller.bind(owner)
         assertFalse(controller.isCurrent(edited));scope.cancel()
     }
-    @Test fun sharedServerJsonQuestionAnswerCompletionClearsTranscriptAndStartsFresh(){
+    @Test fun sharedServerJsonQuestionAnswerCompletionKeepsBoundedHistoryAndStartsFresh(){
         val fixture=hermesWireFixtures();val memory=Memory();val scope=CoroutineScope(Dispatchers.Unconfined)
         val requests=mutableListOf<JSONObject>()
         val controller=HermesConversationController(scope,{memory},{body->
@@ -70,7 +70,8 @@ class HermesStateTest {
             assertEquals(listOf("start","answer"),requests.map{it.getString("op")})
             assertEquals(parent.getString("rootKey"),requests[1].getString("rootKey"));assertEquals(parent.getString("turnKey"),requests[1].getString("parentKey"));assertEquals(parent.getJSONObject("question").getString("id"),requests[1].getString("questionId"))
             assertEquals("",controller.state.value.draft);assertEquals("",controller.state.value.answer);assertNull(controller.state.value.view);assertNull(controller.state.value.rootKey)
-            assertEquals(3,JSONObject(controller.state.value.receipt!!).getInt("verified"));assertFalse(memory.raw!!.contains(fixture.getJSONObject("question").getString("original")))
+            assertEquals(3,JSONObject(controller.state.value.receipt!!).getInt("verified"))
+            assertEquals(fixture.getJSONObject("question").getString("original"),controller.state.value.timeline.first{it.role=="user"}.text)
             controller.edit("Add 1 task today: Fresh request");assertNull(controller.state.value.rootKey);assertEquals(2,requests.size)
         }finally{scope.cancel()}
     }

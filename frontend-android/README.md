@@ -48,18 +48,28 @@ subsequent fixes and tests are unverified until rerun. Parent can compile
 `HermesComposerTest` requires a separately approved disposable emulator only;
 never the daily device/emulator. Its empty ComponentActivity fixture uses no
 WorkspaceModel/network. It covers short scrollable layouts, text/IME interaction,
-question disclosure, View/dismiss, partial/failure editing and activity recreation.
+modal chat, receipt View, UI-only close, partial/failure editing and activity recreation.
 Real keyboard insets, portrait/landscape visual review and process/Keystore behavior
 still need parent device acceptance; unit success is not Compose verification.
 Four bottom tabs (Today, Inbox, Focus, Projects) and Settings/Refresh controls are implemented.
 Hermes reserves a compact dock immediately above navigation across these screens;
-IME lifts the dock and temporarily hides navigation/header. Expanded details scroll
-inside a viewport-relative bound, never over page content. Inbox controls scroll
+focus/typing opens a full-window modal chat with a pinned IME-aware editor. Closing
+chat hides only the UI/keyboard: it does not cancel, clear or resend a request.
+The workspace remains composed beneath it. Inbox controls scroll
 with messages. Prices/navigation/settings/fetching are retired; historical caches
 are preserved and old destination restoration falls back to Today.
 `HermesShellTest` adds synthetic shell geometry, navigation/draft retention, Inbox
 scroll and receipt/recreation regressions; these are UNRUN, including test-APK
 compilation. Parent must verify real IME/rotation on an approved disposable device.
+`HermesChatHistoryTest` covers optional encrypted-state timeline migration, stable
+turns, independent request keys, owner/TTL fences and protected-history bounds.
+History is display-only (40 entries / 64 KiB UTF-8 / 24-hour transcript TTL);
+only settled groups may be pruned. Unresolved records can block new sends.
+The source-only full-screen-chat changes are UNRUN. Parent's synthetic
+`HermesShellTest.fullWindowVisualAcceptanceCompactChatImeMultiTurnReceiptAndClosedTasks`
+generates `full-window-compact.png`, `full-window-chat-ime.png`,
+`full-window-multi-turn-receipt.png` and `full-window-closed-tasks.png` under the
+target app's `externalFilesDir/qa-ui-captures/`; no success images exist until run.
 HTTPS API code,
 encrypted persistent sessions and workspace caches, a durable encrypted planner/calendar
 outbox, snapshot screens, manual-task sync, task checkoff, email importance feedback and
