@@ -3,7 +3,7 @@ import type {Pool,PoolClient} from 'pg'
 import {TOOLS,isTool,plainRecord,isCreation,type Result} from './contracts.js'
 import {canonicalJson} from './service-transport.js'
 import {validateServiceArguments,validServiceResult} from './service-contracts.js'
-import {REQUEST_INTENT_KIND,REQUEST_LIMITS,intentAddress,admitIntent,legacyReceiptEvidence,legacyFenceForIntent,startIntent,beginIntentRound,reserveIntentCall,recordIntentResult,interruptIntent,finishIntent,type IntentRecord,type IntentPolicy,type IntentDecision,type ConversationGuard} from './request-intent.js'
+import {REQUEST_INTENT_KIND,requestLimits,intentAddress,admitIntent,legacyReceiptEvidence,legacyFenceForIntent,startIntent,beginIntentRound,reserveIntentCall,recordIntentResult,interruptIntent,finishIntent,type IntentRecord,type IntentPolicy,type IntentDecision,type ConversationGuard} from './request-intent.js'
 import {validGuard} from './conversation-validation.js'
 
 type Row={id:string;kind:string;version:number;data:unknown}
@@ -23,8 +23,10 @@ function decode(row:Row,key:string,actorHash:string):IntentRecord {
   if(row.kind!==REQUEST_INTENT_KIND||row.id!==id||!Number.isSafeInteger(row.version)||row.version<1||!plainRecord(d))return fail('intent_conflict')
   const r=d as unknown as IntentRecord
   if(r.guard!==undefined&&!validGuard(r.guard))return fail('intent_conflict')
+  const limits=requestLimits(r)
+  if(r.guard?.chatVersion===1&&r.executor!=='mcp-action-v1')return fail('intent_conflict')
   if(r.browserTabId!==undefined&&(typeof r.browserTabId!=='string'||!/^[a-f0-9-]{36}$/.test(r.browserTabId)))return fail('intent_conflict')
-  if(r.version!==1||r.id!==id||r.legacyReceiptId!==legacyReceiptId||r.key!==key||r.actorHash!==actorHash||typeof r.promptHash!=='string'||!/^[a-f0-9]{64}$/.test(r.promptHash)||!['legacy-parser-v1','mcp-action-v1'].includes(r.executor)||!['admitted','active','uncertain','completed'].includes(r.phase)||!Array.isArray(r.allowedTools)||r.allowedTools.length>Object.keys(TOOLS).length||!r.allowedTools.every(isTool)||new Set(r.allowedTools).size!==r.allowedTools.length||!Number.isInteger(r.rounds)||r.rounds<0||r.rounds>REQUEST_LIMITS.maxRounds||!Array.isArray(r.calls)||r.calls.length>REQUEST_LIMITS.maxCalls)return fail('intent_conflict')
+  if(r.version!==1||r.id!==id||r.legacyReceiptId!==legacyReceiptId||r.key!==key||r.actorHash!==actorHash||typeof r.promptHash!=='string'||!/^[a-f0-9]{64}$/.test(r.promptHash)||!['legacy-parser-v1','mcp-action-v1'].includes(r.executor)||!['admitted','active','uncertain','completed'].includes(r.phase)||!Array.isArray(r.allowedTools)||r.allowedTools.length>Object.keys(TOOLS).length||!r.allowedTools.every(isTool)||new Set(r.allowedTools).size!==r.allowedTools.length||!Number.isInteger(r.rounds)||r.rounds<0||r.rounds>limits.maxRounds||!Array.isArray(r.calls)||r.calls.length>limits.maxCalls)return fail('intent_conflict')
   if(r.startedAt!==undefined&&(!Number.isSafeInteger(r.startedAt)||r.startedAt<0)||r.ownerId!==undefined&&(typeof r.ownerId!=='string'||!r.ownerId)||r.phase==='active'&&(r.startedAt===undefined||!r.ownerId))return fail('intent_conflict')
   if(r.outcome!==undefined&&!['legacy_receipt','no_effects_recorded','effects_recorded','partial','rejected'].includes(r.outcome)||r.phase==='admitted'&&(r.calls.length||r.rounds||r.startedAt!==undefined||r.ownerId!==undefined))return fail('intent_conflict')
   if(r.phase!=='completed'&&r.outcome!==undefined||r.calls.length&&r.rounds<1||r.executor==='mcp-action-v1'&&r.phase!=='admitted'&&(r.startedAt===undefined||!r.ownerId))return fail('intent_conflict')
@@ -41,7 +43,7 @@ function decode(row:Row,key:string,actorHash:string):IntentRecord {
     const replay=reserveIntentCall(r,call.id,call.command.tool,input,r.startedAt??0)
     if(!replay.ok)return fail('intent_conflict')
   }
-  if(writes>REQUEST_LIMITS.maxWrites)return fail('intent_conflict')
+  if(writes>limits.maxWrites)return fail('intent_conflict')
   if(r.phase==='completed'){
     if(r.executor==='legacy-parser-v1'){
       if(r.outcome!=='legacy_receipt')return fail('intent_conflict')
@@ -129,6 +131,29 @@ export class SqlIntentStore {
       const row=(await c.query<Row>('SELECT id,kind,version,data FROM planner_entities WHERE id=$1 FOR UPDATE',[address.id])).rows[0]
       return this.load(row,legacy,key)
     }catch(error){if(error instanceof IntentStoreError)throw error;throw new IntentStoreError('storage_failure')}
+  }
+  /** Conversation cancellation owns this transaction; never starts execution. */
+  async fenceInTransaction(c:PoolClient,input:{key:string;prompt:string;tabId?:string;guard:ConversationGuard},policy:IntentPolicy,now:number){
+    const address=intentAddress(input.key)
+    await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,817343))',[address.legacyReceiptId])
+    const legacy=(await c.query<Row>('SELECT id,kind,version,data FROM planner_entities WHERE id=$1 FOR UPDATE',[address.legacyReceiptId])).rows[0]
+    const row=(await c.query<Row>('SELECT id,kind,version,data FROM planner_entities WHERE id=$1 FOR UPDATE',[address.id])).rows[0]
+    const prior=row?this.load(row,legacy,input.key):undefined
+    // The existing admission reducer validates fingerprint/binding and returns
+    // the prior record unchanged, including its frozen policy. Do not revalidate
+    // historical tools as a new active catalog or widen them during a fence.
+    let record=requireIntent(admitIntent(prior,{...input,purpose:'action',actorId:this.actorId},policy,this.evidence(legacy))).record
+    if(record.phase==='admitted'){
+      record=requireIntent(startIntent(record,now)).record
+      record.ownerId=randomUUID()
+    }
+    record=interruptIntent(record)
+    if(row)await this.save(c,row,record)
+    else{
+      await this.insert(c,record.id,REQUEST_INTENT_KIND,record)
+      if(record.executor==='mcp-action-v1')await this.insert(c,record.legacyReceiptId,'hermes-command',legacyFenceForIntent(record))
+    }
+    return record
   }
   private async change(key:string,transition:(r:IntentRecord)=>IntentDecision){
     return this.transaction(key,async(c,row,legacy)=>{

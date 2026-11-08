@@ -29,8 +29,8 @@ export class ServicePool {
       const store=tx??this.rows
       if(sql.startsWith("UPDATE planner_entities SET data=(data-'original'")){
         let changed=0
-        for(const row of store.values())if(row.kind===args[0]&&(args[1]===''||row.data.owner===args[1])&&row.data.expiresAt<=Number(args[2])&&['original','assistantReply','replyUnavailable'].some(k=>Object.hasOwn(row.data,k))){
-          for(const k of ['original','prompt','guard','question','context','assistantReply','replyUnavailable'])delete row.data[k]
+        for(const row of store.values())if(row.kind===args[0]&&(args[1]===''||row.data.owner===args[1])&&row.data.expiresAt<=Number(args[2])&&['original','assistantReply','replyUnavailable','toolSummary'].some(k=>Object.hasOwn(row.data,k))){
+          for(const k of ['original','prompt','guard','question','context','assistantReply','replyUnavailable','toolSummary'])delete row.data[k]
           row.data.answers=[];row.data.status='closed';row.version++;changed++
           if(row.data.receipt.outcome==='question'){row.data.receipt.outcome='failed';row.data.receipt.line='Clarification expired after 24 hours. Start a new request; nothing was resent.'}
         }

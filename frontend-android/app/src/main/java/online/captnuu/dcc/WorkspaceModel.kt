@@ -33,11 +33,11 @@ class WorkspaceModel(application:Application):AndroidViewModel(application) {
     private val sessions=PersistentSessionJar(EncryptedSessionStorage(application),ORIGIN.toHttpUrl())
     private val client = OkHttpClient.Builder().callTimeout(20,TimeUnit.SECONDS)
         .followRedirects(false).followSslRedirects(false).cookieJar(sessions).build()
-    val hermes=HermesConversationController(viewModelScope,{owner->EncryptedSessionStorage(application,"hermes-$owner.enc",strict=true)},{body->api("/api/v1/hermes/conversation",body)},recoveryStorageFor={owner->EncryptedSessionStorage(application,"hermes-$owner-separate-v1.enc",strict=true,existingKeyOnly=true)})
+    val hermes=HermesConversationController(viewModelScope,{owner->EncryptedSessionStorage(application,"hermes-$owner.enc",strict=true)},{body->api("/api/v1/hermes/conversation",body)},recoveryStorageFor={owner->EncryptedSessionStorage(application,"hermes-chat-$owner-separate-v1.enc",strict=true,existingKeyOnly=true)},chatStorageFor={owner->EncryptedSessionStorage(application,"hermes-chat-$owner-v1.enc",strict=true)},legacyRecoveryStorageFor={owner->EncryptedSessionStorage(application,"hermes-$owner-separate-v1.enc",strict=true,existingKeyOnly=true)})
     private suspend fun bindHermes(session:JSONObject){
         val owner=session.optString("workspaceOwner")
         if(Regex("^[a-f0-9]{64}$").matches(owner))hermes.bind(owner) else hermes.unbind()
-        try{val capabilities=api("/api/v1/hermes/action-capabilities");val contextVersion=capabilities.opt("conversationContextVersion");val replyVersion=capabilities.opt("conversationReplyVersion");hermes.availability(capabilities.optBoolean("conversation",false),if(contextVersion is Number&&contextVersion.toDouble()==1.0)1 else 0,if(replyVersion is Number&&replyVersion.toDouble()==1.0)1 else 0);hermes.readReceipt()}catch(_:Exception){hermes.availability(false)}
+        try{hermes.chatCapabilities(api("/api/v1/hermes/action-capabilities"))}catch(_:Exception){hermes.availability(false)}
     }
     init { connectivity.registerDefaultNetworkCallback(networkCallback);viewModelScope.launch {
         try { withContext(Dispatchers.IO){sessions.restore()

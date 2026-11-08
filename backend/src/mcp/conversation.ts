@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto'
 import type {Pool,PoolClient} from 'pg'
 import {plainRecord,TOOLS} from './contracts.js'
 import {type Clarification,validClarification,validConversationClarification} from './clarification.js'
-import {validReference,referenceAt,executionContext,type ConversationReference} from './conversation-context.js'
+import {validReference,referenceAt,executionContext,chatExecutionContext,type ConversationReference} from './conversation-context.js'
 import {CONVERSATION_LIMITS,conversationTextFits,interpretTasks,nyDate,type Checklist} from './conversation-contract.js'
 import {validActionReceipt,type ActionReceipt} from './action-receipt.js'
 import {validGuard} from './conversation-validation.js'
@@ -16,7 +16,7 @@ const KIND='dcc-hermes-conversation-v1',SLOT='dcc-hermes-client-v1'
 // Fixed API-owned text maintenance, never an MCP tool or model-selected query.
 // Logical expiry is exact; active API maintenance reclaims text within a minute.
 // When the API is down, reclamation resumes before readiness on its next start.
-const TEXT_EXPIRY_SQL="UPDATE planner_entities SET data=(data-'original'-'prompt'-'guard'-'question'-'context'-'assistantReply'-'replyUnavailable') || jsonb_build_object('answers','[]'::jsonb,'status','closed','receipt',CASE WHEN data#>>'{receipt,outcome}'='question' THEN jsonb_set(jsonb_set(data->'receipt','{outcome}','\"failed\"'::jsonb),'{line}','\"Clarification expired after 24 hours. Start a new request; nothing was resent.\"'::jsonb) ELSE data->'receipt' END),version=version+1 WHERE kind=$1 AND ($2='' OR data->>'owner'=$2) AND (data->>'expiresAt')::bigint<=$3 AND (data ? 'original' OR data ? 'assistantReply' OR data ? 'replyUnavailable')"
+const TEXT_EXPIRY_SQL="UPDATE planner_entities SET data=(data-'original'-'prompt'-'guard'-'question'-'context'-'assistantReply'-'replyUnavailable'-'toolSummary') || jsonb_build_object('answers','[]'::jsonb,'status','closed','receipt',CASE WHEN data#>>'{receipt,outcome}'='question' THEN jsonb_set(jsonb_set(data->'receipt','{outcome}','\"failed\"'::jsonb),'{line}','\"Clarification expired after 24 hours. Start a new request; nothing was resent.\"'::jsonb) ELSE data->'receipt' END),version=version+1 WHERE kind=$1 AND ($2='' OR data->>'owner'=$2) AND (data->>'expiresAt')::bigint<=$3 AND (data ? 'original' OR data ? 'assistantReply' OR data ? 'replyUnavailable' OR data ? 'toolSummary')"
 export async function expireConversationText(db:Pick<PoolClient,'query'>,now:number,owner=''){
   if(!Number.isSafeInteger(now)||now<0)throw new IntentStoreError('invalid_arguments')
   await db.query(TEXT_EXPIRY_SQL,[KIND,owner,now])
@@ -24,23 +24,23 @@ export async function expireConversationText(db:Pick<PoolClient,'query'>,now:num
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex')
 function address(s:string){const h=hash(s);return `${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-a${h.slice(17,20)}-${h.slice(20,32)}`}
 const key=(s:unknown):s is string=>typeof s==='string'&&/^\w[\w-]{15,79}$(?![\s\S])/.test(s)
-export type ConversationInput={op:'start';clientId:string;key:string;prompt:string;tabId?:string;context?:ConversationReference;replyVersion?:1}|{op:'answer';clientId:string;rootKey:string;key:string;parentKey:string;questionId:string;answer:string}|{op:'read'|'cancel';clientId:string;rootKey:string}
-export type ConversationReply={version:1;rootKey:string;turnKey:string;expiresAt:number;questions:number;original?:string;question?:Clarification&{id:string};receipt:ActionReceipt;continuable?:boolean;assistantReply?:AssistantReply;replyUnavailable?:true}
+export type ConversationInput={op:'start';clientId:string;key:string;prompt:string;tabId?:string;context?:ConversationReference;replyVersion?:1;chatVersion?:1}|{op:'answer';clientId:string;rootKey:string;key:string;parentKey:string;questionId:string;answer:string}|{op:'read'|'cancel';clientId:string;rootKey:string}
+export type ConversationReply={version:1;rootKey:string;turnKey:string;expiresAt:number;questions:number;original?:string;question?:Clarification&{id:string};receipt:ActionReceipt;continuable?:boolean;assistantReply?:AssistantReply;replyUnavailable?:true;chatVersion?:1;toolSummary?:AssistantReply}
 type Turn={key:string;fingerprint:string}
-type Pending={version:1;owner:string;clientId:string;rootKey:string;tabId?:string;createdAt:number;expiresAt:number;status:'running'|'question'|'closed';original?:string;answers:string[];questions:number;turns:Turn[];turnKey:string;prompt?:string;guard?:ConversationGuard;question?:Clarification&{id:string};receipt:ActionReceipt;context?:ConversationReference;contextual?:true;continuable?:boolean;replyVersion?:1;assistantReply?:AssistantReply;replyUnavailable?:true}
+type Pending={version:1;owner:string;clientId:string;rootKey:string;tabId?:string;createdAt:number;expiresAt:number;status:'running'|'question'|'closed';original?:string;answers:string[];questions:number;turns:Turn[];turnKey:string;prompt?:string;guard?:ConversationGuard;question?:Clarification&{id:string};receipt:ActionReceipt;context?:ConversationReference;contextual?:true;continuable?:boolean;replyVersion?:1;assistantReply?:AssistantReply;replyUnavailable?:true;chatVersion?:1;toolSummary?:AssistantReply}
 type Row={id:string;kind:string;version:number;data:unknown}
 const fail=(code:string):never=>{throw new IntentStoreError(code)}
 export function validConversationInput(v:unknown):v is ConversationInput{
   if(!plainRecord(v)||typeof v.clientId!=='string'||!/^[a-f0-9-]{36}$(?![\s\S])/.test(v.clientId))return false
   const exact=(keys:string[])=>Object.keys(v).sort().join(',')===keys.sort().join(',')
-  if(v.op==='start')return exact(['op','clientId','key','prompt',...(v.tabId!==undefined?['tabId']:[]),...(v.context!==undefined?['context']:[]),...(v.replyVersion!==undefined?['replyVersion']:[])])&&(v.replyVersion===undefined||v.replyVersion===1)&&(v.context===undefined||validReference(v.context))&&key(v.key)&&typeof v.prompt==='string'&&!!v.prompt.trim()&&conversationTextFits([v.prompt])&&(v.tabId===undefined||typeof v.tabId==='string'&&/^[a-f0-9-]{36}$(?![\s\S])/.test(v.tabId))
+  if(v.op==='start')return exact(['op','clientId','key','prompt',...(v.tabId!==undefined?['tabId']:[]),...(v.context!==undefined?['context']:[]),...(v.replyVersion!==undefined?['replyVersion']:[]),...(v.chatVersion!==undefined?['chatVersion']:[])])&&(v.chatVersion===undefined||v.chatVersion===1&&v.replyVersion===1)&&(v.replyVersion===undefined||v.replyVersion===1)&&(v.context===undefined||validReference(v.context))&&key(v.key)&&typeof v.prompt==='string'&&!!v.prompt.trim()&&conversationTextFits([v.prompt])&&(v.tabId===undefined||typeof v.tabId==='string'&&/^[a-f0-9-]{36}$(?![\s\S])/.test(v.tabId))
   if(v.op==='answer')return exact(['op','clientId','rootKey','key','parentKey','questionId','answer'])&&key(v.rootKey)&&key(v.key)&&key(v.parentKey)&&typeof v.questionId==='string'&&/^[a-f0-9]{64}$/.test(v.questionId)&&typeof v.answer==='string'&&!!v.answer.trim()&&conversationTextFits([v.answer])
   return (v.op==='read'||v.op==='cancel')&&exact(['op','clientId','rootKey'])&&key(v.rootKey)
 }
 function blank(key:string,line:string,outcome:ActionReceipt['outcome']='uncertain'):ActionReceipt{return {version:1,key,outcome,line,verified:0,expected:null,targets:[]}}
-export function replyOf(p:Pending):ConversationReply{return {version:1,rootKey:p.rootKey,turnKey:p.turnKey,expiresAt:p.expiresAt,questions:p.questions,...(p.original?{original:p.original}:{}),...(p.question?{question:p.question}:{}),receipt:p.receipt,...(p.contextual?{continuable:p.continuable===true}:{}),...(p.replyVersion===1&&p.assistantReply?{assistantReply:p.assistantReply}:{}),...(p.replyVersion===1&&p.replyUnavailable?{replyUnavailable:true as const}:{})}}
-function discardText(p:Pending,keepReply=false){delete p.original;delete p.prompt;delete p.guard;delete p.question;delete p.context;if(!keepReply){delete p.assistantReply;delete p.replyUnavailable}p.answers=[];p.status='closed'}
-const startFingerprint=(input:Extract<ConversationInput,{op:'start'}>)=>hash(input.replyVersion===1?canonicalJson([input.prompt,input.context??null,1]):input.context===undefined?input.prompt:canonicalJson([input.prompt,input.context]))
+export function replyOf(p:Pending):ConversationReply{return {version:1,rootKey:p.rootKey,turnKey:p.turnKey,expiresAt:p.expiresAt,questions:p.questions,...(p.original?{original:p.original}:{}),...(p.question?{question:p.question}:{}),receipt:p.receipt,...(p.contextual?{continuable:p.continuable===true}:{}),...(p.replyVersion===1&&p.assistantReply?{assistantReply:p.assistantReply}:{}),...(p.replyVersion===1&&p.replyUnavailable?{replyUnavailable:true as const}:{}),...(p.chatVersion===1?{chatVersion:1 as const,...(p.toolSummary?{toolSummary:p.toolSummary}:{})}:{})}}
+function discardText(p:Pending,keepReply=false){delete p.original;delete p.prompt;delete p.guard;delete p.question;delete p.context;if(!keepReply){delete p.assistantReply;delete p.replyUnavailable;delete p.toolSummary}p.answers=[];p.status='closed'}
+const startFingerprint=(input:Extract<ConversationInput,{op:'start'}>)=>hash(input.chatVersion===1?canonicalJson([input.prompt,input.context??null,1,'chat-v1']):input.replyVersion===1?canonicalJson([input.prompt,input.context??null,1]):input.context===undefined?input.prompt:canonicalJson([input.prompt,input.context]))
 function writesKnown(record:IntentRecord,receipt:ActionReceipt){
   const writes=record.calls.filter(c=>TOOLS[c.command.tool].write)
   return writes.length>0&&(record.guard?.checklist?receipt.outcome==='complete':receipt.verified>0&&receipt.targets.length===writes.length&&receipt.targets.every(t=>t.state==='applied'&&t.verification==='verified'||t.state==='conflict'||t.state==='rejected'))
@@ -89,18 +89,23 @@ export async function projectConversationReceipt(record:IntentRecord,transport:S
     ?targets.length?`Showing ${targets.length} returned record${targets.length===1?'':'s'} (limit 4). No changes made.`:'Read finished. No changes made.'
     :'Read-only effects checked; no writes. Full requested scope is not certified. View shows at most four record titles.'
   const line=complete?`Added ${verified}/${expected} tasks · ${checklist!.tasks[0]!.date}`:expected!==null?`${outcome==='uncertain'?'Uncertain':'Incomplete'}: ${matched}/${expected} tasks verified. Edit or clear; do not repeat saved work.`:readOnly?readLine:verified?record.guard?.contextual&&record.phase==='completed'&&targets.every(t=>t.kind==='task'&&t.action==='updated'&&t.state==='applied'&&t.verification==='verified')?`Updated ${verified} task${verified===1?'':'s'}.`:`${verified} record${verified===1?'':'s'} verified; full requested scope is unresolved.`:writes.length?'No confirmed completion. Review details before repeating.':'No mutation effects verified; requested scope remains unresolved.'
-  return {version:1,key:record.key,outcome,line:line+pending,verified,expected,targets}
+  // Preserve the legacy bounded details envelope. Conversation acknowledgements
+  // below use the full journal, not this four-target historical UI projection.
+  const shown=targets.slice(0,4)
+  const shownVerified=new Set(shown.filter(t=>t.verification==='verified'&&t.state==='applied').map(t=>t.kind+'\0'+t.id)).size
+  return {version:1,key:record.key,outcome,line:line+pending,verified:shownVerified,expected,targets:shown}
 }
 // Existing versioned planner storage only. Slot lock -> root row; no connection
 // survives model execution. A turn is uniquely claimed before controller admission.
 export class Conversations {
-  constructor(private readonly options:{pool:Pool;store:SqlIntentStore;transport:ServiceTransport;run:(input:{key:string;prompt:string;tabId?:string;guard:ConversationGuard;replyVersion?:1},signal?:AbortSignal)=>Promise<unknown>;fence:(input:{key:string;prompt:string;tabId?:string;guard:ConversationGuard})=>Promise<void>;now?:()=>number}){}
+  constructor(private readonly options:{pool:Pool;store:SqlIntentStore;transport:ServiceTransport;run:(input:{key:string;prompt:string;tabId?:string;guard:ConversationGuard;replyVersion?:1;chatVersion?:1},signal?:AbortSignal)=>Promise<unknown>;fence:(input:{key:string;prompt:string;tabId?:string;guard:ConversationGuard},client:PoolClient)=>Promise<IntentRecord|void>;now?:()=>number}){}
   private async put(c:PoolClient,id:string,kind:string,data:unknown){
     await c.query('INSERT INTO planner_entities(id,kind,data) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET data=$3,version=planner_entities.version+1 WHERE planner_entities.kind=$2 AND planner_entities.data IS DISTINCT FROM $3::jsonb',[id,kind,data])
   }
   private decode(row:Row|undefined,owner:string,clientId:string,rootKey:string):Pending{
     if(!row||row.kind!==KIND||!plainRecord(row.data))return fail('conversation_conflict')
     const p=row.data as unknown as Pending
+    if(p.chatVersion!==undefined&&(p.chatVersion!==1||p.replyVersion!==1)||p.toolSummary!==undefined&&(p.chatVersion!==1||p.status!=='closed'||!validAssistantReply(p.toolSummary)))return fail('conversation_conflict')
     if(p.replyVersion!==undefined&&p.replyVersion!==1||p.assistantReply!==undefined&&(!validAssistantReply(p.assistantReply)||p.replyVersion!==1||p.status!=='closed'||p.replyUnavailable!==undefined)||p.replyUnavailable!==undefined&&(p.replyUnavailable!==true||p.replyVersion!==1))return fail('conversation_conflict')
     if(p.context!==undefined&&!validReference(p.context)||p.contextual!==undefined&&p.contextual!==true||p.continuable!==undefined&&typeof p.continuable!=='boolean')return fail('conversation_conflict')
     if(p.version!==1||p.owner!==owner||p.clientId!==clientId||p.rootKey!==rootKey||!Array.isArray(p.turns)||p.turns.length>4||p.turns.some(t=>!plainRecord(t)||!key(t.key)||typeof t.fingerprint!=='string'||!/^[a-f0-9]{64}$/.test(t.fingerprint))||!Array.isArray(p.answers)||p.answers.length>3||p.answers.some(a=>typeof a!=='string')||p.original!==undefined&&typeof p.original!=='string'||!conversationTextFits([p.original??'',...p.answers])||!Number.isSafeInteger(p.expiresAt)||!Number.isInteger(p.questions)||p.questions<0||p.questions>3||!['running','question','closed'].includes(p.status)||p.guard!==undefined&&!validGuard(p.guard)||!validActionReceipt(p.receipt)||p.question&&!(p.contextual?validConversationClarification:validClarification)({reason:p.question.reason,question:p.question.question}))return fail('conversation_conflict')
@@ -108,6 +113,13 @@ export class Conversations {
   }
   private prepare(p:Pending){
     const time=(this.options.now??Date.now)()
+    if(p.chatVersion===1){
+      p.guard={version:1,binding:hash(canonicalJson([p.owner,p.clientId,p.rootKey])),chatVersion:1}
+      p.prompt=chatExecutionContext(time,p.context??{version:1,entries:[]})+p.original!
+      if(!conversationTextFits([p.prompt])){p.receipt=blank(p.turnKey,'Message and history exceed the request limit. Shorten the message.','failed');discardText(p);return false}
+      p.status='running';p.receipt=blank(p.turnKey,'Reply pending. Nothing is automatically resent.')
+      return true
+    }
     const interpreted=interpretTasks(p.original!,p.answers,nyDate(p.contextual?p.createdAt:time))
     let checklist:Checklist|undefined,question:string|undefined
     if(interpreted.kind==='question')question=interpreted.reason
@@ -141,7 +153,7 @@ export class Conversations {
         // HTTP start cannot execute after this explicit cancellation succeeds.
         pending={version:1,owner,clientId:input.clientId,rootKey,createdAt:now,expiresAt:now,status:'closed',answers:[],questions:0,turns:[],turnKey:rootKey,receipt:blank(rootKey,'Closed without replay. No rollback is implied.','failed')}
       }else if(input.op==='start'&&!row){
-        if(slot){
+        if(slot&&input.chatVersion!==1){
           if(slot.kind!==SLOT||!plainRecord(slot.data)||typeof slot.data.rootKey!=='string')return fail('conversation_conflict')
           const oldId=address(KIND+owner+slot.data.rootKey),oldRow=(await c.query<Row>('SELECT id,kind,version,data FROM planner_entities WHERE id=$1 FOR UPDATE',[oldId])).rows[0]
           const old=this.decode(oldRow,owner,input.clientId,slot.data.rootKey)
@@ -161,8 +173,9 @@ export class Conversations {
         const context=input.context?referenceAt(input.context,now):undefined
         pending={version:1,owner,clientId:input.clientId,rootKey,createdAt:now,expiresAt:Math.min(now+CONVERSATION_LIMITS.ttlMs,...(context?.entries.map(e=>e.at+CONVERSATION_LIMITS.ttlMs)??[])),status:'running',original:input.prompt,answers:[],questions:0,turns:[{key:input.key,fingerprint:startFingerprint(input)}],turnKey:input.key,receipt:blank(input.key,'Request not confirmed.'),...(input.tabId?{tabId:input.tabId}:{}),...(context?{context,contextual:true as const}:{})}
         if(input.replyVersion===1)pending.replyVersion=1
+        if(input.chatVersion===1)pending.chatVersion=1
         execute=this.prepare(pending)
-        await this.put(c,slotId,SLOT,{version:1,rootKey})
+        if(input.chatVersion!==1)await this.put(c,slotId,SLOT,{version:1,rootKey})
       }else{
         pending=this.decode(row,owner,input.clientId,rootKey)
         if(pending.expiresAt<=now&&pending.receipt.outcome==='question'){
@@ -183,9 +196,9 @@ export class Conversations {
         if(input.op==='cancel'){
           if(pending.status==='running'){
             // Fence further tool reservations, not a rollback of committed work.
-            await this.options.fence({key:pending.turnKey,prompt:pending.prompt!,guard:pending.guard!,...(pending.tabId?{tabId:pending.tabId}:{})})
-            const record=await store.read(pending.turnKey)
-            pending.receipt=await projectConversationReceipt(record,transport)
+            const fenced=await this.options.fence({key:pending.turnKey,prompt:pending.prompt!,guard:pending.guard!,...(pending.tabId?{tabId:pending.tabId}:{})},c)
+            const record=fenced??await store.read(pending.turnKey)
+            pending.receipt=record.guard?.chatVersion===1?blank(pending.turnKey,'Closed without replay. Earlier operation results remain in the journal; no rollback is implied.'):await projectConversationReceipt(record,transport)
           }
           pending.receipt={...pending.receipt,outcome:pending.receipt.outcome==='question'?'failed':pending.receipt.outcome,line:pending.receipt.outcome==='question'?'Cancelled before writes. Earlier receipts are unchanged.':pending.receipt.line};discardText(pending)
         }
@@ -194,7 +207,7 @@ export class Conversations {
     }catch(error){try{await c.query('ROLLBACK')}catch{/* Preserve committed claims on ambiguous ACK. */}throw error}finally{c.release()}
     let runResult:unknown
     if(execute){
-      try{runResult=await this.options.run({key:pending.turnKey,prompt:pending.prompt!,guard:pending.guard!,...(pending.tabId?{tabId:pending.tabId}:{}),...(pending.replyVersion===1?{replyVersion:1 as const}:{})},signal)}catch{/* Receipt read only below; NEVER restart a claimed turn. */}
+      try{runResult=await this.options.run({key:pending.turnKey,prompt:pending.prompt!,guard:pending.guard!,...(pending.tabId?{tabId:pending.tabId}:{}),...(pending.replyVersion===1?{replyVersion:1 as const}:{}),...(pending.chatVersion===1?{chatVersion:1 as const}:{})},signal)}catch{/* Receipt read only below; NEVER restart a claimed turn. */}
     }
     if(pending.status==='running'||input.op==='read'&&pending.status==='closed'&&['partial','uncertain'].includes(pending.receipt.outcome)){
       let record:IntentRecord|undefined
@@ -203,8 +216,9 @@ export class Conversations {
       const receipt=record?await projectConversationReceipt(record,transport,pending.replyVersion===1):blank(pending.turnKey,'Execution not confirmed. Edit or clear; no automatic resend.')
       const questions=record?.calls.filter(call=>call.command.tool==='request_clarification'&&call.result?.state==='ok').map(call=>(call.result as {state:'ok';data:unknown}).data).filter(validClarification)??[]
       const noWrites=record?.phase==='completed'&&record.calls.every(call=>!TOOLS[call.command.tool].write)
-      // Save only if this root/turn still owns the slot; cancel/new client turns
-      // can never be overwritten by a late completion.
+      // Publish only into this still-running root/turn. Explicit cancellation
+      // cannot be overwritten by a late completion; independent chat roots do
+      // not claim or transfer the legacy unanswered-question slot.
       const finish=await pool.connect()
       try{
         await finish.query('BEGIN');await finish.query('SELECT pg_advisory_xact_lock(hashtextextended($1,817350))',[slotId])
@@ -213,12 +227,34 @@ export class Conversations {
         if((current.status==='running'||input.op==='read'&&current.status==='closed')&&current.turnKey===pending.turnKey){
           current.receipt=receipt
           if(current.contextual)current.continuable=record?.phase==='completed'&&writesKnown(record,receipt)
-          if(current.status==='running'&&noWrites&&questions.length===1&&current.questions<3&&current.expiresAt>now&&current.original){
+          if(current.chatVersion!==1&&current.status==='running'&&noWrites&&questions.length===1&&current.questions<3&&current.expiresAt>now&&current.original){
             const q=current.contextual&&questions[0]!.reason==='task_names'?candidateQuestion(record!):questions[0]!
             current.questions++;current.question={...q,id:hash(canonicalJson([rootKey,current.turnKey,current.questions,q]))};current.status='question';delete current.prompt;delete current.guard
             current.receipt=blank(current.turnKey,current.question.question,'question')
           }else if(execute||record?.phase==='completed'||record?.phase==='uncertain'){discardText(current,true)}
-          if(execute&&current.replyVersion===1&&current.status==='closed'&&current.expiresAt>(this.options.now??Date.now)()&&plainRecord(runResult)&&runResult.phase==='completed'&&record?.phase==='completed'){
+          if(current.chatVersion===1&&current.status==='closed'&&current.expiresAt>(this.options.now??Date.now)()){
+            delete current.replyUnavailable
+            const writes=record?.calls.filter(call=>TOOLS[call.command.tool].write)??[]
+            if(writes.length){
+              const applied=writes.filter(call=>call.result?.state==='applied')
+              const pending=writes.some(call=>!call.result||call.result.state==='uncertain'||call.result.state==='saved')
+              const labels:Record<string,string>={create_task:'Created|task',create_assignment:'Created|assignment',create_project:'Created|project',create_daily_action:'Created|daily action',create_preparation:'Created|preparation',update_task:'Updated|task',set_task_completed:'Updated|task',remove_task:'Removed|task',archive_project:'Archived|project',restore_project:'Restored|project'}
+              const groups=new Map<string,Set<string>>()
+              for(const call of applied){
+                const action=labels[call.command.tool]??'Updated|record'
+                const ids=groups.get(action)??new Set<string>()
+                ids.add(String(call.command.args.id??call.command.args.eventId??call.id));groups.set(action,ids)
+              }
+              const lines=[...groups].map(([label,ids])=>{const [verb,noun]=label.split('|');return `${verb} ${ids.size} ${noun}${ids.size===1?'':'s'}.`})
+              if(writes.some(call=>call.result?.state==='saved'))lines.push('Calendar changes were saved; snapshot confirmation is pending.')
+              if(pending)lines.push('Some operation results are not confirmed. Do not repeat them blindly.')
+              else if(applied.length<writes.length)lines.push('Some operations failed; no full completion is claimed.')
+              if(record?.phase!=='completed')lines.push('The reply was interrupted; further requested work may be incomplete.')
+              current.toolSummary={version:1,text:lines.join(' ')||'No changes were confirmed.'}
+            }
+            if(execute&&record?.phase==='completed'&&plainRecord(runResult)&&validAssistantReply(runResult.assistantReply))current.assistantReply=runResult.assistantReply
+            else if(!current.assistantReply)current.assistantReply=current.toolSummary??{version:1,text:record?.phase==='completed'?'No reply text was returned. Nothing was automatically resent.':'The reply was interrupted. Nothing was automatically resent; you can continue chatting.'}
+          }else if(execute&&current.replyVersion===1&&current.status==='closed'&&current.expiresAt>(this.options.now??Date.now)()&&plainRecord(runResult)&&runResult.phase==='completed'&&record?.phase==='completed'){
             const currentSlot=(await finish.query<Row>('SELECT id,kind,version,data FROM planner_entities WHERE id=$1 FOR UPDATE',[slotId])).rows[0]
             if(currentSlot?.kind===SLOT&&plainRecord(currentSlot.data)&&currentSlot.data.rootKey===rootKey){
               if(validAssistantReply(runResult.assistantReply))current.assistantReply=runResult.assistantReply

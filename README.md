@@ -31,9 +31,11 @@ Authentication, database support, planner, calendar and mail are implemented, bu
 
 ## Checks
 
-Hermes compact clarification/receipt source, its supported completion grammar,
-storage limits and verification boundary are documented in
-[CLARIFICATION-RECEIPTS.md](backend/src/mcp/CLARIFICATION-RECEIPTS.md).
+Hermes conversation-first source and verification boundaries are documented in
+[backend/README.md](backend/README.md) and
+[frontend-android/README.md](frontend-android/README.md). The older
+[CLARIFICATION-RECEIPTS.md](backend/src/mcp/CLARIFICATION-RECEIPTS.md) describes
+legacy compatibility, not the active reply-enabled chat flow.
 Source implementation is not live model/SQL, Android device, or deployment acceptance.
 
 ```sh

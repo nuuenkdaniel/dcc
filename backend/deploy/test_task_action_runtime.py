@@ -90,7 +90,7 @@ class RelayTests(unittest.TestCase):
 
 class RuntimeTests(unittest.TestCase):
     def test_opted_in_runtime_returns_only_validated_final_response(self):
-        names = ['mcp__dcc_task__' + name for name in sorted(runtime.PRODUCT_TOOLS)]
+        names = ['mcp__dcc_task__' + name for name in sorted(runtime.PRODUCT_TOOLS - {'request_clarification'})]
         schemas = [{'type':'function','function':{'name':n,'parameters':{'type':'object','properties':{}}}} for n in names]
         next(s for s in schemas if s['function']['name'].endswith('__get_operation_status'))['function']['parameters'].update(properties={'operationKey':{'type':'string'}},required=['operationKey'],additionalProperties=False)
         agent = types.SimpleNamespace(tools=schemas,valid_tool_names=set(names),run_conversation=Mock(),close=Mock())
@@ -102,25 +102,43 @@ class RuntimeTests(unittest.TestCase):
         modules['tools'].__path__=[]
         with patch.dict(sys.modules,modules),patch.object(runtime.time,'time',return_value=1000):
             agent.run_conversation.return_value={'completed':True,'final_response':'Actual synthetic café reply 🙂','messages':[{'secret':'never project'}]}
-            evidence=runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1)
+            evidence=runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1,chat_version=1)
             self.assertEqual(evidence['completion'],{'status':'finished','replyVersion':1,'assistantText':'Actual synthetic café reply 🙂'})
             self.assertNotIn('messages',repr(evidence))
+            options=modules['run_agent'].AIAgent.call_args.kwargs
+            self.assertIn('conversational assistant',options['ephemeral_system_prompt'])
+            self.assertNotIn('task_topics',options['ephemeral_system_prompt'])
+            self.assertNotIn('Maximum twelve tool calls and four writes',options['ephemeral_system_prompt'])
+            self.assertGreaterEqual(options['max_iterations'],16)
+            # Legacy invocations still use their original catalog and ACK lane.
+            legacy_name='mcp__dcc_task__request_clarification'
+            legacy_schema={'type':'function','function':{'name':legacy_name,'parameters':{'type':'object','properties':{}}}}
+            agent.tools=schemas+[legacy_schema];agent.valid_tool_names=set(names+[legacy_name])
+            modules['tools.mcp_tool_discovery'].register_mcp_servers.return_value=names+[legacy_name]
             self.assertNotIn('completion',runtime.run_action(TOKEN,EXPIRY,'Synthetic',True))
+            legacy=runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1)
+            self.assertEqual(legacy['completion']['assistantText'],'Actual synthetic café reply 🙂')
+            self.assertIn('task_topics',modules['run_agent'].AIAgent.call_args.kwargs['ephemeral_system_prompt'])
+            self.assertEqual(modules['run_agent'].AIAgent.call_args.kwargs['max_iterations'],8)
+            agent.tools=schemas;agent.valid_tool_names=set(names)
+            modules['tools.mcp_tool_discovery'].register_mcp_servers.return_value=names
             for invalid in ['', 'x'*2049, '界'*1400, '\ud800', 'bad\x00', {'tool':'create_task'}, TOKEN]:
                 agent.run_conversation.return_value={'completed':True,'final_response':invalid,'messages':['not a fallback']}
-                self.assertNotIn('assistantText',runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1)['completion'])
+                self.assertNotIn('assistantText',runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1,chat_version=1)['completion'])
             for flags in [{'completed':False},{'partial':True},{'interrupted':True},{'truncated':True},{'failed':True}]:
                 agent.run_conversation.return_value={'completed':True,'final_response':'Do not display',**flags}
-                self.assertNotIn('assistantText',runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1)['completion'])
+                self.assertNotIn('assistantText',runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1,chat_version=1)['completion'])
             agent.run_conversation.return_value={'error':'private diagnostic','final_response':'Do not display'}
-            with self.assertRaises(ValueError):runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1)
+            with self.assertRaises(ValueError):runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1,chat_version=1)
             agent.run_conversation.reset_mock()
             for version in [0,2,True,'1']:
                 with self.assertRaises(ValueError):runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=version)
+                with self.assertRaises(ValueError):runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1,chat_version=version)
+            with self.assertRaises(ValueError):runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,chat_version=1)
             agent.run_conversation.assert_not_called()
 
     def test_cli_legacy_ack_and_opt_in_envelope(self):
-        for extra,expected in [({}, {'status':'finished'}),({'catalog':'product-v1','replyVersion':1},{'status':'finished','replyVersion':1,'assistantText':'Synthetic final'})]:
+        for extra,expected in [({}, {'status':'finished'}),({'catalog':'product-v1','replyVersion':1},{'status':'finished','replyVersion':1,'assistantText':'Synthetic final'}),({'catalog':'product-v1','replyVersion':1,'chatVersion':1},{'status':'finished','replyVersion':1,'assistantText':'Synthetic final'})]:
             with patch.object(sys,'argv',[runtime.__file__]),patch.object(sys,'path',list(sys.path)),patch.object(sys,'stdin',io.StringIO(json.dumps({'prompt':'Synthetic',**extra}))),patch.object(sys,'stdout',new_callable=io.StringIO) as output,patch.object(runtime,'capability_environment',return_value=(TOKEN,EXPIRY)),patch.object(runtime,'quiet_runtime',contextlib.nullcontext),patch.object(runtime,'run_action',return_value={'completion':expected}):
                 self.assertEqual(runtime.main(),0)
                 self.assertEqual(json.loads(output.getvalue()),expected)

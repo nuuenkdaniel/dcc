@@ -19,20 +19,20 @@ class HermesAssistantReplyTest {
         val memory=Memory();val scope=CoroutineScope(Dispatchers.Unconfined);var sent:JSONObject?=null
         fun view(body:JSONObject)=JSONObject(hermesWireFixtures().getJSONObject("complete").toString()).also{v->
             val key=if(body.getString("op")=="read")sent!!.getString("key") else body.getString("key")
-            v.put("rootKey",key).put("turnKey",key).put("expiresAt",time+HERMES_TTL_MS).put("assistantReply",reply("Done with everything."))
+            v.put("rootKey",key).put("turnKey",key).put("expiresAt",time+HERMES_TTL_MS).put("chatVersion",1).put("assistantReply",reply("Some effects remain unconfirmed."))
             v.getJSONObject("receipt").put("key",key).put("outcome","uncertain").put("expected",JSONObject.NULL).put("line","Effects remain uncertain.")
         }
         try{
             val controller=HermesConversationController(scope,{memory},{body->if(body.getString("op")=="start"){sent=JSONObject(body.toString());assertEquals(1,body.getInt("replyVersion"))};view(body)},{time})
-            controller.bind("a".repeat(64));controller.availability(true,1,1);controller.edit("Move tasks tomorrow");controller.send()
-            assertNotNull(controller.state.value.attemptKey);assertNotNull(controller.state.value.rootKey)
+            controller.bind("a".repeat(64));controller.availability(true,1,1,1);controller.edit("Move tasks tomorrow");controller.send()
+            assertNull(controller.state.value.attemptKey);assertNull(controller.state.value.rootKey)
             assertEquals("uncertain",JSONObject(controller.state.value.receipt!!).getString("outcome"))
             assertEquals(1,controller.state.value.timeline.count{it.kind=="reply"})
             controller.readReceipt();controller.readReceipt()
             assertEquals(1,controller.state.value.timeline.count{it.kind=="reply"})
             val restored=HermesConversationController(scope,{memory},{error("No automatic resend")},{time})
             restored.bind("a".repeat(64));assertEquals(1,restored.state.value.timeline.count{it.kind=="reply"})
-            assertNotNull(restored.state.value.attemptKey)
+            assertNull(restored.state.value.attemptKey)
             restored.unbind();restored.bind("b".repeat(64))
             assertTrue(restored.state.value.timeline.isEmpty());assertEquals(0,restored.state.value.replyVersion)
         }finally{scope.cancel()}
@@ -41,9 +41,9 @@ class HermesAssistantReplyTest {
         val scope=CoroutineScope(Dispatchers.Unconfined);val memory=Memory();val gate=CompletableDeferred<JSONObject>();var body:JSONObject?=null
         try{
             val controller=HermesConversationController(scope,{memory},{v->body=JSONObject(v.toString());gate.await()},{time})
-            controller.bind("a".repeat(64));controller.availability(true,1,1);controller.edit("Earlier request");controller.send();controller.edit("New unsent draft")
+            controller.bind("a".repeat(64));controller.availability(true,1,1,1);controller.edit("Earlier request");controller.send();controller.edit("New unsent draft")
             val frozen=controller.state.value.draftContext
-            val response=JSONObject(hermesWireFixtures().getJSONObject("complete").toString()).also{v->val key=body!!.getString("key");v.put("rootKey",key).put("turnKey",key).put("expiresAt",time+1000).put("assistantReply",reply("Actual final text"));v.getJSONObject("receipt").put("key",key)}
+            val response=JSONObject(hermesWireFixtures().getJSONObject("complete").toString()).also{v->val key=body!!.getString("key");v.put("rootKey",key).put("turnKey",key).put("expiresAt",time+1000).put("chatVersion",1).put("assistantReply",reply("Actual final text"));v.getJSONObject("receipt").put("key",key)}
             gate.complete(response)
             assertEquals("New unsent draft",controller.state.value.draft);assertEquals(frozen,controller.state.value.draftContext)
             val expired=projectChat(controller.state.value,time+1001)
@@ -62,7 +62,7 @@ class HermesAssistantReplyTest {
         val scope=CoroutineScope(Dispatchers.Unconfined);val stores=mutableMapOf<String,Memory>();val gate=CompletableDeferred<JSONObject>();var sent:JSONObject?=null
         try{
             val controller=HermesConversationController(scope,{stores.getOrPut(it){Memory()}},{body->sent=JSONObject(body.toString());withContext(NonCancellable){gate.await()}},{time})
-            controller.bind("a".repeat(64));controller.availability(true,1,1);controller.edit("Explain tasks");controller.send()
+            controller.bind("a".repeat(64));controller.availability(true,1,1,1);controller.edit("Explain tasks");controller.send()
             controller.unbind();controller.bind("b".repeat(64))
             val v=JSONObject(hermesWireFixtures().getJSONObject("complete").toString()).also{r->val key=sent!!.getString("key");r.put("rootKey",key).put("turnKey",key).put("assistantReply",reply("Prior owner text"));r.getJSONObject("receipt").put("key",key)}
             gate.complete(v);assertTrue(controller.state.value.timeline.isEmpty())

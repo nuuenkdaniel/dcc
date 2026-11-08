@@ -37,7 +37,8 @@ private fun historyCost(entries:List<HermesChatEntry>):Int {
     val reserved=entries.filter{it.role=="assistant"&&!it.settled}.groupBy{it.rootKey?:it.turnKey}.values.sumOf{group->
         (REPLY_RESERVE-group.sumOf(::cost)).coerceAtLeast(0)
     }
-    return entries.sumOf(::cost)+reserved+2
+    val chatReserve=entries.filter{it.kind=="pending"&&it.settled}.sumOf{(12288-cost(it)).coerceAtLeast(0)}
+    return entries.sumOf(::cost)+reserved+chatReserve+2
 }
 
 /** Display projection only. Optional reference text is untrusted, not a guard or
@@ -63,7 +64,7 @@ internal fun projectChat(s:HermesState,now:Long):HermesState {
         put(HermesChatEntry("receipt:$turn",known,turn,"assistant","receipt",r.getString("line"),minOf(previous?.expiresAt?:expiry,expiry),settled,receipt=compactChatReceipt(r)))
         if(settled)for(i in entries.indices)if((known!=null&&entries[i].rootKey==known)||(known==null&&entries[i].turnKey==turn))entries[i]=entries[i].copy(settled=true)
     }
-    val sent=s.submitted;val view=s.view?.let{JSONObject(it)};val r=s.receipt?.let{JSONObject(it)}
+    val sent=s.submitted;val view=s.view?.takeIf{sent?.chat!=true}?.let{JSONObject(it)};val r=s.receipt?.takeIf{sent?.chat!=true}?.let{JSONObject(it)}
     // A known earlier receipt is not attached to the latest submitted text.
     if(r!=null&&r.optString("key")!=sent?.turnKey)receipt(r,view?.takeIf{it.optString("turnKey")==r.optString("key")}?.optString("rootKey"),view?.optLong("expiresAt")?:now+HERMES_TTL_MS)
     if(view?.has("question")==true){
@@ -72,7 +73,7 @@ internal fun projectChat(s:HermesState,now:Long):HermesState {
         else if(entries.none{it.id=="user:$root"})put(HermesChatEntry("user:$root",root,root,"user","user",view.getString("original"),expiry))
         put(HermesChatEntry("question:$turn:${q.getString("id")}",root,turn,"assistant","question",q.getString("question"),expiry,questionId=q.getString("id")))
     }
-    if(sent!=null&&sent.text.isNotEmpty()){
+    if(sent!=null&&!sent.chat&&sent.text.isNotEmpty()){
         put(HermesChatEntry("user:${sent.turnKey}",sent.rootKey,sent.turnKey,"user","user",sent.text,sent.expiresAt))
         if(r?.optString("key")==sent.turnKey)receipt(r,sent.rootKey,sent.expiresAt)
         val hasResult=entries.any{it.turnKey==sent.turnKey&&it.kind in setOf("question","receipt")}

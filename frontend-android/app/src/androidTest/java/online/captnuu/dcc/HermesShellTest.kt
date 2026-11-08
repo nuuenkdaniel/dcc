@@ -333,6 +333,57 @@ class HermesShellTest {
             failureArtifacts.capture(error,org.junit.runner.Description.createTestDescription(HermesShellTest::class.java,"unresolved-journey-before-cleanup"));throw error
         }finally{readGate.complete(Unit);scope.cancel();client.dispatcher.executorService.shutdownNow();client.connectionPool.evictAll()}
     }
+    @OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+    @Test @SdkSuppress(minSdkVersion=30)
+    fun conversationFirstShowsNaturalReplyWithoutCardsAndPreservesDraftAcrossBackAndX(){
+        val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate)
+        val memory=object:SessionStorage{var raw:String?=null;override fun read()=raw;override fun write(value:String){raw=value};override fun clear(){error("No clearing")}}
+        val calls=CopyOnWriteArrayList<JSONObject>();val time=1794016800000L
+        val client=OkHttpClient.Builder().addInterceptor{chain->
+            val buffer=okio.Buffer();checkNotNull(chain.request().body).writeTo(buffer)
+            val body=JSONObject(buffer.readUtf8());calls+=body
+            check(body.getString("op")=="start"&&body.getInt("chatVersion")==1&&!body.has("answer"))
+            val key=body.getString("key")
+            val response=JSONObject().put("version",1).put("chatVersion",1).put("rootKey",key).put("turnKey",key).put("expiresAt",time+HERMES_TTL_MS).put("questions",0)
+                .put("receipt",JSONObject().put("version",1).put("key",key).put("outcome","read-only").put("line","No actions performed.").put("verified",0).put("expected",JSONObject.NULL).put("targets",JSONArray()))
+                .put("assistantReply",JSONObject().put("version",1).put("text",if(calls.size==1)"What does a study chunk mean to you?" else "We can talk about music instead."))
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("Synthetic").body(response.toString().toResponseBody("application/json".toMediaType())).build()
+        }.build()
+        val controller=HermesConversationController(scope,{memory},{body->
+            JSONObject(awaitHermesHttp(hermesConversationClient(client,"start"),Request.Builder().url("https://synthetic.invalid/api/v1/hermes/conversation").post(body.toString().toRequestBody("application/json".toMediaType())).build()).body)
+        },{time})
+        try{
+            compose.activityRule.scenario.onActivity{it.enableEdgeToEdge();controller.bind("a".repeat(64));controller.availability(true,1,1,1)}
+            compose.setContent{
+                val state by controller.state.collectAsStateWithLifecycle()
+                CompositionLocalProvider(LocalInspectionMode provides true){DccTheme{
+                    Workspace(workspace(),{_,_->},{},{},{_,_->},{_,_->},initialDestination=Destination.Inbox,hermesContent={modifier->
+                        HermesComposer(state,controller::edit,controller::send,controller::newRequest,controller::dismiss,controller::readReceipt,modifier=modifier,docked=true,onClearChat=controller::newConversation,onRecover=controller::recoverSeparately)
+                    })
+                }}
+            }
+            val before=inboxGeometry("conversation-first-before")
+            openChat();compose.onNodeWithTag("hermes-chat-editor").performTextInput("Let us discuss studying")
+            compose.onNodeWithTag("hermes-chat-send").assertIsEnabled().performClick()
+            compose.waitUntil(5000){!controller.state.value.busy&&controller.state.value.timeline.any{it.kind=="reply"}}
+            show("What does a study chunk mean to you?")
+            compose.onNodeWithText("View").assertDoesNotExist();compose.onNodeWithText("No actions performed.").assertDoesNotExist()
+            compose.onNodeWithTag("hermes-chat-editor").performTextInput("Actually, let us discuss music")
+            compose.onNodeWithTag("hermes-chat-editor").performTextInputSelection(androidx.compose.ui.text.TextRange(2,7))
+            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+            compose.onNodeWithTag("hermes-chat").assertIsDisplayed()
+            compose.onNodeWithTag("hermes-chat-editor").assertTextContains("Actually, let us discuss music")
+            assertEquals(androidx.compose.ui.text.TextRange(2,7),compose.onNodeWithTag("hermes-chat-editor").fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange])
+            closeChat();assertEquals(before,inboxGeometry("conversation-first-after-X"))
+            openChat();compose.onNodeWithTag("hermes-chat-editor").assertTextContains("Actually, let us discuss music")
+            compose.onNodeWithTag("hermes-chat-send").assertIsEnabled().performClick()
+            compose.waitUntil(5000){calls.size==2&&!controller.state.value.busy}
+            show("We can talk about music instead.")
+            assertEquals(listOf("start","start"),calls.map{it.getString("op")})
+            assertNotEquals(calls[0].getString("key"),calls[1].getString("key"))
+            compose.onNodeWithText("Close unresolved request?").assertDoesNotExist()
+        }finally{scope.cancel();client.dispatcher.executorService.shutdownNow();client.connectionPool.evictAll()}
+    }
     @Test fun lowerDockSurvivesNavigationWithoutLosingDraftOrInboxQuery(){
         var hermes by mutableStateOf(HermesState(available=true))
         compose.setContent{Shell(hermes,{hermes=hermes.copy(draft=it)})}

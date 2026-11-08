@@ -1,6 +1,6 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
-import {admitIntent,startIntent,beginIntentRound,reserveIntentCall,recordIntentResult,interruptIntent,finishIntent,requestContext,legacyFenceForIntent,legacyReceiptEvidence,REQUEST_LIMITS} from '../../src/mcp/request-intent.js'
+import {admitIntent,startIntent,beginIntentRound,reserveIntentCall,recordIntentResult,interruptIntent,finishIntent,requestContext,legacyFenceForIntent,legacyReceiptEvidence,REQUEST_LIMITS,CHAT_LIMITS,requestLimits} from '../../src/mcp/request-intent.js'
 import {Dispatcher} from '../../src/mcp/dispatcher.js'
 import {ServiceTransport} from '../../src/mcp/service-transport.js'
 import {ServicePool} from './service-pool.js'
@@ -19,6 +19,25 @@ function active(){
   return accepted(beginIntentRound(accepted(startIntent(admitted,1000)).record,1001)).record
 }
 const clone=<T>(value:T):T=>JSON.parse(JSON.stringify(value)) as T
+
+test('larger capacity belongs only to immutable explicitly marked chat journals',()=>{
+  assert.equal(REQUEST_LIMITS.maxWrites,4);assert.equal(REQUEST_LIMITS.maxCalls,12)
+  assert.equal(CHAT_LIMITS.maxWrites,16);assert.equal(CHAT_LIMITS.maxCalls,48)
+  const guard={version:1 as const,binding:'a'.repeat(64),chatVersion:1 as const}
+  assert.deepEqual(admitIntent(undefined,{...request,guard},{executor:'legacy-parser-v1',allowedTools:[]}),{ok:false,code:'invalid_arguments'})
+  const admitted=accepted(admitIntent(undefined,{...request,guard},policy)).record
+  let chat=accepted(beginIntentRound(accepted(startIntent(admitted,1000)).record,1001)).record
+  for(let i=0;i<CHAT_LIMITS.maxWrites;i++){
+    const reserved=accepted(reserveIntentCall(chat,`chat_write_${i}`,'create_task',{title:`Synthetic ${i}`,date:'2026-11-01',expectedVersion:i},1002+i))
+    chat=accepted(recordIntentResult(reserved.record,`chat_write_${i}`,{state:'applied',id:String(reserved.command!.args.id),version:i+1})).record
+  }
+  assert.deepEqual(reserveIntentCall(chat,'chat_write_over_budget','create_task',{title:'Extra',date:'2026-11-01',expectedVersion:16},1020),{ok:false,code:'budget_exhausted'})
+  const legacy=active()
+  assert.equal(requestLimits(legacy),REQUEST_LIMITS)
+  assert.deepEqual(admitIntent(legacy,{...request,guard},policy),{ok:false,code:'intent_conflict'})
+  assert.deepEqual(admitIntent(chat,request,policy),{ok:false,code:'intent_conflict'})
+  assert.equal(accepted(admitIntent(chat,{...request,guard},policy)).record.calls.length,16)
+})
 
 test('intent pins prompt, actor and executor before effects; feature flips and retry cannot select a second executor',()=>{
   const first=accepted(admitIntent(undefined,request,policy)).record

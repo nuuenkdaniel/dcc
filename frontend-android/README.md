@@ -35,6 +35,45 @@ Do not commit local.properties, signing keys, credentials, SDKs or generated APK
 
 ## Scope
 
+### Active conversation-first chat
+
+The composer requires `conversationChatVersion: 1` and reply support before
+sending a `chatVersion: 1` turn, and validates the echoed version. Older reply
+support alone cannot enable it. Unsupported/error responses never cause a
+stripped-field retry or legacy fallback. The composer sends ordinary bounded
+conversational turns. A
+clarification is assistant text; the next message may answer it or change topic.
+Normal chat shows user/assistant bubbles, not receipt cards, expected/verified
+counts or a close-unresolved ritual. The full-window editor, selection owner,
+Back/IME hiding and X-only dismissal remain in place. A failed message gets plain
+feedback and does not own Send for an unrelated draft. Exact repeated unknown
+submissions are not silently replayed; reopen/refresh never sends a message.
+
+New chat uses owner-bound encrypted `hermes-chat-<owner>-v1.enc` storage, with an
+explicit separate protected recovery record when needed. Original
+`hermes-<owner>.enc` and earlier separate recovery records are read for legacy
+history/draft compatibility, never rewritten, deleted or sent. Their existing
+client identity is retained on first use. **Previous action details** exposes
+that history outside the normal rhythm. A valid new chat record remains usable
+when optional historical decoding fails. An unreadable primary chat record
+still blocks writes unless an explicit separate recovery is saved; no storage/
+key clearing is used to escape old state. Old task data and server journals are
+not migrated.
+
+Current history remains bounded at 40 entries / 64 KiB with reply-space
+reservation, owner/operation fences, TTL and protected-save-before-dispatch.
+Natural assistant text is preserved; separate **Tool results** facts are grounded
+in MCP results, not inferred from prose keywords. Neither prose nor scripted
+fixtures establish real effects independently. The legacy four-target envelope is
+not the number of allowed writes. No live provider/model or six-task result is
+established by native rendering tests.
+
+Focused JVM target: `online.captnuu.dcc.HermesConversationFirstTest`.
+Full-window synthetic target:
+`HermesShellTest.conversationFirstShowsNaturalReplyWithoutCardsAndPreservesDraftAcrossBackAndX`.
+These source tests require independent compilation/execution. Earlier candidate
+sections below document legacy compatibility behavior, not the active chat UX.
+
 ### Unresolved-turn receipt feedback and fresh-message candidate
 
 An unresolved earlier claim is never retried by Send. A different unsent draft

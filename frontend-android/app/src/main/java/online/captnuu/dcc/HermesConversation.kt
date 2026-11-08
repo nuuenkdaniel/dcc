@@ -71,7 +71,9 @@ fun validHermesReceipt(r:JSONObject):Boolean=runCatching {
     true
 }.getOrDefault(false)
 fun validHermesView(v:JSONObject):Boolean=runCatching {
-    require(v.keys().asSequence().all{it in setOf("version","rootKey","turnKey","expiresAt","questions","original","question","receipt","continuable","assistantReply","replyUnavailable")})
+    require(v.keys().asSequence().all{it in setOf("version","rootKey","turnKey","expiresAt","questions","original","question","receipt","continuable","assistantReply","replyUnavailable","chatVersion","toolSummary")})
+    if(v.has("chatVersion"))require(v.integer("chatVersion",1,1)&&!v.has("question"))
+    if(v.has("toolSummary"))require(v.has("chatVersion")&&validHermesAssistantReply(v.getJSONObject("toolSummary")))
     if(v.has("assistantReply"))require(validHermesAssistantReply(v.getJSONObject("assistantReply"))&&!v.has("question")&&!v.has("replyUnavailable"))
     if(v.has("replyUnavailable"))require(v.get("replyUnavailable")==true)
     if(v.has("continuable"))require(v.get("continuable") is Boolean)
@@ -90,10 +92,10 @@ fun validHermesView(v:JSONObject):Boolean=runCatching {
     if(v.optBoolean("continuable",false))require(!v.has("question")&&receipt.getString("outcome") in setOf("complete","partial")&&receipt.getInt("verified")>0&&receipt.getJSONArray("targets").objects().all{it.getString("state")=="applied"&&it.getString("verification")=="verified"||it.getString("state") in setOf("conflict","rejected")})
     true
 }.getOrDefault(false)
-data class HermesSubmitted(val rootKey:String,val turnKey:String,val text:String,val isAnswer:Boolean,val expiresAt:Long,val parentKey:String?=null,val questionId:String?=null,val closed:Boolean=false,val context:String?=null)
-private fun HermesSubmitted.json()=JSONObject().put("rootKey",rootKey).put("turnKey",turnKey).put("text",text).put("isAnswer",isAnswer).put("expiresAt",expiresAt).put("closed",closed).also{v->parentKey?.let{v.put("parentKey",it)};questionId?.let{v.put("questionId",it)};context?.let{v.put("context",JSONObject(it))}}
+data class HermesSubmitted(val rootKey:String,val turnKey:String,val text:String,val isAnswer:Boolean,val expiresAt:Long,val parentKey:String?=null,val questionId:String?=null,val closed:Boolean=false,val context:String?=null,val chat:Boolean=false)
+private fun HermesSubmitted.json()=JSONObject().put("rootKey",rootKey).put("turnKey",turnKey).put("text",text).put("isAnswer",isAnswer).put("expiresAt",expiresAt).put("closed",closed).also{v->if(chat)v.put("chat",true);parentKey?.let{v.put("parentKey",it)};questionId?.let{v.put("questionId",it)};context?.let{v.put("context",JSONObject(it))}}
 internal fun submittedOf(v:JSONObject):HermesSubmitted {
-    require(v.keys().asSequence().all{it in setOf("rootKey","turnKey","text","isAnswer","expiresAt","parentKey","questionId","closed","context")})
+    require(v.keys().asSequence().all{it in setOf("rootKey","turnKey","text","isAnswer","expiresAt","parentKey","questionId","closed","context","chat")})
     val key=Regex("^\\w[\\w-]{15,79}$")
     require(key.matches(v.getString("rootKey"))&&key.matches(v.getString("turnKey")))
     require(v.get("text") is String&&hermesTextFits(listOf(v.getString("text")))&&(v.getString("text").isEmpty()||v.getString("text").isNotBlank()))
@@ -103,21 +105,24 @@ internal fun submittedOf(v:JSONObject):HermesSubmitted {
     require(if(answer)parent!=null&&key.matches(parent)&&question!=null&&Regex("^[a-f0-9]{64}$").matches(question) else parent==null&&question==null)
     val context=if(v.has("context"))v.getJSONObject("context").also{require(!answer&&validHermesReference(it))}.toString() else null
     if(v.has("closed"))require(v.get("closed") is Boolean)
-    return HermesSubmitted(v.getString("rootKey"),v.getString("turnKey"),v.getString("text"),answer,v.getLong("expiresAt"),parent,question,v.optBoolean("closed",false),context)
+    if(v.has("chat"))require(v.get("chat") is Boolean&&!answer)
+    return HermesSubmitted(v.getString("rootKey"),v.getString("turnKey"),v.getString("text"),answer,v.getLong("expiresAt"),parent,question,v.optBoolean("closed",false),context,v.optBoolean("chat",false))
 }
-data class HermesState(val draft:String="",val answer:String="",val view:String?=null,val receipt:String?=null,val busy:Boolean=false,val notice:String="",val available:Boolean=false,val rootKey:String?=null,val attemptKey:String?=null,val editedAfterSubmit:Boolean=false,val submitted:HermesSubmitted?=null,val timeline:List<HermesChatEntry> = emptyList(),val historyPruned:Boolean=false,val historyReady:Boolean=false,val ownerKey:String?=null,val contextVersion:Int=0,val settledReceiptKey:String?=null,val draftContext:String?=null,val replyVersion:Int=0,val storageStatus:HermesStorageStatus=HermesStorageStatus.READY,val canRecoverSeparately:Boolean=false,val receiptCheck:HermesReceiptCheck=HermesReceiptCheck.IDLE){
+data class HermesState(val draft:String="",val answer:String="",val view:String?=null,val receipt:String?=null,val busy:Boolean=false,val notice:String="",val available:Boolean=false,val rootKey:String?=null,val attemptKey:String?=null,val editedAfterSubmit:Boolean=false,val submitted:HermesSubmitted?=null,val timeline:List<HermesChatEntry> = emptyList(),val historyPruned:Boolean=false,val historyReady:Boolean=false,val ownerKey:String?=null,val contextVersion:Int=0,val settledReceiptKey:String?=null,val draftContext:String?=null,val replyVersion:Int=0,val storageStatus:HermesStorageStatus=HermesStorageStatus.READY,val canRecoverSeparately:Boolean=false,val receiptCheck:HermesReceiptCheck=HermesReceiptCheck.IDLE,val legacyTimeline:List<HermesChatEntry> = emptyList(),val chatVersion:Int=0){
     val storageReady:Boolean get()=storageStatus==HermesStorageStatus.READY
     val receiptChecking:Boolean get()=receiptCheck==HermesReceiptCheck.CHECKING
+    val conversationFirst:Boolean get()=chatVersion==1||submitted?.chat==true
 }
-internal fun answering(s:HermesState)=s.view?.let{JSONObject(it).has("question")}==true&&s.attemptKey==null&&(s.submitted==null||s.draft.isEmpty())
+internal fun answering(s:HermesState)=!s.conversationFirst&&s.view?.let{JSONObject(it).has("question")}==true&&s.attemptKey==null&&(s.submitted==null||s.draft.isEmpty())
 data class HermesOwnerFence(val owner:String,val generation:Long)
 
 /** Bounded encrypted client state. It is not an outbox: reconnection ONLY reads
  * receipts, and cannot replay a start or answer. All AI/effects stay on server. */
-class HermesConversationController(private val scope:CoroutineScope,private val storageFor:(String)->SessionStorage,private val api:suspend (JSONObject)->JSONObject,private val now:()->Long={System.currentTimeMillis()},private val recoveryStorageFor:((String)->SessionStorage)?=null,private val receiptTimeoutMillis:Long=HERMES_RECEIPT_TIMEOUT_MS) {
+class HermesConversationController(private val scope:CoroutineScope,private val storageFor:(String)->SessionStorage,private val api:suspend (JSONObject)->JSONObject,private val now:()->Long={System.currentTimeMillis()},private val recoveryStorageFor:((String)->SessionStorage)?=null,private val receiptTimeoutMillis:Long=HERMES_RECEIPT_TIMEOUT_MS,private val chatStorageFor:((String)->SessionStorage)?=null,private val legacyRecoveryStorageFor:((String)->SessionStorage)?=null) {
     init{require(receiptTimeoutMillis in 1..HERMES_RECEIPT_TIMEOUT_MS)}
     private val mutable=MutableStateFlow(HermesState())
     val state=mutable.asStateFlow()
+    var legacyHistory:List<HermesChatEntry> = emptyList();private set
     private var storage:SessionStorage?=null
     private var owner:String?=null
     private var clientId=UUID.randomUUID().toString()
@@ -155,7 +160,7 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
     private var retained=JSONArray()
     fun ownerFence():HermesOwnerFence?=owner?.let{HermesOwnerFence(it,generation)}
     fun isCurrent(fence:HermesOwnerFence):Boolean=owner==fence.owner&&generation==fence.generation
-    fun unbind(){generation++;operationGeneration++;readSequence++;job?.cancel();readJob?.cancel();expiryJob?.cancel();owner=null;storage=null;clientId=UUID.randomUUID().toString();usedChars=0;usedBytes=0;expiresAt=now()+HERMES_TTL_MS;retained=JSONArray();mutable.value=HermesState()}
+    fun unbind(){generation++;operationGeneration++;readSequence++;job?.cancel();readJob?.cancel();expiryJob?.cancel();owner=null;storage=null;clientId=UUID.randomUUID().toString();usedChars=0;usedBytes=0;expiresAt=now()+HERMES_TTL_MS;retained=JSONArray();legacyHistory=emptyList();mutable.value=HermesState()}
     private fun scheduleExpiry(){
         if(!mutable.value.storageReady){expiryJob?.cancel();return}
         expiryJob?.cancel();val contextExpiry=mutable.value.draftContext?.let{JSONObject(it).getJSONArray("entries").objects().minOfOrNull{e->e.getLong("at")+HERMES_TTL_MS}}?:Long.MAX_VALUE
@@ -181,19 +186,31 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         require(Regex("^[a-f0-9]{64}$").matches(nextOwner))
         if(owner==nextOwner)return
         unbind();owner=nextOwner;mutable.value=HermesState(ownerKey=nextOwner,historyReady=true)
+        legacyHistory=emptyList()
+        var legacyDraft=""
         usingRecovery=true;separateAbsent=false
         val raw=try{
             val separate=recoveryStorageFor?.invoke(nextOwner)
             val recovered=separate?.read()
             if(recovered!=null){storage=separate;recovered}
-            else{usingRecovery=false;separateAbsent=true;storage=storageFor(nextOwner);storage!!.read()}
+            else{usingRecovery=false;separateAbsent=true;storage=(chatStorageFor?:storageFor)(nextOwner);storage!!.read()}
         }catch(_:Exception){block(HermesStorageStatus.READ_BLOCKED);return}
-        if(raw!=null){
-            val saved=try{decodeHermesSaved(raw,nextOwner,now(),usingRecovery)}catch(error:HermesRestoreFailure){block(error.status);return}
+        val saved=if(raw!=null)try{decodeHermesSaved(raw,nextOwner,now(),usingRecovery)}catch(error:HermesRestoreFailure){block(error.status);return} else null
+        if(chatStorageFor!=null){
+            try{
+                val recovered=legacyRecoveryStorageFor?.invoke(nextOwner)?.read()?.let{decodeHermesSaved(it,nextOwner,now(),true)}
+                val original=try{storageFor(nextOwner).read()?.let{decodeHermesSaved(it,nextOwner,now(),false)}}catch(error:Exception){if(recovered==null)throw error else null}
+                val legacy=recovered?:original
+                legacyHistory=listOfNotNull(original,recovered).flatMap{projectChat(it.state,now()).timeline}
+                if(legacy!=null){legacyDraft=legacy.state.draft;if(raw==null)clientId=legacy.clientId}
+            }catch(_:Exception){if(saved==null&&!usingRecovery){block(HermesStorageStatus.READ_BLOCKED);return}}
+        }
+        if(saved!=null){
             clientId=saved.clientId;retained=saved.retained;expiresAt=saved.expiresAt;usedChars=saved.usedChars;usedBytes=saved.usedBytes;mutable.value=saved.state
             blockedSlots[slot()]?.let{block(it);return}
             try{persist()}catch(_:Exception){return}
-        }else blockedSlots[slot()]?.let{block(it);return}
+        }else{blockedSlots[slot()]?.let{block(it);return};if(chatStorageFor!=null)mutable.value=mutable.value.copy(draft=legacyDraft)}
+        mutable.value=mutable.value.copy(legacyTimeline=legacyHistory)
         scheduleExpiry()
     }
     /** Explicit local fork only. The original encrypted file is never read back
@@ -208,7 +225,7 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
             require(separate.read()==null) // Never overwrite an existing recovery.
             generation++;operationGeneration++;readSequence++;job?.cancel();readJob?.cancel();expiryJob?.cancel()
             usingRecovery=true;separateAbsent=false;storage=separate;clientId=UUID.randomUUID().toString();retained=JSONArray();usedChars=0;usedBytes=0;expiresAt=now()+HERMES_TTL_MS
-            val fresh=HermesState(draft=if(answering(before))before.answer else before.draft,available=before.available,contextVersion=before.contextVersion,replyVersion=before.replyVersion,
+            val fresh=HermesState(draft=if(answering(before))before.answer else before.draft,available=before.available,contextVersion=before.contextVersion,replyVersion=before.replyVersion,chatVersion=before.chatVersion,
                 ownerKey=boundOwner,historyReady=true,notice="Separate local chat. Original record retained; earlier work is not reconciled. Press Send only for a new request.")
             // Publish only after the separate protected record is durable.
             val durable=persist(fresh,creatingSeparate=true)
@@ -235,7 +252,12 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         if(s===mutable.value)mutable.value=projected
         return projected
     }
-    fun availability(available:Boolean,contextVersion:Int=0,replyVersion:Int=0){mutable.value=mutable.value.copy(available=available,contextVersion=if(available&&contextVersion==1)1 else 0,replyVersion=if(available&&replyVersion==1)1 else 0)}
+    fun availability(available:Boolean,contextVersion:Int=0,replyVersion:Int=0,chatVersion:Int=0){mutable.value=mutable.value.copy(available=available,contextVersion=if(available&&contextVersion==1)1 else 0,replyVersion=if(available&&replyVersion==1)1 else 0,chatVersion=if(available&&replyVersion==1&&chatVersion==1)1 else 0)}
+    fun chatCapabilities(v:JSONObject){
+        fun version(name:String)=(v.opt(name) as? Number)?.toDouble()==1.0
+        val supported=v.optBoolean("conversation",false)&&version("conversationReplyVersion")&&version("conversationChatVersion")
+        availability(supported,if(version("conversationContextVersion"))1 else 0,if(supported)1 else 0,if(supported)1 else 0)
+    }
     fun edit(text:String){
         val question=answering(mutable.value)
         if(!hermesTextFits(listOf(text))||question&&(usedChars+text.length>4000||usedBytes+text.toByteArray(Charsets.UTF_8).size>8192)){mutable.value=mutable.value.copy(notice="Original plus answers must fit 4,000 UTF-16 characters and 8 KiB UTF-8.");return}
@@ -243,6 +265,7 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         // Keep its operation alive and let its receipt update beside the draft.
         generation++
         val s=mutable.value;val changed=s.editedAfterSubmit||s.rootKey!=null&&(!question||s.attemptKey!=null)
+        if(s.conversationFirst)expiresAt=now()+HERMES_TTL_MS
         if(!s.storageReady){mutable.value=if(question)s.copy(answer=text) else s.copy(draft=text);return}
         mutable.value=if(question)s.copy(answer=text,editedAfterSubmit=changed) else s.copy(draft=text,editedAfterSubmit=changed,draftContext=if(text.isEmpty())null else if(s.draft.isEmpty())hermesReference(s,now(),text) else s.draftContext)
         try{persist()}catch(_:Exception){/* Retain memory draft and storage diagnostic. */}
@@ -250,6 +273,7 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
     }
     private fun accept(v:JSONObject){
         require(validHermesView(v))
+        if(mutable.value.submitted?.chat==true){acceptChat(v);return}
         if(!mutable.value.storageReady){mutable.value=mutable.value.copy(receipt=v.getJSONObject("receipt").toString(),busy=false);return}
         val r=v.getJSONObject("receipt");val question=v.has("question");val complete=r.getString("outcome") in setOf("complete","read-only")||v.optBoolean("continuable",false)
         if(!question&&!complete){val previous=retained.objects().filter{it.optString("key")!=r.getString("key")}.takeLast(19);retained=JSONArray(previous+r)}
@@ -323,6 +347,8 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         val s=mutable.value;if(s.busy||!s.storageReady)return
         if(owner==null){mutable.value=s.copy(notice="Sign in to send. Nothing sent. [AUTH]");return}
         val boundOwner=owner?:return
+        if(s.chatVersion==1){sendChat(s,boundOwner);return}
+        if(chatStorageFor!=null||s.submitted?.chat==true){mutable.value=s.copy(notice="This server does not currently support conversational chat. Nothing sent; no legacy fallback.");return}
         val v=s.view?.let{JSONObject(it)};val question=if(answering(s))v?.optJSONObject("question") else null
         val text=if(question!=null)s.answer else s.draft
         if(text.isBlank())return
@@ -354,6 +380,48 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
             try{val response=api(body);require(response.getString("rootKey")== (s.rootKey?:key)&&response.getString("turnKey")==key);if(op==operationGeneration&&owner==boundOwner)accept(response)}
             catch(_:Exception){if(op==operationGeneration&&owner==boundOwner){mutable.value=mutable.value.copy(busy=false,notice=if(mutable.value.storageReady)"Action not confirmed; effects may have saved. Check receipt before repeating. No automatic resend." else mutable.value.notice);try{persist()}catch(_:Exception){/* The durable submitted claim remains intact. */}}}
         }
+    }
+    /** A message is independent of older action roots; this is not an outbox. */
+    private fun sendChat(s:HermesState,boundOwner:String){
+        if(s.draft.isBlank())return
+        if(!scope.isActive||!s.available){mutable.value=s.copy(notice="Chat is unavailable. Nothing sent.");return}
+        val unresolved=s.attemptKey!=null||s.receipt?.let{JSONObject(it).getString("outcome") in setOf("uncertain","partial")}==true
+        if(s.submitted?.chat==true&&unresolved&&s.submitted.text.trim()==s.draft.trim()){
+            mutable.value=s.copy(notice="That message was already submitted. Its result is unknown; it was not resent. You can send a different message.");return
+        }
+        val turn=UUID.randomUUID().toString();val expiry=now()+HERMES_TTL_MS
+        val previousExpiry=expiresAt;expiresAt=expiry
+        val context=hermesReference(s,now(),s.draft)
+        val submitted=HermesSubmitted(turn,turn,s.draft,false,expiry,context=context,chat=true)
+        val user=HermesChatEntry("chat-user:$turn",turn,turn,"user","user",s.draft,expiry,settled=true)
+        val pending=HermesChatEntry("chat-status:$turn",turn,turn,"assistant","pending","Thinking…",expiry,settled=true)
+        val next=s.copy(draft="",answer="",view=null,receipt=null,rootKey=turn,attemptKey=turn,submitted=submitted,busy=true,notice="",draftContext=null,timeline=s.timeline+user+pending,receiptCheck=HermesReceiptCheck.IDLE)
+        val durable=try{persist(next)}catch(_:Exception){expiresAt=previousExpiry;return}
+        generation++;val op=++operationGeneration;readSequence++;readJob?.cancel();mutable.value=durable
+        job=scope.launch{
+            try{
+                val response=api(JSONObject().put("op","start").put("clientId",clientId).put("workspaceOwner",boundOwner).put("key",turn).put("prompt",submitted.text).put("replyVersion",1).put("chatVersion",1).put("context",JSONObject(context)))
+                require(validHermesView(response)&&response.optInt("chatVersion")==1&&response.getString("rootKey")==turn&&response.getString("turnKey")==turn&&!response.has("question"))
+                if(op==operationGeneration&&owner==boundOwner)acceptChat(response)
+            }catch(_:Exception){if(op==operationGeneration&&owner==boundOwner){
+                val current=mutable.value
+                mutable.value=current.copy(busy=false,notice="",timeline=current.timeline.map{if(it.id==pending.id)it.copy(kind="unknown",text="The reply was interrupted. Any attempted operations may be unconfirmed; nothing will be resent automatically. You can continue chatting.") else it})
+                try{persist()}catch(_:Exception){}
+            }}
+        }
+        scheduleExpiry()
+    }
+    private fun acceptChat(v:JSONObject){
+        val current=mutable.value;val sent=current.submitted?:return
+        require(v.optInt("chatVersion")==1&&v.getString("rootKey")==sent.rootKey&&v.getString("turnKey")==sent.turnKey&&!v.has("question"))
+        val text=v.optJSONObject("assistantReply")?.getString("text")?:"No reply text was returned. Nothing was automatically resent."
+        val expiry=minOf(sent.expiresAt,v.getLong("expiresAt"))
+        val entry=HermesChatEntry("reply:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant","reply",if(expiry>now())text else "",expiry,settled=true)
+        val summary=v.optJSONObject("toolSummary")?.getString("text")?.takeIf{it!=text}?.let{HermesChatEntry("tools:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant","reply",if(expiry>now())it else "",expiry,settled=true)}
+        val replies=listOfNotNull(entry,summary)
+        val timeline=current.timeline.filterNot{it.id in replies.map{e->e.id}}.flatMap{if(it.id=="chat-status:${sent.turnKey}")replies else listOf(it)}.let{if(it.any{e->e.id==entry.id})it else it+replies}
+        mutable.value=current.copy(busy=false,rootKey=null,attemptKey=null,view=null,receipt=v.getJSONObject("receipt").toString(),submitted=sent.copy(closed=true,expiresAt=expiry),timeline=timeline,notice="")
+        persist();scheduleExpiry()
     }
     fun newRequest(){
         val s=mutable.value;if(owner==null||!s.storageReady)return

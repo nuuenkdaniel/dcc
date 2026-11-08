@@ -70,6 +70,7 @@ internal fun decodeHermesSaved(raw:String,owner:String,now:Long,recovery:Boolean
         state=state.copy(submitted=state.submitted?.let{if(expired||it.expiresAt<=now)it.copy(text="",context=null) else it},
             notice=if(attempt!=null)"Submitted turn is not confirmed. Check receipt; nothing was resent." else "")
         if(expired)state=state.copy(draft="",answer="",view=null,draftContext=null)
+        if(state.submitted?.chat==true&&attempt!=null)state=state.copy(notice="",timeline=state.timeline.map{if(it.kind=="pending")it.copy(kind="unknown",text="This reply was interrupted. Nothing was automatically resent; you can continue chatting.") else it})
         return HermesSavedState(state,client,retained,if(expired)now+HERMES_TTL_MS else expiry.toLong(),if(expired)0 else chars,if(expired)0 else bytes)
     }catch(_:Exception){throw HermesRestoreFailure(category)}
 }

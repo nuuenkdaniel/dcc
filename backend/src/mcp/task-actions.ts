@@ -19,7 +19,7 @@ export const PRODUCT_TOOLS=ACTIVE_TOOLS
 const productPolicy={executor:'mcp-action-v1' as const,allowedTools:PRODUCT_TOOLS}
 const digest=(text:string)=>createHash('sha256').update(text).digest('hex')
 export class TaskCallbackError extends Error {constructor(readonly status:number){super('Task callback unavailable')}}
-export type TaskBridgeInput={mode:'task-action'|'product-action';prompt:string;callbackCapability:string;expiresAt:number;replyVersion?:1}
+export type TaskBridgeInput={mode:'task-action'|'product-action';prompt:string;callbackCapability:string;expiresAt:number;replyVersion?:1;chatVersion?:1}
 export type TaskBridge=(input:TaskBridgeInput,signal:AbortSignal)=>Promise<unknown>
 export const TASK_ACCOUNT_ACTOR='dcc-account'
 // Called once at API construction, never from request JSON or per request.
@@ -120,7 +120,7 @@ export class TaskActions {
         run.signal.addEventListener('abort',revoke,{once:true})
         try{
           if(run.signal.aborted)throw new TaskCallbackError(403)
-          const result=await options.bridge({mode:run.allowedTools.length===policy.allowedTools.length?'task-action':'product-action',prompt:run.prompt,callbackCapability:token,expiresAt:run.expiresAt,...(run.replyVersion===1?{replyVersion:1 as const}:{})},run.signal)
+          const result=await options.bridge({mode:run.allowedTools.length===policy.allowedTools.length?'task-action':'product-action',prompt:run.prompt,callbackCapability:token,expiresAt:run.expiresAt,...(run.replyVersion===1?{replyVersion:1 as const}:{}),...(run.chatVersion===1?{chatVersion:1 as const}:{})},run.signal)
           if(run.replyVersion===1){
             if(!validRuntimeCompletion(result)||result.assistantText?.includes(token))throw new TaskCallbackError(502)
             return result
@@ -130,7 +130,8 @@ export class TaskActions {
           run.signal.removeEventListener('abort',revoke);revoke();await session.close()
         }
       }})
-    this.conversations=new Conversations({pool:options.pool,store,transport,now:this.now,run:(input,signal)=>this.controller.run(input,productPolicy,signal),fence:async input=>{await store.admit({...input,purpose:'action'},productPolicy);await store.fence(input.key,this.now())}})
+    const chatPolicy={...productPolicy,allowedTools:PRODUCT_TOOLS.filter(tool=>tool!=='request_clarification')}
+    this.conversations=new Conversations({pool:options.pool,store,transport,now:this.now,run:(input,signal)=>this.controller.run(input,input.chatVersion===1?chatPolicy:productPolicy,signal),fence:(input,client)=>store.fenceInTransaction(client,input,input.guard.chatVersion===1?chatPolicy:productPolicy,this.now())})
   }
   run(input:{key:string;prompt:string},signal?:AbortSignal){return this.controller.run(input,policy,signal)}
   runProduct(input:{key:string;prompt:string;tabId?:string},signal?:AbortSignal){return this.controller.run(input,productPolicy,signal)}

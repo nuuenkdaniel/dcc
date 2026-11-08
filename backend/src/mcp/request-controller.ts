@@ -9,7 +9,7 @@ import {SqlIntentStore,IntentStoreError} from './intent-store.js'
 import {ServiceTransport} from './service-transport.js'
 import {serviceToolDefinitions} from './service-contracts.js'
 import {composeSdkServer} from './sdk-server.js'
-import {REQUEST_LIMITS,requestContext,type IntentRecord,type IntentPolicy,type ConversationGuard} from './request-intent.js'
+import {requestLimits,requestContext,type IntentRecord,type IntentPolicy,type ConversationGuard} from './request-intent.js'
 import {validClarification,type Clarification} from './clarification.js'
 import {validGuard} from './conversation-validation.js'
 import {validRuntimeCompletion,type RuntimeCompletion,type AssistantReply} from './assistant-reply.js'
@@ -17,7 +17,7 @@ import {validRuntimeCompletion,type RuntimeCompletion,type AssistantReply} from 
 // A testable in-process port, NOT a Hermes CLI output format or transport adapter.
 export type ModelRound={calls:{id:string;tool:string;arguments:Record<string,unknown>}[];done:boolean;final?:unknown}
 export type ModelRunner=(input:{prompt:string;round:number;tools:Tool[];results:{id:string;result:Result}[];signal:AbortSignal})=>Promise<ModelRound>
-export type NativeMcpRun={server:Server;prompt:string;allowedTools:readonly ToolName[];signal:AbortSignal;expiresAt:number;correlate:(id:string|number)=>string;active:()=>Promise<boolean>;replyVersion?:1}
+export type NativeMcpRun={server:Server;prompt:string;allowedTools:readonly ToolName[];signal:AbortSignal;expiresAt:number;correlate:(id:string|number)=>string;active:()=>Promise<boolean>;replyVersion?:1;chatVersion?:1}
 export type NativeMcpRunner=(input:NativeMcpRun)=>Promise<void|RuntimeCompletion>
 export type IntentSummary={phase:IntentRecord['phase'];outcome?:IntentRecord['outcome'];effects:{tool:string;state:string;id?:string;version?:number;confirmation?:'snapshot_pending'}[];pending:number;reads?:{tool:string;data:unknown}[];readsTruncated?:true;clarifications?:Clarification[];assistantReply?:AssistantReply;replyUnavailable?:true}
 // Fixed projections only: never echo prompt, payload, policy, owner, model prose,
@@ -82,7 +82,8 @@ export class RequestController {
       // A concurrent retry may fence the live owner, but must never replace it.
       return this.recover(input.key)
     }
-    const owner=claim.owner,abort=new AbortController(),deadline=claim.record.startedAt!+REQUEST_LIMITS.timeoutMs
+    const limits=requestLimits(claim.record)
+    const owner=claim.owner,abort=new AbortController(),deadline=claim.record.startedAt!+limits.timeoutMs
     const stop=()=>abort.abort()
     signal?.addEventListener('abort',stop,{once:true})
     if(signal?.aborted)stop()
@@ -152,7 +153,7 @@ export class RequestController {
       }
       if(nativeRunner){
         check();await store.round(input.key,owner,now());check()
-        const completion=await nativeRunner({server,prompt:input.prompt,signal:abort.signal,expiresAt:deadline,...(input.replyVersion===1?{replyVersion:1 as const}:{}),
+        const completion=await nativeRunner({server,prompt:input.prompt,signal:abort.signal,expiresAt:deadline,...(input.replyVersion===1?{replyVersion:1 as const}:{}),...(claim.record.guard?.chatVersion===1?{chatVersion:1 as const}:{}),
           // Persisted call.id binds this transport ID within this ONE owner. A
           // restarted/reconnected invocation never receives a replacement owner.
           correlate:id=>'rpc_'+createHash('sha256').update(JSON.stringify([owner,typeof id,id])).digest('hex'),
@@ -174,11 +175,11 @@ export class RequestController {
       }
       await server.connect(serverWire);await client.connect(clientWire)
       await client.listTools()
-      for(let round=0;round<REQUEST_LIMITS.maxRounds;round++){
+      for(let round=0;round<limits.maxRounds;round++){
         check();await store.round(input.key,owner,now());check()
         const response=await runner!({prompt:input.prompt,round:round+1,tools:structuredClone(tools),results:structuredClone(history),signal:abort.signal})
         check()
-        if(!plainRecord(response)||!Array.isArray(response.calls)||response.calls.length>REQUEST_LIMITS.maxCalls||typeof response.done!=='boolean')throw new IntentStoreError('invalid_model_round')
+        if(!plainRecord(response)||!Array.isArray(response.calls)||response.calls.length>limits.maxCalls||typeof response.done!=='boolean')throw new IntentStoreError('invalid_model_round')
         for(const call of response.calls){
           check()
           if(!plainRecord(call)||typeof call.id!=='string'||typeof call.tool!=='string'||!plainRecord(call.arguments))throw new IntentStoreError('invalid_model_call')

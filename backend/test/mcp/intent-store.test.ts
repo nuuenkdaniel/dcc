@@ -8,6 +8,31 @@ export const input={key:'durable_request_key_01',prompt:'Synthetic create reques
 export const policy={executor:'mcp-action-v1' as const,allowedTools:['list_tasks','create_task'] as const}
 const task={title:'Synthetic item',date:'2026-11-01',expectedVersion:0}
 
+test('caller-owned cancellation preserves frozen policy and validates binding without execution or nested checkout',async()=>{
+  const db=new IntentPool(),store=new SqlIntentStore(db.pool,'actor-A')
+  const guard={version:1 as const,binding:'a'.repeat(64),chatVersion:1 as const}
+  const admission={...input,purpose:'action' as const,guard}
+  const original=await store.admit(admission,policy)
+  const broader={...policy,allowedTools:[...policy.allowedTools,'request_clarification' as const]}
+  const c=await db.pool.connect(),connect=db.connect
+  try{
+    await c.query('BEGIN');await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,817350))',['synthetic-chat-slot'])
+    db.connect=async()=>{throw Error('No second checkout')}
+    await assert.rejects(store.fenceInTransaction(c,{...input,guard:{...guard,binding:'b'.repeat(64)}},broader,1000),/intent_conflict/)
+    const start=db.statements.length
+    const fenced=await store.fenceInTransaction(c,{...input,guard},broader,1000)
+    assert.equal(fenced.phase,'uncertain');assert.deepEqual(fenced.allowedTools,original.allowedTools)
+    assert.deepEqual(fenced.guard,guard);assert.deepEqual(fenced.calls,[])
+    assert.equal(db.connections,1)
+    assert.ok(db.statements.slice(start).every(s=>!['BEGIN','COMMIT','ROLLBACK'].includes(s.sql)))
+    await c.query('COMMIT')
+  }finally{db.connect=connect;await c.query('ROLLBACK');c.release()}
+  const saved=await store.read(input.key)
+  assert.equal(saved.phase,'uncertain');assert.deepEqual(saved.allowedTools,original.allowedTools)
+  assert.equal((await store.start(input.key,1001)).directive,'receipts_only')
+  assert.equal(db.connections,0)
+})
+
 test('transaction-owned journal read uses one checkout and leaves commit and release to the caller',async()=>{
   const db=new IntentPool(),store=new SqlIntentStore(db.pool,'actor-A')
   await store.admit({...input,purpose:'action'},policy)

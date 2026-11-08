@@ -16,7 +16,60 @@ Fastify supplies request logging and JSON error handling. Unknown routes return 
 
 Frontend runs independently at `http://localhost:5173`, preserving the existing browser-storage origin, and proxies `/api` to `http://127.0.0.1:5301` during development. If you override the backend port, update the target in `../frontend/vite.config.ts` to match; changing backend `PORT` alone does not change that proxy. Root `dev:backend`, `check:backend`, `build:backend`, and `start:backend` scripts are optional shortcuts.
 
-## Conversation admission and no-action receipts
+## Conversation-first chat
+
+The explicitly negotiated conversation route (`chatVersion: 1`, with
+`replyVersion: 1`) treats each explicit
+Send as an independent conversational turn with bounded recent history. Hermes
+may chat, explain, brainstorm, clarify naturally or select the existing MCP
+tools. It does not regex-parse study requests into executable checklists and it
+does not hold an unanswered-question slot. A later message can change topic.
+No tool is required to finish a turn. Discovery advertises
+`conversationChatVersion: 1`; the response echoes `chatVersion: 1`. The older
+`conversationReplyVersion: 1` flag only negotiates display text and is not a chat
+opt-in. Clients never strip fields or retry through the legacy route on error.
+Legacy callers, including reply-enabled ones, retain their existing contract;
+old records are not migrated into new execution.
+
+The registered SDK/typed service adapter, authentication, owner/root binding,
+durable reservation-before-dispatch, backend-owned IDs/operation keys, version/
+ETag checks, and unknown-operation fences remain authoritative. Technical bounds
+are 48 calls / 16 writes / 120 seconds only for explicitly marked chat journals;
+unmarked legacy/task-only journals retain 12 calls / 4 writes and their original
+policy. The immutable guard carries the chat marker; retries cannot upgrade it.
+The runtime retains
+its independent 90-second budget with at most 32 iterations. Six creations are
+allowed, not synthesized by a host checklist. Calendar `saved` remains pending
+confirmation, not a synced-event claim. Domain APIs and schemas are unchanged.
+
+Natural assistant prose is preserved, including combined create-and-explain
+responses. No keyword filter classifies conversational text as mutation success.
+Actual tool results supply a separate bounded `toolSummary`, counted from the
+full admitted journal without a predeclared expected count. Failed/interrupted
+or provider-pending results retain plain partial/error facts. The summary is a
+fallback when final text is unavailable, not a mandatory replacement response.
+Prose is not execution authority or semantically verified by the host; actual MCP
+results must be asserted separately. Scripted tests cannot prove genuine-model
+reasoning or end-user delivery. The old bounded receipt envelope remains an
+internal/compatibility detail, not a normal chat card or a limit on actual writes.
+Duplicate keys/read/reopen never rerun a claimed turn; a failed turn does not
+prevent a different new message. No automatic retry or legacy-task replay exists.
+
+Tracked `deploy/task_action_runtime.py` uses the supported Hermes `AIAgent` and
+MCP registration seam, excluding the fixed clarification tool only for explicitly
+versioned chat. The tracked bridge/runtime forward `chatVersion` separately from
+the final-text `replyVersion`; a legacy bridge rejects unsupported fields rather
+than silently downgrading. The launcher is unchanged. Legacy reply envelopes and
+non-opted-in lifecycle ACKs remain unchanged.
+Installed runtime files are not changed by editing these source candidates.
+
+Focused deterministic targets: `test/mcp/conversation-first.test.ts`,
+`test/mcp/assistant-reply.test.ts`, and `deploy/test_task_action_runtime.py`.
+They use the actual registered MCP adapter with synthetic stores/provider stubs.
+Real isolated PostgreSQL persistence, genuine-model acceptance, deployment and
+handset acceptance are distinct gates; none is implied by the source fixtures.
+
+## Legacy conversation admission and no-action receipts
 
 A genuinely fresh start can supersede an unexpired unanswered clarification in
 the same authenticated owner/client slot only after the existing strict intent
