@@ -5,7 +5,7 @@ import org.json.JSONObject
 
 const val HERMES_CHAT_MAX_ENTRIES=40
 const val HERMES_CHAT_MAX_BYTES=65536
-private const val REPLY_RESERVE=12288
+private const val REPLY_RESERVE=18432 // Receipt plus separately bounded assistant text.
 data class HermesChatEntry(val id:String,val rootKey:String?,val turnKey:String,val role:String,val kind:String,val text:String,val expiresAt:Long,val settled:Boolean=false,val questionId:String?=null,val receipt:String?=null)
 class HermesHistoryLimit:IllegalStateException("Local chat history is full of unresolved work. Check receipts before sending more. Nothing sent.")
 internal fun HermesChatEntry.json()=JSONObject().put("id",id).put("rootKey",rootKey).put("turnKey",turnKey).put("role",role).put("kind",kind).put("text",text).put("expiresAt",expiresAt).put("settled",settled).also{v->questionId?.let{v.put("questionId",it)};receipt?.let{v.put("receipt",JSONObject(it))}}
@@ -17,8 +17,9 @@ internal fun readChat(array:JSONArray):List<HermesChatEntry>{
         val root=v.optString("rootKey").takeIf{it.isNotEmpty()&&it!="null"};val turn=v.getString("turnKey")
         require(key.matches(turn)&&(root==null||key.matches(root)))
         val role=v.getString("role");val kind=v.getString("kind");val text=v.getString("text")
-        require(role in setOf("user","assistant")&&kind in setOf("user","pending","unknown","question","receipt"))
+        require(role in setOf("user","assistant")&&kind in setOf("user","pending","unknown","question","receipt","reply"))
         require(text.length<=4000&&text.toByteArray(Charsets.UTF_8).size<=8192)
+        if(kind=="reply")require(role=="assistant"&&(text.isEmpty()||validHermesAssistantReply(JSONObject().put("version",1).put("text",text))))
         val receipt=v.optJSONObject("receipt")?.also{require(validHermesReceipt(it)&&it.getString("key")==turn)}?.toString()
         val expiry=v.getLong("expiresAt");require(expiry in 0..9007199254740991L)
         HermesChatEntry(v.getString("id"),root,turn,role,kind,text,expiry,v.getBoolean("settled"),v.optString("questionId").takeIf{it.isNotEmpty()},receipt)
@@ -32,14 +33,15 @@ private fun compactChatReceipt(r:JSONObject):String? {
     return copy.toString().takeIf{it.toByteArray(Charsets.UTF_8).size<=6144}
 }
 private fun historyCost(entries:List<HermesChatEntry>):Int {
-    val latest=entries.filter{it.role=="assistant"&&!it.settled}.groupBy{it.rootKey?:it.turnKey}.values.map{it.last().id}.toSet()
-    return entries.sumOf {
-    val size=it.json().toString().toByteArray(Charsets.UTF_8).size+1
-    if(it.id in latest)maxOf(size,REPLY_RESERVE) else size
-}+2
+    fun cost(entry:HermesChatEntry)=entry.json().toString().toByteArray(Charsets.UTF_8).size+1
+    val reserved=entries.filter{it.role=="assistant"&&!it.settled}.groupBy{it.rootKey?:it.turnKey}.values.sumOf{group->
+        (REPLY_RESERVE-group.sumOf(::cost)).coerceAtLeast(0)
+    }
+    return entries.sumOf(::cost)+reserved+2
 }
 
-/** Display projection only. Never used to build an API body, guard or model prompt.
+/** Display projection only. Optional reference text is untrusted, not a guard or
+ * current tool result; no execution decision reads this projection as authority.
  * Reserve reply space before writes; refuse admission rather than prune unknowns. */
 internal fun projectChat(s:HermesState,now:Long):HermesState {
     val entries=s.timeline.toMutableList();var pruned=s.historyPruned
@@ -57,7 +59,7 @@ internal fun projectChat(s:HermesState,now:Long):HermesState {
     fun receipt(r:JSONObject,root:String?,expiry:Long){
         if(r.getString("outcome")=="question")return
         val turn=r.getString("key");val previous=entries.firstOrNull{it.id=="receipt:$turn"};val known=entries.firstOrNull{it.turnKey==turn}?.rootKey?:root
-        val settled=r.getString("outcome") in setOf("complete","read-only","failed")
+        val settled=r.getString("outcome") in setOf("complete","read-only","failed")||previous?.settled==true||s.settledReceiptKey==turn
         put(HermesChatEntry("receipt:$turn",known,turn,"assistant","receipt",r.getString("line"),minOf(previous?.expiresAt?:expiry,expiry),settled,receipt=compactChatReceipt(r)))
         if(settled)for(i in entries.indices)if((known!=null&&entries[i].rootKey==known)||(known==null&&entries[i].turnKey==turn))entries[i]=entries[i].copy(settled=true)
     }
@@ -86,7 +88,9 @@ internal fun projectChat(s:HermesState,now:Long):HermesState {
     // Remove expired settled transcript text, but retain every unresolved root.
     val expired=entries.filter{it.settled&&it.expiresAt<=now&&it.rootKey!=s.rootKey}.map{it.id}.toSet()
     if(expired.isNotEmpty()){entries.removeAll{it.id in expired};pruned=true}
-    while(entries.size>HERMES_CHAT_MAX_ENTRIES||historyCost(entries)>HERMES_CHAT_MAX_BYTES){
+    // One pending event can become separate reply and receipt events. Reserve
+    // that entry before submission, not after effects have already happened.
+    while(entries.size+entries.count{it.kind in setOf("pending","unknown")}>HERMES_CHAT_MAX_ENTRIES||historyCost(entries)>HERMES_CHAT_MAX_BYTES){
         val removable=entries.firstOrNull { entry->
             val group=entry.rootKey?:entry.turnKey
             group!=s.rootKey&&entries.filter{(it.rootKey?:it.turnKey)==group}.all{it.settled}

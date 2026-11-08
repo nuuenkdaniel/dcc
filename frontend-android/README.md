@@ -42,6 +42,41 @@ Hermes requires the online authenticated API; no model/credentials or synthetic
 effects run on the phone. Drafts/receipts use owner-scoped encrypted storage;
 offline manual work and conflict review stay separate.
 
+Optional actual assistant text uses authenticated `conversationReplyVersion:1`
+discovery and a start-only `replyVersion:1`, separate from receipt authority.
+The existing layout renders one bounded reply per turn plus inspectable receipt
+details. Reply text is at most 2,048 UTF-16 units / 4,096 UTF-8 bytes, owner-bound
+and expires with disposable text (at most 24h). Missing support sends legacy
+bodies; claimed requests are never stripped/retried. See the paired rollout and
+parent-only acceptance prerequisites in
+[`../backend/test/acceptance/NATURAL-REPLIES.md`](../backend/test/acceptance/NATURAL-REPLIES.md).
+
+Contextual native chat source changes require fresh verification. The closed
+entrance is a 48dp rounded pill; conversation actions are under the accessible
+"Conversation actions" overflow, not a permanent recovery row. X/Back remain
+UI-only. The existing full-window/short-landscape host and workspace IME ownership
+remain in place.
+
+After capability negotiation (`conversationContextVersion:1`), a fresh draft
+captures settled live owner-encrypted history as untrusted reference. Later/in-
+flight completions cannot enter that draft snapshot. Send freezes it with the
+durable claim; edits/reloads never resend it. Limits: six entries, 320 UTF-16
+units each, 1,200 text units / 2,304 UTF-8 encoded bytes total, max age 24 hours.
+Expired references are pruned; owner/logout and existing encrypted text TTL apply.
+No IDs or tool-result objects are supplied as authority. Current server tool
+readback is required. Old servers receive the legacy request shape; a failed
+claimed request is never stripped/retried automatically. Generic verified update
+batches can continue without claiming full natural-language/checklist completion.
+
+Parent verification targets: `HermesReferenceTest`, `HermesSubmissionTest`,
+`HermesStateTest`, `HermesChatHistoryTest`, `HermesComposerTest`, `HermesShellTest`.
+Use the signing-free/offline JVM home described above for
+`:app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest`.
+Device tests require the existing isolated QA application/emulator only; include
+`compactPillHas48dpTargetAndRecoveryIsAvailableOnlyThroughAccessibleOverflow` and
+the retained first-character, Back, exact Inbox-scroll, closed-completion and
+landscape/capture tests. These changes have not been compiled or run in this pass.
+
 Parent previously built the feature checkpoint and ran its unit/lint gates;
 subsequent fixes and tests are unverified until rerun. Parent can compile
 `:app:assembleDebugAndroidTest` using that same safe-home/offline setup. Running
@@ -63,7 +98,7 @@ scroll and receipt/recreation regressions; these are UNRUN, including test-APK
 compilation. Parent must verify real IME/rotation on an approved disposable device.
 `HermesChatHistoryTest` covers optional encrypted-state timeline migration, stable
 turns, independent request keys, owner/TTL fences and protected-history bounds.
-History is display-only (40 entries / 64 KiB UTF-8 / 24-hour transcript TTL);
+History is non-authoritative (40 entries / 64 KiB UTF-8 / 24-hour transcript TTL);
 only settled groups may be pruned. Unresolved records can block new sends.
 The source-only full-screen-chat changes are UNRUN. Parent's synthetic
 `HermesShellTest.fullWindowVisualAcceptanceCompactChatImeMultiTurnReceiptAndClosedTasks`

@@ -36,7 +36,8 @@ import org.junit.Test
 // WorkspaceModel, auth cookie, mail/provider request, timer service or signing.
 class HermesShellTest {
     private val compose=createAndroidComposeRule<ComponentActivity>()
-    @get:Rule val rules:RuleChain=RuleChain.outerRule(compose).around(SyntheticUiFailureArtifacts(compose))
+    private val failureArtifacts=SyntheticUiFailureArtifacts(compose)
+    @get:Rule val rules:RuleChain=RuleChain.outerRule(compose).around(failureArtifacts)
     private fun fixtures()=InstrumentationRegistry.getInstrumentation().context.assets.open("hermes-conversation.json").bufferedReader().use{JSONObject(it.readText())}
     private fun workspace():WorkspaceState {
         val messages=(0 until 30).map { i->val id=i.toString(16).padStart(64,'0')
@@ -58,7 +59,7 @@ class HermesShellTest {
     private fun assertReservedGeometry(){
         val dock=compose.onNodeWithTag("hermes-dock").fetchSemanticsNode().boundsInRoot
         val page=compose.onNodeWithTag("workspace-page").fetchSemanticsNode().boundsInRoot
-        val editor=compose.onNode(hasSetTextAction() and hasText("Hermes",substring=true)).fetchSemanticsNode().boundsInRoot
+        val editor=compose.onNodeWithTag("hermes-editor").fetchSemanticsNode().boundsInRoot
         assertTrue("Page must retain a positive viewport: $page",page.height>0f&&page.width>0f)
         assertTrue("Pinned editor must have positive bounds: $editor",editor.height>0f&&editor.width>0f)
         assertTrue("Page must end before the dock, never under it",page.bottom<=dock.top+1f)
@@ -105,7 +106,7 @@ class HermesShellTest {
             assertTrue("Chat must fill the actual window, not the dock: $bounds",kotlin.math.abs(root.width-width)<=1f&&kotlin.math.abs(root.height-height)<=1f)
             assertTrue("Inset-adjusted content must stay above IME: $bounds",content.height>0&&content.width>0&&content.bottom<=root.bottom-imeBottom+1f)
             assertTrue("History must have a positive viewport above a pinned editor: $bounds",history.height>0&&history.width>0&&history.top>=content.top-1f&&history.bottom<=composer.top+1f&&editor.top>=composer.top&&editor.bottom<=composer.bottom+1f)
-            for(tag in listOf("hermes-chat-editor","hermes-chat-send","hermes-chat-close")){
+            for(tag in listOf("hermes-chat-editor","hermes-chat-send","hermes-chat-close","hermes-chat-actions")){
                 val control=compose.onNodeWithTag(tag)
                 val clipped=control.fetchSemanticsNode().boundsInRoot
                 val full=control.getUnclippedBoundsInRoot()
@@ -125,8 +126,8 @@ class HermesShellTest {
         val root=compose.onRoot().fetchSemanticsNode().boundsInRoot
         val dock=compose.onNodeWithTag("hermes-dock").fetchSemanticsNode().boundsInRoot
         val page=compose.onNodeWithTag("workspace-page").fetchSemanticsNode().boundsInRoot
-        val editor=compose.onNode(hasSetTextAction() and hasText("Hermes",substring=true)).fetchSemanticsNode().boundsInRoot
-        val unclippedEditor=compose.onNode(hasSetTextAction() and hasText("Hermes",substring=true)).getUnclippedBoundsInRoot()
+        val editor=compose.onNodeWithTag("hermes-editor").fetchSemanticsNode().boundsInRoot
+        val unclippedEditor=compose.onNodeWithTag("hermes-editor").getUnclippedBoundsInRoot()
         val nav=compose.onAllNodesWithTag("main-navigation").fetchSemanticsNodes().firstOrNull()?.boundsInRoot
         val keyboardTop=height-imeBottom
         val bounds="window=${width}x$height fontScale=$fontScale density=$density root=$root page=$page dock=$dock editor=$editor unclippedEditorDp=$unclippedEditor nav=$nav imeVisible=$imeVisible imeBottom=$imeBottom keyboardTop=$keyboardTop"
@@ -319,6 +320,7 @@ class HermesShellTest {
         show("task · synthetic-task-3 · applied · verified")
         closeChat();assertReservedGeometry();compose.onNodeWithText("View").assertDoesNotExist()
     }
+    @OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
     @Test fun landscapeRotationRetainsQuestionAnswerAndReservedDock(){
         val trace=SyntheticUiStageTrace("HermesShellTest.landscapeRotationRetainsQuestionAnswerAndReservedDock")
         val q=fixtures().getJSONObject("question")
@@ -342,8 +344,38 @@ class HermesShellTest {
             trace.stage("landscape IME geometry before history search"){stableFullWindowGeometry("landscape-before-search",expectIme=true)}
             trace.stage("show retained question"){show(q.getJSONObject("question").getString("question"))}
             trace.stage("reach and check receipt from scrolling actions"){
-                show("Check receipt");compose.onNodeWithText("Check receipt").performClick();compose.runOnIdle{assertEquals(1,reads)}
+                fun menuState(stage:String)=compose.onNodeWithTag("hermes-chat").fetchSemanticsNode().config[HermesChatMenuState].also{println("QA_UI_MENU $stage $it")}
+                compose.onNodeWithTag("hermes-chat-editor").performTextInputSelection(androidx.compose.ui.text.TextRange(2,7))
+                val selection=compose.onNodeWithTag("hermes-chat-editor").fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange]
+                assertEquals(androidx.compose.ui.text.TextRange(2,7),selection)
                 compose.onNodeWithTag("hermes-chat-editor").assertTextContains("Retained synthetic answer")
+                stableFullWindowGeometry("landscape-before-overflow",expectIme=true)
+                compose.onNodeWithText("Check receipt").assertDoesNotExist()
+                menuState("before-open")
+                compose.onNodeWithContentDescription("Conversation actions").performClick()
+                val opened=menuState("after-open")
+                assertTrue("Dialog must retain menu-open ownership: $opened",opened.startsWith("open=true "))
+                compose.onNodeWithText("Check receipt").assertIsDisplayed()
+                // Focusable Android popup owns input; its natural IME-hidden
+                // layout is valid. Real IME is required again after selection.
+                captureFullWindow("landscape-overflow-keyboard-hidden",expectIme=false)
+                val menu=compose.onNodeWithTag("hermes-chat-actions-menu").fetchSemanticsNode().boundsInRoot
+                val viewport=compose.onNodeWithTag("hermes-chat-content").fetchSemanticsNode().boundsInRoot
+                assertTrue("Overflow must fit the actual IME-safe viewport: menu=$menu viewport=$viewport",menu.height>0&&menu.height<=viewport.height+1f&&menu.width<=viewport.width+1f)
+                compose.onNodeWithTag("hermes-chat-actions-list").performScrollToNode(hasText("Close unresolved request"))
+                compose.onNodeWithText("Close unresolved request").assertIsDisplayed()
+                compose.onNodeWithTag("hermes-chat-actions-list").performScrollToNode(hasText("Check receipt"))
+                compose.onNodeWithText("Check receipt").assertIsDisplayed().performClick();compose.runOnIdle{assertEquals(1,reads)}
+                val closed=menuState("after-receipt")
+                assertTrue("Receipt selection must dismiss the menu: $closed",closed.startsWith("open=false "))
+                stableFullWindowGeometry("landscape-after-receipt-restored-ime",expectIme=true)
+                compose.onNodeWithTag("hermes-chat-editor").assertTextContains("Retained synthetic answer")
+                assertEquals(selection,compose.onNodeWithTag("hermes-chat-editor").fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange])
+                // Restoration must release its fence, not lock future deliberate
+                // selection changes to the menu-entry snapshot.
+                compose.onNodeWithTag("hermes-chat-editor").performTextInputSelection(androidx.compose.ui.text.TextRange(3,8))
+                assertEquals(androidx.compose.ui.text.TextRange(3,8),compose.onNodeWithTag("hermes-chat-editor").fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange])
+                compose.onNodeWithTag("hermes-chat-editor").performTextInputSelection(selection)
             }
             trace.stage("show question again"){show(q.getJSONObject("question").getString("question"))}
             trace.stage("capture landscape success with IME"){captureFullWindow("landscape-success",expectIme=true)}
@@ -353,6 +385,9 @@ class HermesShellTest {
                 compose.onNodeWithTag("hermes-editor").assertTextContains("Retained synthetic answer")
                 compose.runOnIdle{assertEquals(1,reads);assertEquals(q.getString("rootKey"),hermes.rootKey)}
             }
+        }catch(error:Throwable){
+            failureArtifacts.capture(error,org.junit.runner.Description.createTestDescription(HermesShellTest::class.java,"landscape-before-orientation-cleanup"))
+            throw error
         }finally{
             trace.stage("restore orientation"){compose.activityRule.scenario.onActivity{it.requestedOrientation=ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED}}
         }

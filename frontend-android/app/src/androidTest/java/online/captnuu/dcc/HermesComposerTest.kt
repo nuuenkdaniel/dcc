@@ -60,6 +60,19 @@ class HermesComposerTest {
         show(wording)
     }
     @Test fun compactHasNoLauncherOrChatPage(){compose.setContent{DccTheme{HermesComposer(HermesState(),{},{},{},{})}};compose.onNodeWithText("Hermes").assertIsDisplayed();compose.onNodeWithText("View").assertDoesNotExist();compose.onNodeWithText("Show question").assertDoesNotExist()}
+    @Test fun compactPillHas48dpTargetAndRecoveryIsAvailableOnlyThroughAccessibleOverflow(){
+        var reads=0;var fences=0
+        compose.setContent{DccTheme{HermesComposer(HermesState(rootKey="synthetic_root_01"),{},{},{fences++},{},onRead={reads++})}}
+        val pill=compose.onNodeWithTag("hermes-editor").getUnclippedBoundsInRoot()
+        assertTrue((pill.bottom-pill.top).value>=48f)
+        openChat()
+        compose.onNodeWithText("Check receipt").assertDoesNotExist();compose.onNodeWithText("Close unresolved request").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Conversation actions").performClick()
+        compose.onNodeWithText("Check receipt").assertIsDisplayed().performClick()
+        assertEquals(1,reads)
+        compose.onNodeWithContentDescription("Close chat").performClick()
+        assertEquals(0,fences);compose.onNodeWithTag("hermes-chat").assertDoesNotExist()
+    }
     @OptIn(ExperimentalTestApi::class)
     @Test fun firstCharacterOpensWithoutSendAndSelectionDraftSurviveCloseAndAndroidBack(){
         var state by mutableStateOf(HermesState())
@@ -225,7 +238,9 @@ class HermesComposerTest {
         compose.onNodeWithTag("hermes-editor").assertTextContains("Fresh unsent draft")
         openChat();show("Incomplete: 2/3 tasks verified.");show("Exact submitted synthetic request")
         compose.onNodeWithText("Added 3/3 tasks",substring=true).assertDoesNotExist()
-        compose.onNodeWithText("Check receipt").assertIsDisplayed()
+        compose.onNodeWithText("Check receipt").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Conversation actions").performClick()
+        compose.onNodeWithText("Check receipt").assertIsDisplayed().performClick()
         compose.onNodeWithTag("hermes-chat-history").performScrollToNode(hasText("View"));compose.onNodeWithText("View").performClick()
         show("task · synthetic-task-2 · applied · verified")
     }

@@ -1,5 +1,67 @@
 # Compact clarification and inspectable receipts
 
+The opt-in display-only natural-reply contract, paired-runtime requirements and
+strict two-invocation parent acceptance are documented in
+[`../../test/acceptance/NATURAL-REPLIES.md`](../../test/acceptance/NATURAL-REPLIES.md).
+Natural text never replaces this receipt/clarification authority.
+
+## Contextual native clients (source verification required)
+
+Authenticated action discovery now advertises `conversationContextVersion:1`.
+Only clients that observe that capability send optional start-only
+`context:{version:1,entries:[{role:'user'|'assistant',text,at}]}`. No context means
+the legacy wire/prompt/question behavior, including the guarded host create lane.
+New clients do not retry rejected/uncertain submissions with context stripped.
+
+Reference bounds are six entries, 320 UTF-16 units each, 1,200 total text units
+and 2,304 encoded UTF-8 bytes. Entries are at most 24 hours old; future/expired
+entries are excluded at admission. The raw submitted envelope participates in
+the immutable start fingerprint. Pending text expiry is the earlier of root
+24-hour TTL and the oldest accepted reference expiry; completion/cancel/expiry
+discard persisted reference text. Claim hashes and receipts remain independent.
+The actual prompt still must fit 4,000 UTF-16 units / 8,192 UTF-8 bytes; oversized
+envelopes explicitly fail before execution rather than silently dropping intent.
+
+Reference is quoted UNTRUSTED data, never instructions, capabilities, targets or
+tool results. Server NY/IANA dates provide request/current date and civil-day
+relative labels. Contextual answers retain the original request date basis.
+Existing-task writes require IDs seen by current-turn `list_tasks`, plus current
+collection-version evidence from service reads/applied task receipts. Correcting
+a conclusive conflict/rejection requires another task read; applied targets and
+unknown/pending writes cannot be replayed under new correlation keys. Budgets,
+owners, cancellation, legacy fences, tool schemas and bridge contract remain.
+
+For contextual zero-write questions, host-generated bounded candidate wording
+uses actual task reads; tool `request_clarification` still accepts only the same
+fixed reason enum. Legacy clients keep fixed questions. Conversation wire codecs
+accept this task-question projection without treating it as execution evidence.
+
+Only opted-in replies include `continuable`. It permits a fresh explicit request
+after a terminal, fully known operation batch, not certification of full natural-
+language scope. Generic updates retain partial/uncertified scope receipts even
+when all actual update targets verify; they are never relabelled checklist Done.
+Applied receipt details and fresh SQL inspection, not model prose, ground results.
+Ordinary contextual verified-update summaries say only how many task updates
+verified (for example, `Updated 3 tasks.`); generic receipts still retain
+`outcome:partial`, `expected:null` and actual target details. Contextual read
+summaries describe only the displayed returned records (at most four), not a
+complete result set or fulfilled intent. Empty projections say only that the
+read finished without changes. Legacy copy and uncertainty warnings are unchanged.
+
+Focused source fixtures (not genuine model or live-provider journeys):
+
+```sh
+backend/node_modules/.bin/tsx --test backend/test/mcp/conversation-context.test.ts backend/test/mcp/contextual-conversation.test.ts backend/test/mcp/host-checklist.test.ts
+npm run check:backend
+backend/node_modules/.bin/tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --esModuleInterop --skipLibCheck backend/test/mcp/conversation-context.test.ts backend/test/mcp/contextual-conversation.test.ts
+```
+
+The create/move/follow-up fixtures use authenticated in-process HTTP and real
+SDK/Dispatcher/service code over the existing synthetic SQL-query pool. They do
+not prove PostgreSQL concurrency or actual model target selection. Run existing
+isolated PG checklist acceptance separately with its explicit disposable binding;
+this feature does not activate runtime/provider changes or recover old intents.
+
 This is a bounded web/native shell feature, not a general assistant chat or a
 claim of live acceptance. The existing three-tool task API, legacy command API,
 active 35-tool product policy (price tracking retired), exact `gpt-6-luna` policy,

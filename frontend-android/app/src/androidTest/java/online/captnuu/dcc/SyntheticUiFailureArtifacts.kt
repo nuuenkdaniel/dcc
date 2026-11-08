@@ -55,6 +55,10 @@ internal fun ComposeTestRule.showHermesChatText(text:String){
 // the Compose rule so roots/activity still exist when capturing the failure.
 internal class SyntheticUiFailureArtifacts(private val compose:ComposeTestRule):TestWatcher() {
     override fun failed(error:Throwable,description:Description){
+        capture(error,description)
+    }
+    // Also usable inside a test's catch, before orientation/window cleanup.
+    fun capture(error:Throwable,description:Description){
         runCatching {
         val originalStack=error.stackTraceToString()
         println("QA_UI_ORIGINAL_FAILURE ${description.displayName}\n$originalStack")

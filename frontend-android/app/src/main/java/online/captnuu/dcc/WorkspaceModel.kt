@@ -37,7 +37,7 @@ class WorkspaceModel(application:Application):AndroidViewModel(application) {
     private suspend fun bindHermes(session:JSONObject){
         val owner=session.optString("workspaceOwner")
         if(Regex("^[a-f0-9]{64}$").matches(owner))hermes.bind(owner) else hermes.unbind()
-        try{hermes.availability(api("/api/v1/hermes/action-capabilities").optBoolean("conversation",false));hermes.readReceipt()}catch(_:Exception){hermes.availability(false)}
+        try{val capabilities=api("/api/v1/hermes/action-capabilities");val contextVersion=capabilities.opt("conversationContextVersion");val replyVersion=capabilities.opt("conversationReplyVersion");hermes.availability(capabilities.optBoolean("conversation",false),if(contextVersion is Number&&contextVersion.toDouble()==1.0)1 else 0,if(replyVersion is Number&&replyVersion.toDouble()==1.0)1 else 0);hermes.readReceipt()}catch(_:Exception){hermes.availability(false)}
     }
     init { connectivity.registerDefaultNetworkCallback(networkCallback);viewModelScope.launch {
         try { withContext(Dispatchers.IO){sessions.restore()

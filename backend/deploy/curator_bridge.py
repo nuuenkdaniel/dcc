@@ -10,6 +10,8 @@ import time
 import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from runpy import run_path
+valid_reply_completion = run_path(str(Path(__file__).with_name('assistant_reply.py')))['valid_completion']
 
 LOCK = threading.Lock()
 TOKEN = Path(os.environ['DAYMARK_CURATOR_TOKEN_FILE']).read_text().strip()
@@ -107,7 +109,10 @@ class Handler(BaseHTTPRequestHandler):
                 capability = data.get('callbackCapability')
                 expiry = data.get('expiresAt')
                 prompt = data.get('prompt')
-                if (set(data) != {'mode','callbackCapability','expiresAt','prompt'}
+                reply_version = data.get('replyVersion')
+                expected_keys = {'mode','callbackCapability','expiresAt','prompt'} | ({'replyVersion'} if 'replyVersion' in data else set())
+                if (set(data) != expected_keys
+                        or 'replyVersion' in data and (type(reply_version) is not int or reply_version != 1 or data['mode'] != 'product-action')
                         or type(capability) is not str or not re.fullmatch(r'[a-f0-9]{64}', capability)
                         or type(expiry) is not int or not time.time()*1000 < expiry <= time.time()*1000+120000
                         or type(prompt) is not str or not 0 < len(prompt) <= 4000):
@@ -119,11 +124,12 @@ class Handler(BaseHTTPRequestHandler):
                 # System Python runs ONLY the stdlib wrapper. Hermes's official
                 # launcher supplies the isolated bootstrap/dependencies for action.
                 result = subprocess.run(['/usr/bin/python3', str(Path(__file__).with_name('task_action_launcher.py'))],
-                    input=json.dumps({'prompt':prompt, 'catalog':'product-v1' if data['mode']=='product-action' else 'tasks-v1'}), text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    input=json.dumps({'prompt':prompt, 'catalog':'product-v1' if data['mode']=='product-action' else 'tasks-v1', **({'replyVersion':1} if reply_version == 1 else {})}), text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                     env=env, timeout=105, cwd='/root/.hermes/profiles/daymark-curator')
-                if result.returncode or json.loads(result.stdout) != {'status':'finished'}:
+                parsed = json.loads(result.stdout) if not result.returncode and len(result.stdout.encode('utf-8')) <= 16384 else None
+                if not (valid_reply_completion(parsed) and capability not in parsed.get('assistantText', '') and TOKEN not in parsed.get('assistantText', '') if reply_version == 1 else parsed == {'status':'finished'}):
                     raise ValueError('Task invocation unconfirmed')
-                self.respond(200, {'status':'finished'})
+                self.respond(200, parsed)
                 return
             instruction = TELL_HERMES_PROMPT if data.get('mode') == 'tell-hermes' else MAIL_PROMPT if data.get('mode') == 'mail-classify' else ASSIGNMENT_PROMPT if data.get('mode') == 'assignment' else EXTRACT_PROMPT if data.get('mode') == 'extract' else CUSTOM_PROJECT_TASKS_PROMPT if data.get('mode') == 'custom-project-tasks' else PROMPT
             env = os.environ.copy()

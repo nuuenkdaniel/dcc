@@ -11,7 +11,7 @@ export const REQUEST_INTENT_KIND='dcc-request-intent-v1'
 export const REQUEST_LIMITS=Object.freeze({maxRounds:4,maxCalls:12,maxWrites:4,timeoutMs:120000})
 type Executor='legacy-parser-v1'|'mcp-action-v1'
 export type IntentPolicy={executor:Executor;allowedTools:readonly ToolName[]}
-export type ConversationGuard={version:1;binding?:string;checklist?:Checklist;questionOnly?:true;questionReason?:string;readOnly?:true}
+export type ConversationGuard={version:1;binding?:string;checklist?:Checklist;questionOnly?:true;questionReason?:string;readOnly?:true;contextual?:true}
 export type IntentAdmission={actorId:string;purpose:Context['purpose'];key:string;prompt:string;tabId?:string;guard?:ConversationGuard}
 type LegacyEvidence={promptHash:string;completed:boolean;mcpIntentId?:string}
 type Call={id:string;fingerprint:string;command:Command;result?:Result}
@@ -124,6 +124,17 @@ export function reserveIntentCall(record:IntentRecord,callId:string,tool:unknown
   }
   if(record.phase!=='active')return deny('inactive')
   if(record.guard){
+    if(writing&&record.guard.contextual&&tool.includes('task')){
+      // Context/transcript IDs and versions are never evidence. Require a task
+      // read in THIS turn; advance collection evidence only with service receipts.
+      const read=record.calls.some(c=>c.command.tool==='list_tasks'&&c.result?.state==='ok'&&plainRecord(c.result.data)&&Array.isArray(c.result.data.items)&&c.result.data.items.some(t=>plainRecord(t)&&t.id===args.id))
+      const evidence=[...record.calls].reverse().find(c=>c.command.tool==='list_tasks'&&c.result?.state==='ok'||c.command.tool.includes('task')&&c.result?.state==='applied')
+      const version=evidence?.result?.state==='ok'&&plainRecord(evidence.result.data)?evidence.result.data.collectionVersion:evidence?.result?.state==='applied'&&'version' in evidence.result?evidence.result.version:undefined
+      if(!creating&&!read||version!==args.expectedVersion)return deny('invalid_arguments')
+      const prior=[...record.calls].reverse().find(c=>c.command.tool===tool&&(creating?c.command.args.title===args.title&&c.command.args.date===args.date:c.command.args.id===args.id)&&c.result&&(c.result.state==='conflict'||c.result.state==='rejected'))
+      if(prior&&!record.calls.slice(record.calls.indexOf(prior)+1).some(c=>c.command.tool==='list_tasks'&&c.result?.state==='ok'))return deny('pending_operation')
+    }
+    if(writing&&record.guard.contextual&&record.calls.some(c=>TOOLS[c.command.tool].write&&c.result&&(c.result.state==='applied'||c.result.state==='saved')&&(creating?c.command.tool===tool&&c.command.args.title===args.title&&c.command.args.date===args.date:(c.command.args.id??c.command.args.eventId)===(args.id??args.eventId))))return deny('pending_operation')
     if(writing&&(record.guard.questionOnly||record.guard.readOnly))return deny('forbidden')
     if(tool==='request_clarification'&&(record.guard.checklist||record.guard.questionReason&&args.reason!==record.guard.questionReason))return deny('forbidden')
     if(tool==='request_clarification'&&record.calls.some(c=>TOOLS[c.command.tool].write))return deny('pending_operation')

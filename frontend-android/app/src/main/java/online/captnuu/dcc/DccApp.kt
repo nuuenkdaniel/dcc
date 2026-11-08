@@ -80,7 +80,7 @@ fun JSONArray?.objects():List<JSONObject> = if(this==null) emptyList() else (0 u
    Box(Modifier.fillMaxSize().windowInsetsPadding(if(hermesOwnsIme)WindowInsets(0,0,0,0) else workspaceIme)) {
  Scaffold(bottomBar={Column {
   if(state.signedIn&&(projectModel!=null||hermesContent!=null))Surface(modifier=Modifier.testTag("hermes-dock"),tonalElevation=3.dp) {
-    val dockModifier=Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=4.dp)
+    val dockModifier=Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=2.dp)
     CompositionLocalProvider(LocalHermesModalVisibility provides modalVisibility){
    if(hermesContent!=null)hermesContent(dockModifier)
    else if(projectModel!=null){

@@ -12,6 +12,7 @@ import time
 from runpy import run_path
 agent_policy = run_path(str(Path(__file__).with_name('dcc_model_policy.py')))['agent_policy']
 inference_context = run_path(str(Path(__file__).with_name('dcc_model_policy.py')))['inference_context']
+reply_completion = run_path(str(Path(__file__).with_name('assistant_reply.py')))['completion']
 
 HOST = 'dcc.home.captnuu.online'
 CALLBACK_PATH = '/api/v1/hermes/mcp-task-callback'
@@ -117,7 +118,9 @@ def quiet_runtime():
                 os.dup2(original, fd); os.close(original)
 
 
-def run_action(token, expiry, prompt, product=False, *, test_stdio_proxy=None):
+def run_action(token, expiry, prompt, product=False, *, test_stdio_proxy=None, reply_version=None):
+    if reply_version is not None and (type(reply_version) is not int or reply_version != 1 or not product):
+        raise ValueError('Invalid reply version')
     # Parent-verified APIs; the existing profile's tool_search setting is off.
     # Require direct schemas. Never monkeypatch raw schemas or permit the bridge.
     from tools.mcp_tool_discovery import register_mcp_servers
@@ -182,9 +185,14 @@ def run_action(token, expiry, prompt, product=False, *, test_stdio_proxy=None):
         if invalid or type(result) is not dict or result.get('error'):
             raise ValueError('Unconfirmed invocation')
         # Sanitized source evidence only, not model prose or effect acceptance.
-        return {'model': agent_policy()['model'], 'schemaCount': len(selected),
+        evidence = {'model': agent_policy()['model'], 'schemaCount': len(selected),
                 'schemaSha256': hashlib.sha256(baseline.encode('utf-8')).hexdigest(),
                 'schemasUnchanged': True}
+        if reply_version == 1:
+            evidence['completion'] = reply_completion(result)
+            if token in evidence['completion'].get('assistantText', ''):
+                del evidence['completion']['assistantText']
+        return evidence
     finally:
         try:
             if agent is not None:
@@ -227,14 +235,18 @@ def main():
             print(json.dumps(result,allow_nan=False,ensure_ascii=False))
             return 0
         token, expiry = capability_environment()  # Remove BEFORE Hermes imports.
-        if (type(payload) is not dict or set(payload) not in ({'prompt'}, {'prompt','catalog'})
+        if (type(payload) is not dict or set(payload) not in ({'prompt'}, {'prompt','catalog'}, {'prompt','catalog','replyVersion'})
                 or payload.get('catalog', 'tasks-v1') not in ('tasks-v1','product-v1')
+                or 'replyVersion' in payload and (type(payload['replyVersion']) is not int or payload['replyVersion'] != 1 or payload.get('catalog') != 'product-v1')
                 or type(payload['prompt']) is not str or not 0 < len(payload['prompt']) <= 4000):
             return 1
         sys.path.insert(0, '/usr/local/lib/hermes-agent')
         with quiet_runtime():
-            run_action(token, expiry, payload['prompt'], payload.get('catalog') == 'product-v1')
-        print('{"status":"finished"}')  # Lifecycle ACK only, not model output.
+            evidence = run_action(token, expiry, payload['prompt'], payload.get('catalog') == 'product-v1', reply_version=payload.get('replyVersion'))
+        if 'replyVersion' in payload:
+            print(json.dumps(evidence['completion'], ensure_ascii=False, allow_nan=False))
+        else:
+            print('{"status":"finished"}')  # Legacy lifecycle ACK, unchanged.
         return 0
     except Exception:
         return 1  # No raw HTTP/model errors or payload logging.

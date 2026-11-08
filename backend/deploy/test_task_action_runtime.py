@@ -1,5 +1,6 @@
 """Synthetic-only tests: no network, credential files, DB or Hermes imports."""
 import importlib.util
+import contextlib
 import io
 import json
 import os
@@ -88,6 +89,41 @@ class RelayTests(unittest.TestCase):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_opted_in_runtime_returns_only_validated_final_response(self):
+        names = ['mcp__dcc_task__' + name for name in sorted(runtime.PRODUCT_TOOLS)]
+        schemas = [{'type':'function','function':{'name':n,'parameters':{'type':'object','properties':{}}}} for n in names]
+        next(s for s in schemas if s['function']['name'].endswith('__get_operation_status'))['function']['parameters'].update(properties={'operationKey':{'type':'string'}},required=['operationKey'],additionalProperties=False)
+        agent = types.SimpleNamespace(tools=schemas,valid_tool_names=set(names),run_conversation=Mock(),close=Mock())
+        modules = {'tools':types.ModuleType('tools'),
+                   'tools.mcp_tool_discovery':types.SimpleNamespace(register_mcp_servers=Mock(return_value=names)),
+                   'tools.mcp_tool_lifecycle':types.SimpleNamespace(shutdown_mcp_servers=Mock()),
+                   'tools.registry':types.SimpleNamespace(registry=types.SimpleNamespace(get_toolset_for_tool=lambda _n:'mcp-dcc_task')),
+                   'run_agent':types.SimpleNamespace(AIAgent=Mock(return_value=agent))}
+        modules['tools'].__path__=[]
+        with patch.dict(sys.modules,modules),patch.object(runtime.time,'time',return_value=1000):
+            agent.run_conversation.return_value={'completed':True,'final_response':'Actual synthetic café reply 🙂','messages':[{'secret':'never project'}]}
+            evidence=runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1)
+            self.assertEqual(evidence['completion'],{'status':'finished','replyVersion':1,'assistantText':'Actual synthetic café reply 🙂'})
+            self.assertNotIn('messages',repr(evidence))
+            self.assertNotIn('completion',runtime.run_action(TOKEN,EXPIRY,'Synthetic',True))
+            for invalid in ['', 'x'*2049, '界'*1400, '\ud800', 'bad\x00', {'tool':'create_task'}, TOKEN]:
+                agent.run_conversation.return_value={'completed':True,'final_response':invalid,'messages':['not a fallback']}
+                self.assertNotIn('assistantText',runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1)['completion'])
+            for flags in [{'completed':False},{'partial':True},{'interrupted':True},{'truncated':True},{'failed':True}]:
+                agent.run_conversation.return_value={'completed':True,'final_response':'Do not display',**flags}
+                self.assertNotIn('assistantText',runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1)['completion'])
+            agent.run_conversation.return_value={'error':'private diagnostic','final_response':'Do not display'}
+            with self.assertRaises(ValueError):runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1)
+            agent.run_conversation.reset_mock()
+            for version in [0,2,True,'1']:
+                with self.assertRaises(ValueError):runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=version)
+            agent.run_conversation.assert_not_called()
+
+    def test_cli_legacy_ack_and_opt_in_envelope(self):
+        for extra,expected in [({}, {'status':'finished'}),({'catalog':'product-v1','replyVersion':1},{'status':'finished','replyVersion':1,'assistantText':'Synthetic final'})]:
+            with patch.object(sys,'argv',[runtime.__file__]),patch.object(sys,'path',list(sys.path)),patch.object(sys,'stdin',io.StringIO(json.dumps({'prompt':'Synthetic',**extra}))),patch.object(sys,'stdout',new_callable=io.StringIO) as output,patch.object(runtime,'capability_environment',return_value=(TOKEN,EXPIRY)),patch.object(runtime,'quiet_runtime',contextlib.nullcontext),patch.object(runtime,'run_action',return_value={'completion':expected}):
+                self.assertEqual(runtime.main(),0)
+                self.assertEqual(json.loads(output.getvalue()),expected)
     def test_complete_product_catalog_exact_registration_and_schema_stability(self):
         expected = {'list_calendars','list_calendar_events','list_tasks','list_projects','get_operation_status',
                     'create_task','update_task','set_task_completed','remove_task','create_project','create_assignment',
@@ -185,6 +221,24 @@ class RuntimeTests(unittest.TestCase):
 
 
 class BridgeTests(unittest.TestCase):
+    def test_opt_in_product_version_is_strict_and_never_stripped_or_retried(self):
+        module=self.bridge()
+        payload={'mode':'product-action','prompt':'Synthetic','callbackCapability':TOKEN,'expiresAt':EXPIRY,'replyVersion':1}
+        completion={'status':'finished','replyVersion':1,'assistantText':'Synthetic final'}
+        with patch.dict(os.environ,{'DAYMARK_TASK_ACTIONS_ENABLED':'1'},clear=True),patch.object(module.time,'time',return_value=1000),patch.object(module.subprocess,'run',return_value=types.SimpleNamespace(returncode=0,stdout=json.dumps(completion))) as spawn:
+            self.assertEqual(self.request(module,payload),(200,completion))
+            self.assertEqual(json.loads(spawn.call_args.kwargs['input']),{'prompt':'Synthetic','catalog':'product-v1','replyVersion':1})
+            for invalid in [2,True,'1',None]:
+                spawn.reset_mock()
+                self.assertEqual(self.request(module,{**payload,'replyVersion':invalid})[0],502)
+                spawn.assert_not_called()
+            for reply in [{'status':'finished'},{**completion,'authority':True},{**completion,'replyVersion':2},{**completion,'assistantText':'x'*2049},{**completion,'assistantText':TOKEN}]:
+                spawn.reset_mock();spawn.return_value.stdout=json.dumps(reply)
+                self.assertEqual(self.request(module,payload)[0],502)
+                self.assertEqual(spawn.call_count,1)
+            spawn.reset_mock()
+            self.assertEqual(self.request(module,{**payload,'mode':'task-action'})[0],502)
+            spawn.assert_not_called()
     def test_read_helper_timeout_removes_bridge_owned_request_directory(self):
         module=self.bridge();seen=[]
         def timeout(*_args,**kwargs):
