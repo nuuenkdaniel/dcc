@@ -135,7 +135,7 @@ export class TaskActions {
   }
   run(input:{key:string;prompt:string},signal?:AbortSignal){return this.controller.run(input,policy,signal)}
   runProduct(input:{key:string;prompt:string;tabId?:string},signal?:AbortSignal){return this.controller.run(input,productPolicy,signal)}
-  converse(input:ConversationInput,owner:string,signal?:AbortSignal){return this.conversations.handle(input,owner,signal)}
+  converse(input:ConversationInput,owner:string,signal?:AbortSignal,displaySync=false){return this.conversations.handle(input,owner,signal,displaySync)}
   expireConversationText(){return expireConversationText(this.pool,this.now())}
   pollTimer(key:string,tabId:string){return this.timerBridge.poll(key,tabId)}
   ackTimer(key:string,tabId:string,ack:unknown){return this.timerBridge.ack(key,tabId,ack)}

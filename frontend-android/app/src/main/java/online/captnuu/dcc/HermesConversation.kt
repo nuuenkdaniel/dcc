@@ -70,8 +70,9 @@ fun validHermesReceipt(r:JSONObject):Boolean=runCatching {
     if(r.getString("outcome")=="complete")require(expected==verified&&verified>0&&targets.all{it.getString("state")=="applied"&&it.getString("verification")=="verified"})
     true
 }.getOrDefault(false)
-fun validHermesView(v:JSONObject):Boolean=runCatching {
-    require(v.keys().asSequence().all{it in setOf("version","rootKey","turnKey","expiresAt","questions","original","question","receipt","continuable","assistantReply","replyUnavailable","chatVersion","toolSummary")})
+fun validHermesView(v:JSONObject,allowDisplaySync:Boolean=false):Boolean=runCatching {
+    require(v.keys().asSequence().all{it in setOf("version","rootKey","turnKey","expiresAt","questions","original","question","receipt","continuable","assistantReply","replyUnavailable","chatVersion","toolSummary")||allowDisplaySync&&it=="displaySync"})
+    if(v.has("displaySync"))require(allowDisplaySync&&v.optInt("chatVersion")==1&&validHermesDisplaySync(v.getJSONObject("displaySync")))
     if(v.has("chatVersion"))require(v.integer("chatVersion",1,1)&&!v.has("question"))
     if(v.has("toolSummary"))require(v.has("chatVersion")&&validHermesAssistantReply(v.getJSONObject("toolSummary")))
     if(v.has("assistantReply"))require(validHermesAssistantReply(v.getJSONObject("assistantReply"))&&!v.has("question")&&!v.has("replyUnavailable"))
@@ -108,7 +109,7 @@ internal fun submittedOf(v:JSONObject):HermesSubmitted {
     if(v.has("chat"))require(v.get("chat") is Boolean&&!answer)
     return HermesSubmitted(v.getString("rootKey"),v.getString("turnKey"),v.getString("text"),answer,v.getLong("expiresAt"),parent,question,v.optBoolean("closed",false),context,v.optBoolean("chat",false))
 }
-data class HermesState(val draft:String="",val answer:String="",val view:String?=null,val receipt:String?=null,val busy:Boolean=false,val notice:String="",val available:Boolean=false,val rootKey:String?=null,val attemptKey:String?=null,val editedAfterSubmit:Boolean=false,val submitted:HermesSubmitted?=null,val timeline:List<HermesChatEntry> = emptyList(),val historyPruned:Boolean=false,val historyReady:Boolean=false,val ownerKey:String?=null,val contextVersion:Int=0,val settledReceiptKey:String?=null,val draftContext:String?=null,val replyVersion:Int=0,val storageStatus:HermesStorageStatus=HermesStorageStatus.READY,val canRecoverSeparately:Boolean=false,val receiptCheck:HermesReceiptCheck=HermesReceiptCheck.IDLE,val legacyTimeline:List<HermesChatEntry> = emptyList(),val chatVersion:Int=0){
+data class HermesState(val draft:String="",val answer:String="",val view:String?=null,val receipt:String?=null,val busy:Boolean=false,val notice:String="",val available:Boolean=false,val rootKey:String?=null,val attemptKey:String?=null,val editedAfterSubmit:Boolean=false,val submitted:HermesSubmitted?=null,val timeline:List<HermesChatEntry> = emptyList(),val historyPruned:Boolean=false,val historyReady:Boolean=false,val ownerKey:String?=null,val contextVersion:Int=0,val settledReceiptKey:String?=null,val draftContext:String?=null,val replyVersion:Int=0,val storageStatus:HermesStorageStatus=HermesStorageStatus.READY,val canRecoverSeparately:Boolean=false,val receiptCheck:HermesReceiptCheck=HermesReceiptCheck.IDLE,val legacyTimeline:List<HermesChatEntry> = emptyList(),val chatVersion:Int=0,val displaySyncVersion:Int=0){
     val storageReady:Boolean get()=storageStatus==HermesStorageStatus.READY
     val receiptChecking:Boolean get()=receiptCheck==HermesReceiptCheck.CHECKING
     val conversationFirst:Boolean get()=chatVersion==1||submitted?.chat==true
@@ -118,7 +119,7 @@ data class HermesOwnerFence(val owner:String,val generation:Long)
 
 /** Bounded encrypted client state. It is not an outbox: reconnection ONLY reads
  * receipts, and cannot replay a start or answer. All AI/effects stay on server. */
-class HermesConversationController(private val scope:CoroutineScope,private val storageFor:(String)->SessionStorage,private val api:suspend (JSONObject)->JSONObject,private val now:()->Long={System.currentTimeMillis()},private val recoveryStorageFor:((String)->SessionStorage)?=null,private val receiptTimeoutMillis:Long=HERMES_RECEIPT_TIMEOUT_MS,private val chatStorageFor:((String)->SessionStorage)?=null,private val legacyRecoveryStorageFor:((String)->SessionStorage)?=null) {
+class HermesConversationController(private val scope:CoroutineScope,private val storageFor:(String)->SessionStorage,private val api:suspend (JSONObject)->JSONObject,private val now:()->Long={System.currentTimeMillis()},private val recoveryStorageFor:((String)->SessionStorage)?=null,private val receiptTimeoutMillis:Long=HERMES_RECEIPT_TIMEOUT_MS,private val chatStorageFor:((String)->SessionStorage)?=null,private val legacyRecoveryStorageFor:((String)->SessionStorage)?=null,private val onDisplaySync:(JSONObject,HermesOwnerFence)->Unit={_,_->}) {
     init{require(receiptTimeoutMillis in 1..HERMES_RECEIPT_TIMEOUT_MS)}
     private val mutable=MutableStateFlow(HermesState())
     val state=mutable.asStateFlow()
@@ -257,6 +258,7 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         fun version(name:String)=(v.opt(name) as? Number)?.toDouble()==1.0
         val supported=v.optBoolean("conversation",false)&&version("conversationReplyVersion")&&version("conversationChatVersion")
         availability(supported,if(version("conversationContextVersion"))1 else 0,if(supported)1 else 0,if(supported)1 else 0)
+        mutable.value=mutable.value.copy(displaySyncVersion=if(supported&&version("conversationDisplaySyncVersion"))1 else 0)
     }
     fun edit(text:String){
         val question=answering(mutable.value)
@@ -272,7 +274,7 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         scheduleExpiry()
     }
     private fun accept(v:JSONObject){
-        require(validHermesView(v))
+        require(validHermesView(v,mutable.value.displaySyncVersion==1))
         if(mutable.value.submitted?.chat==true){acceptChat(v);return}
         if(!mutable.value.storageReady){mutable.value=mutable.value.copy(receipt=v.getJSONObject("receipt").toString(),busy=false);return}
         val r=v.getJSONObject("receipt");val question=v.has("question");val complete=r.getString("outcome") in setOf("complete","read-only")||v.optBoolean("continuable",false)
@@ -321,7 +323,7 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
             try{
                 val v=withTimeout(receiptTimeoutMillis){api(JSONObject().put("op","read").put("workspaceOwner",boundOwner).put("clientId",clientId).put("rootKey",root))}
                 if(!current())return@launch
-                if(!validHermesView(v)){checked(HermesReceiptCheck.INVALID);return@launch}
+                if(!validHermesView(v,mutable.value.displaySyncVersion==1)){checked(HermesReceiptCheck.INVALID);return@launch}
                 val claim=mutable.value.attemptKey
                 if(v.getString("rootKey")!=root||claim!=null&&v.getString("turnKey")!=claim){checked(HermesReceiptCheck.CORRELATION);return@launch}
                 if(!mutable.value.storageReady){checked(HermesReceiptCheck.STORAGE);return@launch}
@@ -451,7 +453,7 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         scheduleExpiry()
     }
     private fun chatReplyFailure(v:JSONObject,sent:HermesSubmitted):HermesDeliveryFailure? {
-        if(!validHermesView(v)||v.optInt("chatVersion")!=1||v.getString("rootKey")!=sent.rootKey||v.getString("turnKey")!=sent.turnKey||v.has("question"))return HermesDeliveryFailure(HermesDeliveryCategory.INVALID)
+        if(!validHermesView(v,mutable.value.displaySyncVersion==1)||v.optInt("chatVersion")!=1||v.getString("rootKey")!=sent.rootKey||v.getString("turnKey")!=sent.turnKey||v.has("question"))return HermesDeliveryFailure(HermesDeliveryCategory.INVALID)
         if(minOf(sent.expiresAt,v.getLong("expiresAt"))<=now())return HermesDeliveryFailure(HermesDeliveryCategory.EXPIRED)
         // These fields are only published for closed turns by the producer.
         // A valid running receipt without final text/facts is not a recovered reply.
@@ -474,12 +476,27 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         val text=v.optJSONObject("assistantReply")?.getString("text")?:v.optJSONObject("toolSummary")?.getString("text")?:"No reply text was returned. Nothing was automatically resent."
         val expiry=minOf(sent.expiresAt,v.getLong("expiresAt"))
         val entry=HermesChatEntry("reply:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant","reply",if(expiry>now())text else "",expiry,settled=true)
+        val sync=v.optJSONObject("displaySync")?.takeIf{current.displaySyncVersion==1&&validHermesDisplaySync(it)&&expiry>now()}
         val summary=v.optJSONObject("toolSummary")?.getString("text")?.takeIf{it!=text}?.let{HermesChatEntry("tools:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant","reply",if(expiry>now())it else "",expiry,settled=true)}
         val replies=listOfNotNull(entry,summary)
         val timeline=current.timeline.filterNot{it.id in replies.map{e->e.id}}.flatMap{if(it.id=="chat-status:${sent.turnKey}")replies else listOf(it)}.let{if(it.any{e->e.id==entry.id})it else it+replies}
-        val next=current.copy(busy=false,rootKey=null,attemptKey=null,view=null,receipt=v.getJSONObject("receipt").toString(),submitted=sent.copy(closed=true,expiresAt=expiry),timeline=timeline,notice="")
+        val syncId="sync:${sent.turnKey}";val freshSync=sync!=null&&current.timeline.none{it.id==syncId}
+        val withSync=if(freshSync)timeline+HermesChatEntry(syncId,sent.rootKey,sent.turnKey,"assistant","reply","Saved — syncing…",expiry,settled=true) else timeline
+        val next=current.copy(busy=false,rootKey=null,attemptKey=null,view=null,receipt=v.getJSONObject("receipt").toString(),submitted=sent.copy(closed=true,expiresAt=expiry),timeline=withSync,notice="")
         val durable=persist(next)
         mutable.value=durable;scheduleExpiry()
+        if(freshSync)ownerFence()?.let{onDisplaySync(JSONObject(v.toString()),it)}
+    }
+    internal fun displaySyncFeedback(fence:HermesOwnerFence,turn:String,text:String){
+        if(!isCurrent(fence)||mutable.value.submitted?.turnKey!=turn||!mutable.value.storageReady)return
+        val next=mutable.value.copy(timeline=mutable.value.timeline.map{if(it.id=="sync:$turn"&&it.expiresAt>now())it.copy(text=text) else it})
+        try{mutable.value=persist(next)}catch(_:Exception){/* Preserve original claim and finite storage diagnostic. */}
+    }
+    internal fun interruptDisplaySync(boundOwner:String,turn:String){
+        val s=mutable.value
+        if(s.ownerKey!=boundOwner||!s.storageReady)return
+        val next=s.copy(timeline=s.timeline.map{if(it.id=="sync:$turn"&&it.text.contains("syncing…"))it.copy(text="Saved — refresh interrupted; visibility not fully confirmed.") else it})
+        if(next.timeline!=s.timeline)try{mutable.value=persist(next)}catch(_:Exception){/* Keep protected state blocked. */}
     }
     fun newRequest(){
         val s=mutable.value;if(owner==null||!s.storageReady)return

@@ -36,7 +36,7 @@ export function buildApp(options: { taskActions?:TaskActions; calendarRefresh?:(
   app.register(async scope => {
     // Authenticated discovery only: no capability, actor, bridge URL or secret.
     scope.get('/api/v1/hermes/capabilities',async()=>({taskActions:!!options.taskActions&&!!options.auth}))
-    scope.get('/api/v1/hermes/action-capabilities',async request=>({productActions:!!options.taskActions&&!!options.auth,conversation:!!options.taskActions&&!!options.auth,conversationContextVersion:1,conversationReplyVersion:1,conversationChatVersion:1,...(authenticatedOwner(request)?{workspaceOwner:authenticatedOwner(request)}:{})}))
+    scope.get('/api/v1/hermes/action-capabilities',async request=>({productActions:!!options.taskActions&&!!options.auth,conversation:!!options.taskActions&&!!options.auth,conversationContextVersion:1,conversationReplyVersion:1,conversationChatVersion:1,conversationDisplaySyncVersion:1,...(authenticatedOwner(request)?{workspaceOwner:authenticatedOwner(request)}:{})}))
     if(options.taskActions){
       scope.post(CONVERSATION_PATH,{bodyLimit:20000,logLevel:'silent',config:{rateLimit:{max:12,timeWindow:'1 minute'}}},async(request,reply)=>{
         const owner=authenticatedOwner(request)
@@ -49,7 +49,7 @@ export function buildApp(options: { taskActions?:TaskActions; calendarRefresh?:(
         request.raw.once('aborted',stop)
         const onClose=()=>{if(!reply.raw.writableEnded)stop()}
         reply.raw.once('close',onClose)
-        try{return await options.taskActions!.converse(input,owner,abort.signal)}
+        try{return await options.taskActions!.converse(input,owner,abort.signal,request.headers['x-dcc-display-sync']==='1')}
         catch(error){
           const conflict=error instanceof Error&&['conversation_conflict','active_conversation','closed_question','intent_conflict','executor_conflict'].includes(error.message)
           return reply.code(conflict?409:502).send({message:conflict?'This conversation is closed, already answered, or another request is active. No automatic resend.':'Request not confirmed. Effects may have saved. No automatic resend.'})

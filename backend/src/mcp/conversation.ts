@@ -8,7 +8,7 @@ import {validActionReceipt,type ActionReceipt} from './action-receipt.js'
 import {validGuard} from './conversation-validation.js'
 import {SqlIntentStore,IntentStoreError} from './intent-store.js'
 import {type IntentRecord,type ConversationGuard} from './request-intent.js'
-import {type ServiceTransport,canonicalJson} from './service-transport.js'
+import {type ServiceTransport,type DisplaySync,canonicalJson} from './service-transport.js'
 import {validAssistantReply,type AssistantReply} from './assistant-reply.js'
 
 export const CONVERSATION_PATH='/api/v1/hermes/conversation'
@@ -25,7 +25,7 @@ const hash=(s:string)=>createHash('sha256').update(s).digest('hex')
 function address(s:string){const h=hash(s);return `${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-a${h.slice(17,20)}-${h.slice(20,32)}`}
 const key=(s:unknown):s is string=>typeof s==='string'&&/^\w[\w-]{15,79}$(?![\s\S])/.test(s)
 export type ConversationInput={op:'start';clientId:string;key:string;prompt:string;tabId?:string;context?:ConversationReference;replyVersion?:1;chatVersion?:1}|{op:'answer';clientId:string;rootKey:string;key:string;parentKey:string;questionId:string;answer:string}|{op:'read'|'cancel';clientId:string;rootKey:string}
-export type ConversationReply={version:1;rootKey:string;turnKey:string;expiresAt:number;questions:number;original?:string;question?:Clarification&{id:string};receipt:ActionReceipt;continuable?:boolean;assistantReply?:AssistantReply;replyUnavailable?:true;chatVersion?:1;toolSummary?:AssistantReply}
+export type ConversationReply={version:1;rootKey:string;turnKey:string;expiresAt:number;questions:number;original?:string;question?:Clarification&{id:string};receipt:ActionReceipt;continuable?:boolean;assistantReply?:AssistantReply;replyUnavailable?:true;chatVersion?:1;toolSummary?:AssistantReply;displaySync?:DisplaySync}
 type Turn={key:string;fingerprint:string}
 type Pending={version:1;owner:string;clientId:string;rootKey:string;tabId?:string;createdAt:number;expiresAt:number;status:'running'|'question'|'closed';original?:string;answers:string[];questions:number;turns:Turn[];turnKey:string;prompt?:string;guard?:ConversationGuard;question?:Clarification&{id:string};receipt:ActionReceipt;context?:ConversationReference;contextual?:true;continuable?:boolean;replyVersion?:1;assistantReply?:AssistantReply;replyUnavailable?:true;chatVersion?:1;toolSummary?:AssistantReply}
 type Row={id:string;kind:string;version:number;data:unknown}
@@ -136,7 +136,7 @@ export class Conversations {
     p.status='running';delete p.question;p.receipt=blank(p.turnKey,'Request not yet confirmed. No automatic resend.')
     return true
   }
-  async handle(input:ConversationInput,owner:string,signal?:AbortSignal):Promise<ConversationReply>{
+  async handle(input:ConversationInput,owner:string,signal?:AbortSignal,displaySync=false):Promise<ConversationReply>{
     if(!validConversationInput(input)||!owner)return fail('invalid_arguments')
     const {pool,store,transport}=this.options,now=(this.options.now??Date.now)(),rootKey=input.op==='start'?input.key:input.rootKey
     const id=address(KIND+owner+rootKey),slotId=address(SLOT+owner+input.clientId)
@@ -266,6 +266,16 @@ export class Conversations {
         pending=current;await finish.query('COMMIT')
       }catch(error){try{await finish.query('ROLLBACK')}catch{/* No replay. */}throw error}finally{finish.release()}
     }
-    return replyOf(pending)
+    const reply=replyOf(pending)
+    if(displaySync&&input.op!=='cancel'&&pending.chatVersion===1&&pending.status==='closed'&&pending.expiresAt>(this.options.now??Date.now)()){
+      try{
+        const record=await store.read(pending.turnKey)
+        if(record?.guard?.chatVersion===1&&record.guard.binding===hash(canonicalJson([owner,input.clientId,rootKey]))){
+          const facts=await transport.displaySync(record.calls)
+          if(facts&&pending.expiresAt>(this.options.now??Date.now)())reply.displaySync=facts
+        }
+      }catch{/* Display read failure never changes the accepted reply or retries work. */}
+    }
+    return reply
   }
 }

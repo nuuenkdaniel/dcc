@@ -18,6 +18,31 @@ Frontend runs independently at `http://localhost:5173`, preserving the existing 
 
 ## Conversation-first chat
 
+### Optional native display synchronization
+
+Authenticated discovery advertises `conversationDisplaySyncVersion: 1`. Only
+requests carrying `X-Dcc-Display-Sync: 1` can receive optional `displaySync` on the
+existing conversation response. No execution admission, fingerprint, runtime
+policy, model prompt or journal schema changes. Old native/web envelopes and
+strict validators remain unchanged when the header is absent.
+
+The projection requires a live closed chat root and matching owner/client/root
+journal binding. It checks actor-scoped durable operation receipts against full
+bounded journal commands/results (48 calls / 16 writes), not natural prose or the
+four-target receipt. Output is at most 16 affected task/calendar identities and
+16 KiB: task result versions plus projected display fields; saved calendar
+mutation/calendar/resource-hash/UID/date identities. No provider URL, raw result,
+notes, description or capability is added. Invalid/missing evidence grants no
+display confirmation. Provider/DB transport errors do not retry a command.
+
+Projection uses existing SQL receipts and the configured cache-only calendar
+snapshot accessor, never the writer or calendar refresh endpoint. Resource/UID
+ambiguity remains pending; deletion and series completion are not certified from
+absence or one cached occurrence. The native client performs finite cache GETs
+and reconciles local tasks without uploading phone edits. Source tests are in
+`test/mcp/conversation-first.test.ts`; synthetic SQL/provider adapters do not
+establish live model, PostgreSQL concurrency or production acceptance.
+
 The explicitly negotiated conversation route (`chatVersion: 1`, with
 `replyVersion: 1`) treats each explicit
 Send as an independent conversational turn with bounded recent history. Hermes

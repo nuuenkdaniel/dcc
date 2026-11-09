@@ -52,7 +52,9 @@ internal fun decodeHermesSaved(raw:String,owner:String,now:Long,recovery:Boolean
         val settled=optionalKey("settledReceiptKey")
         if(d.has("editedAfterSubmit"))require(d.get("editedAfterSubmit") is Boolean)
         if(d.has("historyPruned"))require(d.get("historyPruned") is Boolean)
-        val entries=if(d.has("timeline"))readChat(d.getJSONArray("timeline")) else emptyList()
+        val entries=if(d.has("timeline"))readChat(d.getJSONArray("timeline")).map{
+            if(it.id.startsWith("sync:")&&it.text.contains("syncing…"))it.copy(text="Saved — refresh interrupted; visibility not confirmed.") else it
+        } else emptyList()
         val context=optionalObject("draftContext")?.also{require(validHermesReference(it))}?.toString()
         var state=HermesState(draft=draft,answer=answer,view=view,receipt=receipt,rootKey=root,attemptKey=attempt,
             editedAfterSubmit=d.optBoolean("editedAfterSubmit",false),submitted=optionalObject("submitted")?.let(::submittedOf),

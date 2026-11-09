@@ -37,6 +37,46 @@ Do not commit local.properties, signing keys, credentials, SDKs or generated APK
 
 ### Active conversation-first chat
 
+#### Automatic assistant-write visibility
+
+Discovery advertises `conversationDisplaySyncVersion: 1`. Updated native requests
+opt in with `X-Dcc-Display-Sync: 1` on the existing conversation route, including
+the one delivery-recovery read. No body, tool permission or execution fingerprint
+changes. Without negotiation, the old envelope is unchanged. With negotiation,
+optional bounded `displaySync` facts come from the full bound journal and durable
+operation receipts, not assistant/summary prose or the four-target history card.
+
+After durable reply acceptance, WorkspaceModel performs targeted read-only
+readback even when Tasks is not mounted or chat is closed. Manual-task GET results
+use the existing three-way merge, serialized with manual Sync, revision checks
+and guarded preference commits. Dirty edits, deletion markers and conflicts are
+retained; nothing is automatically uploaded. The preferences listener feeds the
+ordinary Tasks renderer. No-tool/missing-fact replies initiate no domain reads.
+
+Calendar reads use only `/api/v1/calendar/snapshot`, never provider refresh POST.
+The six-attempt schedule is 0, 5, 15, 30, 50 and 75 seconds from calendar readback
+start, with 12 seconds per request and a 90-second enclosing display-sync budget.
+Tests can inject shorter timing through the internal synthetic-host seam. Current
+status is attached to its turn: Saved — syncing, confirmed, conflict, read failure,
+or saved but not yet visible. Tool-summary text is labelled historical when a
+current visibility status exists; natural assistant prose is not rewritten.
+
+Confirmation requires the exact calendar/resource SHA-256/UID/mutation marker,
+start/end, all-day and occurrence identity in the authoritative cached snapshot.
+Same-title events and newer timestamps alone cannot confirm. Deletion, series
+changes or missing identity remain pending rather than deriving success from
+absence or one occurrence. Cache coverage/provider latency can outlast the budget.
+X/reopen does not restart polling; owner, turn, editor generation, expiry and
+cancellation fence late results. Process restore shows interrupted refresh status
+without automatically restarting it or replaying writes.
+
+Focused source targets: `HermesDisplaySyncTest`, and the task/calendar visibility
+journeys in `HermesShellTest`, including
+`completedHermesTaskBatchAppearsWithoutManualSyncAndPreservesOfflineEdits` and
+`delayedCalendarSnapshotRequiresExactResourceAndXReopenDoesNotRestartPolling`.
+All HTTP test adapters terminate before network. Parent execution, not source
+fixtures, establishes passing unit/build/native results; none proves live effects.
+
 The composer requires `conversationChatVersion: 1` and reply support before
 sending a `chatVersion: 1` turn, and validates the echoed version. Older reply
 support alone cannot enable it. Unsupported/error responses never cause a

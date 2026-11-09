@@ -17,29 +17,62 @@ import org.json.JSONArray
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.collect
 
 private const val ORIGIN = "https://dcc.home.captnuu.online"
 data class WorkspaceState(val restoring:Boolean=false,val restorePending:Boolean=false,val signedIn:Boolean=false,val busy:Boolean=false,val notice:String="Sign in to connect to your workspace.",val pending:List<String> = emptyList(),val snapshots:Map<String,String> = emptyMap())
 
-class WorkspaceModel(application:Application):AndroidViewModel(application) {
+/** Terminal I/O injection for isolated native hosts; no alternate sync logic. */
+internal class WorkspaceModelDependencies(
+    val storage:(String,Boolean,Boolean)->SessionStorage,
+    val httpClient:OkHttpClient?,
+    val registerConnectivity:Boolean,
+    val clearCachedMailBodies:()->Unit,
+    val displaySyncTiming:HermesDisplaySyncTiming=HermesDisplaySyncTiming()
+)
+private fun workspaceModelDependencies(application:Application)=WorkspaceModelDependencies(
+    storage={name,strict,existingKeyOnly->EncryptedSessionStorage(application,name,strict,existingKeyOnly)},
+    httpClient=null,
+    registerConnectivity=true,
+    clearCachedMailBodies={application.noBackupFilesDir.listFiles()?.filter{Regex("mail-body-[a-f0-9]{64}\\.enc").matches(it.name)}?.forEach{it.delete()};Unit}
+)
+
+class WorkspaceModel internal constructor(application:Application,private val dependencies:WorkspaceModelDependencies):AndroidViewModel(application) {
+    constructor(application:Application):this(application,workspaceModelDependencies(application))
+    private fun stored(name:String,strict:Boolean=false,existingKeyOnly:Boolean=false)=dependencies.storage(name,strict,existingKeyOnly)
     private val mutable = MutableStateFlow(WorkspaceState(restoring=true,busy=true,notice="Restoring session…"))
     val state = mutable.asStateFlow()
-    private fun clearWorkspaceCache(){cache.clear();getApplication<Application>().noBackupFilesDir.listFiles()?.filter{Regex("mail-body-[a-f0-9]{64}\\.enc").matches(it.name)}?.forEach{it.delete()}}
-    private val queue=MutationQueue(EncryptedSessionStorage(application,"outbox.enc",strict=true))
+    private fun clearWorkspaceCache(){cache.clear();dependencies.clearCachedMailBodies()}
+    private val queue=MutationQueue(stored("outbox.enc",strict=true))
     private val queueLock=Mutex()
-    private val connectivity=application.getSystemService(android.net.ConnectivityManager::class.java)
+    internal val manualTaskLock=Mutex()
+    private var displaySyncJob:Job?=null
+    private var displaySyncClaim:Triple<HermesOwnerFence,String,Long>?=null
+    private val connectivity=if(dependencies.registerConnectivity)application.getSystemService(android.net.ConnectivityManager::class.java) else null
     private val networkCallback=object:android.net.ConnectivityManager.NetworkCallback(){override fun onAvailable(network:android.net.Network){viewModelScope.launch{if(!mutable.value.restoring&&(mutable.value.signedIn||mutable.value.restorePending))refresh()}}}
-    private val cache=EncryptedSessionStorage(application,"workspace.enc")
-    private val sessions=PersistentSessionJar(EncryptedSessionStorage(application),ORIGIN.toHttpUrl())
-    private val client = OkHttpClient.Builder().callTimeout(20,TimeUnit.SECONDS)
+    private val cache=stored("workspace.enc")
+    private val sessions=PersistentSessionJar(stored("session.enc"),ORIGIN.toHttpUrl())
+    private val client = (dependencies.httpClient?.newBuilder()?:OkHttpClient.Builder()).callTimeout(20,TimeUnit.SECONDS)
         .followRedirects(false).followSslRedirects(false).cookieJar(sessions).build()
-    val hermes=HermesConversationController(viewModelScope,{owner->EncryptedSessionStorage(application,"hermes-$owner.enc",strict=true)},{body->api("/api/v1/hermes/conversation",body)},recoveryStorageFor={owner->EncryptedSessionStorage(application,"hermes-chat-$owner-separate-v1.enc",strict=true,existingKeyOnly=true)},chatStorageFor={owner->EncryptedSessionStorage(application,"hermes-chat-$owner-v1.enc",strict=true)},legacyRecoveryStorageFor={owner->EncryptedSessionStorage(application,"hermes-$owner-separate-v1.enc",strict=true,existingKeyOnly=true)})
+    val hermes:HermesConversationController=HermesConversationController(viewModelScope,{owner->stored("hermes-$owner.enc",strict=true)},{body->api("/api/v1/hermes/conversation",body)},recoveryStorageFor={owner->stored("hermes-chat-$owner-separate-v1.enc",strict=true,existingKeyOnly=true)},chatStorageFor={owner->stored("hermes-chat-$owner-v1.enc",strict=true)},legacyRecoveryStorageFor={owner->stored("hermes-$owner-separate-v1.enc",strict=true,existingKeyOnly=true)},onDisplaySync=::scheduleDisplaySync)
     private suspend fun bindHermes(session:JSONObject){
         val owner=session.optString("workspaceOwner")
         if(Regex("^[a-f0-9]{64}$").matches(owner))hermes.bind(owner) else hermes.unbind()
         try{hermes.chatCapabilities(api("/api/v1/hermes/action-capabilities"))}catch(_:Exception){hermes.availability(false)}
     }
-    init { connectivity.registerDefaultNetworkCallback(networkCallback);viewModelScope.launch {
+    init {
+      viewModelScope.launch{hermes.state.collect{
+          displaySyncClaim?.let{claim->if(!displaySyncCurrent(claim)){
+              displaySyncJob?.cancel();displaySyncJob=null;displaySyncClaim=null
+              hermes.interruptDisplaySync(claim.first.owner,claim.second)
+          }}
+      }}
+      connectivity?.registerDefaultNetworkCallback(networkCallback);viewModelScope.launch {
         try { withContext(Dispatchers.IO){sessions.restore()
             if(sessions.hasSession()){mutable.value=mutable.value.copy(pending=queue.list().map{it.toString()})};if(sessions.hasSession())cache.read()?.let {raw->
                 val data=JSONObject(raw);mutable.value=mutable.value.copy(snapshots=data.keys().asSequence().associateWith{data.getString(it)})
@@ -51,7 +84,7 @@ class WorkspaceModel(application:Application):AndroidViewModel(application) {
         }
         finally {mutable.value=mutable.value.copy(restoring=false,busy=false)}
     } }
-    override fun onCleared(){hermes.unbind();connectivity.unregisterNetworkCallback(networkCallback);super.onCleared()}
+    override fun onCleared(){displaySyncJob?.cancel();hermes.unbind();connectivity?.unregisterNetworkCallback(networkCallback);super.onCleared()}
     private suspend fun restoreSession() {
         if(!withContext(Dispatchers.IO){sessions.hasSession()}) {hermes.unbind();mutable.value=WorkspaceState();return}
         val result=JSONObject(request("/api/v1/auth/session"))
@@ -64,15 +97,16 @@ class WorkspaceModel(application:Application):AndroidViewModel(application) {
         bindHermes(result)
         refreshAll()
     }
-    private suspend fun request(path:String,body:JSONObject?=null,ownerFence:HermesOwnerFence?=null):String {
+    private suspend fun request(path:String,body:JSONObject?=null,ownerFence:HermesOwnerFence?=null,boundedRead:Boolean=false):String {
       val scoped=path=="/api/v1/hermes/conversation"||ownerFence!=null
       val fence=ownerFence?:if(scoped)hermes.ownerFence()?.takeIf{it.owner==body?.optString("workspaceOwner")} else null
       return withContext(Dispatchers.IO) {
         val builder=Request.Builder().url(ORIGIN+path).header("Origin",ORIGIN)
         if(body!=null) builder.post(body.toString().toRequestBody("application/json".toMediaType()))
         val conversation=path=="/api/v1/hermes/conversation"
-        val callClient=if(conversation)hermesConversationClient(client,body?.optString("op")) else if(path.endsWith("/extract")||path.endsWith("/session")||path.endsWith("/material"))client.newBuilder().callTimeout(180,TimeUnit.SECONDS).build() else client
-        val response=if(conversation)awaitHermesHttp(callClient,builder.build()) else callClient.newCall(builder.build()).execute().use{HermesHttpResult(it.code,if(it.isSuccessful)it.body?.string()?:"{}" else "{}")}
+        if(conversation&&hermes.state.value.displaySyncVersion==1)builder.header("X-Dcc-Display-Sync","1")
+        val callClient=if(boundedRead)hermesConversationClient(client,"read") else if(conversation)hermesConversationClient(client,body?.optString("op")) else if(path.endsWith("/extract")||path.endsWith("/session")||path.endsWith("/material"))client.newBuilder().callTimeout(180,TimeUnit.SECONDS).build() else client
+        val response=if(conversation||boundedRead)awaitHermesHttp(callClient,builder.build()) else callClient.newCall(builder.build()).execute().use{HermesHttpResult(it.code,if(it.isSuccessful)it.body?.string()?:"{}" else "{}")}
             if(response.code==401) {
                 withContext(Dispatchers.Main.immediate){
                     // A delayed response from a prior Hermes/account generation
@@ -93,7 +127,70 @@ class WorkspaceModel(application:Application):AndroidViewModel(application) {
     }
     suspend fun hermesTaskReadback(fence:HermesOwnerFence):ManualTaskReadback {
         check(hermes.isCurrent(fence)){"Workspace changed"}
-        return parseManualTaskReadback(JSONObject(request("/api/v1/planner/manual-tasks",ownerFence=fence)))
+        return parseManualTaskReadback(JSONObject(request("/api/v1/planner/manual-tasks",ownerFence=fence,boundedRead=true)))
+    }
+    private fun displaySyncCurrent(claim:Triple<HermesOwnerFence,String,Long>) =
+        mutable.value.signedIn&&hermes.isCurrent(claim.first)&&hermes.state.value.storageReady&&hermes.state.value.submitted?.turnKey==claim.second&&System.currentTimeMillis()<claim.third
+
+    private fun scheduleDisplaySync(reply:JSONObject,fence:HermesOwnerFence){
+        val facts=reply.optJSONObject("displaySync")?:return
+        if(!validHermesDisplaySync(facts))return
+        val claim=Triple(fence,reply.getString("turnKey"),reply.getLong("expiresAt"))
+        if(!displaySyncCurrent(claim))return
+        displaySyncJob?.cancel();displaySyncClaim=claim
+        displaySyncJob=viewModelScope.launch{
+            fun current()=displaySyncCurrent(claim)
+            var tasks="";var calendar=""
+            fun feedback(){if(current())hermes.displaySyncFeedback(fence,claim.second,listOf(tasks,calendar).filter{it.isNotEmpty()}.joinToString(" "))}
+            try{withTimeout(dependencies.displaySyncTiming.budgetMillis){
+                val taskFacts=facts.getJSONArray("tasks").objects()
+                if(taskFacts.isNotEmpty()){
+                    tasks=try{manualTaskLock.withLock{
+                        val preferences=getApplication<Application>().getSharedPreferences("dcc-local-tasks",0)
+                        val before=preferences.getString("tasks","[]")?:"[]";val base=preferences.getString("sync-base","[]")?:"[]"
+                        val revision=preferences.getLong("sync-base-version",0)
+                        val remote=withTimeout(dependencies.displaySyncTiming.readMillis){hermesTaskReadback(fence)}
+                        if(!current())throw CancellationException()
+                        if(before!=preferences.getString("tasks","[]")||base!=preferences.getString("sync-base","[]")||revision!=preferences.getLong("sync-base-version",0))"Tasks saved — newer phone edits retained; visibility not confirmed."
+                        else{
+                            val merged=mergeManualTaskReadback(base,before,remote,maxOf(revision,taskFacts.maxOf{it.getLong("version")}))
+                            if(merged==null)"Tasks saved — readback is not current yet."
+                            else if(merged.conflicts.isNotEmpty())"Tasks saved — local conflicts retained."
+                            else{
+                                check(preferences.edit().putString("tasks",merged.tasks).putString("sync-base",merged.base).putLong("sync-base-version",merged.version).commit())
+                                val local=parseManualTaskReadback(JSONObject().put("version",merged.version).put("data",JSONObject().put("tasks",JSONArray(merged.tasks))))
+                                if(hermesTasksPresent(taskFacts,remote)&&hermesTasksPresent(taskFacts,local))"Tasks synced — visible on this phone." else "Tasks refreshed — requested changes not all visible."
+                            }
+                        }
+                    }}catch(error:CancellationException){
+                        if(error !is TimeoutCancellationException)throw error
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        "Tasks saved — refresh timed out; local work retained."
+                    }catch(_:Exception){"Tasks saved — refresh unavailable; local work retained."}
+                }
+                val calendarFacts=facts.getJSONArray("calendar").objects()
+                if(calendarFacts.isNotEmpty()){
+                    calendar="Calendar saved — syncing…";feedback()
+                    calendar=when(readHermesCalendar(calendarFacts,dependencies.displaySyncTiming,::current,{
+                        JSONObject(request("/api/v1/calendar/snapshot",ownerFence=fence,boundedRead=true))
+                    }){snapshot->
+                        if(!current())throw CancellationException()
+                        val next=mutable.value.snapshots+("calendar" to snapshot.toString())
+                        // Publish/cache as one non-suspending owner-fenced step;
+                        // a logout/new owner cannot interleave a late cache write.
+                        cache.write(JSONObject(next).toString())
+                        if(current())mutable.value=mutable.value.copy(snapshots=mutable.value.snapshots+("calendar" to snapshot.toString()))
+                    }){
+                        HermesCalendarSyncResult.CONFIRMED->"Calendar synced — visible in the server snapshot."
+                        HermesCalendarSyncResult.PENDING->"Calendar saved — not yet visible; automatic checks finished."
+                        HermesCalendarSyncResult.ERROR->"Calendar saved — snapshot refresh unavailable; visibility not confirmed."
+                    }
+                }
+                feedback()
+            }}catch(_:TimeoutCancellationException){if(current())hermes.displaySyncFeedback(fence,claim.second,"Saved — refresh budget finished; visibility not fully confirmed.")}
+            catch(error:CancellationException){throw error}
+            catch(_:Exception){if(current())hermes.displaySyncFeedback(fence,claim.second,"Saved — refresh unavailable; local work retained; visibility not confirmed.")}
+        }
     }
     suspend fun mailSettingsApi(path:String,body:JSONObject?,fence:HermesOwnerFence):JSONObject {
         require(path in setOf("/api/v1/mail/preferences","/api/v1/mail/refresh"))
@@ -172,7 +269,7 @@ class WorkspaceModel(application:Application):AndroidViewModel(application) {
     }
     suspend fun mailBody(id:String):String=withContext(Dispatchers.IO){
         require(Regex("^[a-f0-9]{64}$").matches(id)){"Invalid message ID"}
-        val storage=EncryptedSessionStorage(getApplication(),"mail-body-$id.enc")
+        val storage=stored("mail-body-$id.enc")
         storage.read()?.let{return@withContext it}
         val body=api("/api/v1/mail/message/$id").getString("body");storage.write(body);body
     }

@@ -13,6 +13,9 @@ import {ServicePool} from './service-pool.js'
 import {CalendarHarness,config} from './calendar-harness.js'
 import {createNonRecurringCalendarWriter} from '../../src/calendar-write.js'
 import {SqlIntentStore} from '../../src/mcp/intent-store.js'
+import {validConversationView} from '../../src/mcp/conversation-wire.js'
+import {createHash} from 'node:crypto'
+import {validManualTask} from '../../src/manual-tasks.js'
 const clientId='11111111-1111-4111-a111-111111111111',origin='http://synthetic.invalid',time=Date.parse('2026-12-31T12:00:00-05:00')
 const result=(v:any)=>v.structuredContent.result
 async function fixture(script:(client:Client,input:TaskBridgeInput)=>Promise<string>,db:ServicePool=new IntentPool(),dependencies:Pick<ServiceOptions,'calendarSnapshot'|'guardedCalendarWriter'>={}){
@@ -29,7 +32,7 @@ async function fixture(script:(client:Client,input:TaskBridgeInput)=>Promise<str
   app=buildApp({plannerPool:db.pool,taskActions:actions,auth:{username:'synthetic',password:'synthetic-only',origin,store:{put:async id=>{sessions.add(id)},has:async id=>sessions.has(id),remove:async id=>{sessions.delete(id)}}}})
   const login=await app.inject({method:'POST',url:'/api/v1/auth/login',headers:{origin},payload:{username:'synthetic',password:'synthetic-only'}})
   const cookie=login.cookies.find(c=>c.name==='daymark_session')!.value,owner=login.json().workspaceOwner
-  const post=(body:Record<string,unknown>,workspaceOwner=owner)=>app.inject({method:'POST',url:CONVERSATION_PATH,headers:{origin},cookies:{daymark_session:cookie},payload:{...body,workspaceOwner}})
+  const post=(body:Record<string,unknown>,workspaceOwner=owner,displaySync=false)=>app.inject({method:'POST',url:CONVERSATION_PATH,headers:{origin,...(displaySync?{'x-dcc-display-sync':'1'}:{})},cookies:{daymark_session:cookie},payload:{...body,workspaceOwner}})
   const start=(key:string,prompt:string,entries:{role:string;text:string;at:number}[]=[])=>({op:'start',clientId,key,prompt,replyVersion:1,chatVersion:1,context:{version:1,entries}})
   const capabilities=()=>app.inject({url:'/api/v1/hermes/action-capabilities',cookies:{daymark_session:cookie}})
   return {app,db,post,start,capabilities,owner,calls:()=>calls,store:new SqlIntentStore(db.pool,'chat-fixture')}
@@ -54,6 +57,115 @@ test('ordinary chat, natural clarification and topic changes have text without t
     assert.equal((await h.post(h.start('wrong_owner_chat_01','hello?'),'wrong-owner')).statusCode,409)
   }finally{await h.app.close()}
 })
+test('display sync is opt-in, journal grounded beyond four targets and never replays writes',async()=>{
+  const h=await fixture(async client=>{
+    for(let i=1;i<=12;i++){
+      const current=result(await client.callTool({name:'list_tasks',arguments:{from:'2026-12-31',to:'2027-01-01',limit:1}}))
+      assert.equal(result(await client.callTool({name:'create_task',arguments:{title:`Synthetic ${i}`,date:'2026-12-31',expectedVersion:current.data.collectionVersion}})).state,'applied')
+    }
+    return 'Created twelve synthetic tasks.'
+  })
+  try{
+    assert.equal((await h.capabilities()).json().conversationDisplaySyncVersion,1)
+    const input=h.start('display_sync_twelve_01','Create twelve synthetic tasks')
+    assert.equal((await h.app.inject({method:'POST',url:CONVERSATION_PATH,headers:{origin,'x-dcc-display-sync':'1'},payload:{...input,workspaceOwner:h.owner}})).statusCode,401)
+    assert.equal(h.calls(),0,'The display header is not authentication or dispatch authority')
+    const legacy=(await h.post(input)).json()
+    assert.equal(legacy.displaySync,undefined);assert.ok(validConversationView(legacy))
+    const modern=(await h.post({op:'read',clientId,rootKey:input.key},h.owner,true)).json()
+    assert.equal(modern.receipt.targets.length,4);assert.equal(modern.receipt.verified,4)
+    assert.equal(modern.displaySync.tasks.length,12);assert.deepEqual(modern.displaySync.calendar,[])
+    const stored=h.db.rows.get(COLLECTION)!
+    for(const fact of modern.displaySync.tasks){
+      const task=stored.data.tasks.find((t:any)=>t.id===fact.id)
+      assert.equal(fact.after.title,task.title);assert.equal(fact.after.date,task.date)
+      assert.ok(fact.version<=stored.version);assert.equal(Object.hasOwn(fact.after,'notes'),false)
+    }
+    assert.equal(validConversationView(modern),false,'Strict old clients never receive opted-in fields')
+    assert.deepEqual((await h.post({op:'read',clientId,rootKey:input.key})).json(),legacy)
+    assert.equal((await h.post({op:'read',clientId,rootKey:input.key},'wrong-owner',true)).statusCode,409)
+    assert.equal(h.calls(),1);assert.equal(stored.data.tasks.length,12)
+    const receipt=[...h.db.rows].find(([,row])=>row.kind==='dcc-mcp-operation-v1')
+    assert.ok(receipt);h.db.rows.delete(receipt[0])
+    assert.equal((await h.post({op:'read',clientId,rootKey:input.key},h.owner,true)).json().displaySync,undefined,'Missing receipt evidence must not silently shrink twelve operations to a partial confirmation')
+    assert.equal(h.calls(),1);assert.equal(stored.data.tasks.length,12)
+  }finally{await h.app.close()}
+})
+test('success-looking prose without writes has no display sync authority even when opted in',async()=>{
+  const h=await fixture(async()=> 'Created 12 tasks. Calendar saved and synced.')
+  try{
+    const reply=(await h.post(h.start('display_sync_no_tool_01','Explain an example'),h.owner,true)).json()
+    assert.equal(reply.displaySync,undefined);assert.equal(h.db.rows.has(COLLECTION),false)
+    assert.ok(validConversationView(reply));assert.equal(h.calls(),1)
+  }finally{await h.app.close()}
+})
+test('sixteen task updates project only native task display fields while preserving additive storage fields',async()=>{
+  const db=new IntentPool()
+  const tasks=Array.from({length:16},(_,i)=>({id:`existing-task-${i+1}`,title:`Synthetic original ${i+1}`,date:'2026-12-31',notes:'Synthetic retained note',completed:false,important:false,deleted:false,status:'active',remainingMinutes:25}))
+  assert.ok(tasks.every(validManualTask),'Additive-field tasks must be valid domain records')
+  db.seed({id:COLLECTION,kind:'manual-tasks',version:3,data:{tasks}})
+  const h=await fixture(async client=>{
+    const page=result(await client.callTool({name:'list_tasks',arguments:{from:'2026-12-31',to:'2027-01-01',limit:16}}))
+    assert.equal(page.state,'ok');assert.equal(page.data.items.length,16)
+    let version=page.data.collectionVersion
+    for(const task of page.data.items){
+      const saved=result(await client.callTool({name:'update_task',arguments:{id:task.id,title:`Updated ${task.id}`,expectedVersion:version}}))
+      assert.equal(saved.state,'applied');assert.equal(saved.id,task.id)
+      assert.equal(saved.version,version+1);version=saved.version
+    }
+    return 'Updated sixteen synthetic tasks.'
+  },db)
+  try{
+    const input=h.start('display_additive_sixteen_01','Update the sixteen existing synthetic tasks')
+    const response=await h.post(input,h.owner,true)
+    assert.equal(response.statusCode,200)
+    const reply=response.json(),stored=h.db.rows.get(COLLECTION)!
+    assert.equal(reply.assistantReply.text,'Updated sixteen synthetic tasks.')
+    assert.equal(reply.receipt.targets.length,4);assert.equal(reply.receipt.verified,4)
+    assert.equal(reply.displaySync.version,1);assert.equal(reply.displaySync.tasks.length,16)
+    assert.deepEqual(reply.displaySync.calendar,[]);assert.equal(stored.version,19)
+    const journal=await h.store.read(input.key)
+    assert.equal(journal.calls.filter(c=>c.command.tool==='update_task'&&c.result?.state==='applied').length,16)
+    assert.equal(h.calls(),1)
+    // Domain data must retain additive values; fixing the display contract is
+    // not permission to strip unknown fields from tasks or historical receipts.
+    for(const task of stored.data.tasks){
+      assert.ok(validManualTask(task));assert.equal(task.status,'active');assert.equal(task.remainingMinutes,25)
+      assert.equal(task.notes,'Synthetic retained note');assert.equal(task.title,`Updated ${task.id}`)
+    }
+    for(const fact of reply.displaySync.tasks){
+      assert.deepEqual(Object.keys(fact.after).sort(),['completed','date','deleted','important','title'],
+        'Task display facts must use only native task-specific fields, not generic receipt fields')
+      const task=stored.data.tasks.find((t:any)=>t.id===fact.id)
+      assert.ok(task);assert.equal(fact.after.title,task.title);assert.equal(fact.after.date,task.date)
+      assert.ok(fact.version>=4&&fact.version<=19)
+      assert.equal(Object.hasOwn(fact.after,'notes'),false)
+    }
+    assert.equal(new Set(reply.displaySync.tasks.map((t:any)=>t.id)).size,16)
+    assert.ok(Buffer.byteLength(JSON.stringify(reply.displaySync),'utf8')<=16384)
+    const read=(await h.post({op:'read',clientId,rootKey:input.key},h.owner,true)).json()
+    assert.deepEqual(read.displaySync,reply.displaySync);assert.equal(h.calls(),1)
+    assert.equal(h.db.rows.get(COLLECTION)!.version,19,'Readback must not replay updates')
+  }finally{await h.app.close()}
+})
+test('saved calendar projection carries exact cache identity without provider URLs or another PUT',async()=>{
+  const calendar=new CalendarHarness()
+  const h=await fixture(async client=>{
+    assert.equal(result(await client.callTool({name:'create_calendar_event',arguments:{title:'Synthetic event',calendarId:'Calendar_A',scope:'single',start:'2026-11-01T12:00:00Z',end:'2026-11-01T13:00:00Z',allDay:false}})).state,'saved')
+    return 'Saved; snapshot pending.'
+  },calendar,{calendarSnapshot:async()=>calendar.snapshot,guardedCalendarWriter:createNonRecurringCalendarWriter(calendar.pool,config,calendar.fetch)})
+  try{
+    const input=h.start('display_calendar_exact_01','Create a synthetic event')
+    const reply=(await h.post(input,h.owner,true)).json()
+    const fact=reply.displaySync.calendar[0],cal=calendar.snapshot.calendars[0]!
+    assert.equal(fact.calendarId,cal.id);assert.equal(fact.uid,fact.mutationId+'@daymark')
+    assert.equal(fact.resourceKey,createHash('sha256').update(new URL(fact.mutationId+'.ics',cal.url.endsWith('/')?cal.url:cal.url+'/').href).digest('hex'))
+    assert.equal(fact.start,'2026-11-01T12:00:00Z');assert.equal(fact.end,'2026-11-01T13:00:00Z')
+    assert.equal(Object.hasOwn(fact,'resource'),false);assert.equal(calendar.snapshot.events.length,0)
+    await h.post({op:'read',clientId,rootKey:input.key},h.owner,true)
+    assert.equal(calendar.puts,1);assert.equal(h.calls(),1)
+  }finally{await h.app.close()}
+})
 test('old reply-enabled clients retain clarification semantics and new chat requires its own version',async()=>{
   const h=await fixture(async(client,input)=>{
     if(input.chatVersion===undefined){
@@ -72,6 +184,7 @@ test('old reply-enabled clients retain clarification semantics and new chat requ
     const response=await h.post(old);assert.equal(response.statusCode,200)
     const question=response.json();assert.equal(question.receipt.outcome,'question');assert.ok(question.question)
     assert.equal(question.chatVersion,undefined);assert.equal(question.toolSummary,undefined)
+    assert.equal((await h.post(old,h.owner,true)).json().displaySync,undefined,'The display header cannot upgrade a legacy execution journal')
     const modern=h.start('explicit_new_chat_01','hello?')
     const next=(await h.post(modern)).json();assert.equal(next.chatVersion,1);assert.equal(next.assistantReply.text,'Hello! You can change the subject.')
     assert.deepEqual((await h.post({op:'read',clientId,rootKey:old.key})).json(),question)

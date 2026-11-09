@@ -16,6 +16,7 @@ import {projectReceiptFields,type ReceiptTarget,type ReceiptFields} from './acti
 
 export const COLLECTION='ccbf2a93-9be3-45bd-b039-1019cdb8276f'
 export const RECEIPT_KIND='dcc-mcp-operation-v1'
+export type DisplaySync={version:1;tasks:{id:string;version:number;after:ReceiptFields}[];calendar:{mutationId:string;calendarId:string;resourceKey:string|null;uid:string|null;start:string;end:string;allDay:boolean;deleted:boolean;recurrenceId:string|null}[]}
 type Row={id:string;kind:string;version:number;data:Record<string,unknown>}
 type Receipt={v:1;actorHash:string;key:string;fingerprint:string;tool:Command['tool'];state:Result['state'];result:Result;detail?:{before:ReceiptFields;after:ReceiptFields};change?:EventChange;writerPayloadJson?:string;writerPayloadHash?:string;guardedWriterVersion?:1;calendarCommand?:Command;browserTimerVersion?:1}
 export type ServiceOptions={
@@ -100,6 +101,56 @@ export class ServiceTransport implements Transport {
       const date=after.date??before.date
       return {...base,title,...(typeof date==='string'?{date}:{}),before,after,verification:verified?'verified':'unavailable'}
     }catch{return base}
+  }
+  /** Display-only facts from every bound write, never a dispatch/reconcile call.
+   * Calendar snapshot injection is cache-only. Missing identities stay pending. */
+  async displaySync(calls:{command:Command;result?:Result}[]):Promise<DisplaySync|undefined>{
+    if(calls.length>48||calls.filter(c=>TOOLS[c.command.tool].write).length>16)return undefined
+    const tasks=new Map<string,DisplaySync['tasks'][number]>(),calendar=new Map<string,DisplaySync['calendar'][number]>()
+    let snapshot:Snapshot|undefined
+    if(calls.some(c=>c.result?.state==='saved')&&this.options.calendarSnapshot)try{snapshot=await this.options.calendarSnapshot()}catch{/* pending, not provider access */}
+    for(const call of calls){
+      const {command,result}=call
+      if(!result||!TOOLS[command.tool].write)continue
+      const relevant=command.tool.includes('task')&&result.state==='applied'||command.tool.includes('calendar_event')&&result.state==='saved'
+      if(!relevant)continue
+      if(!validServiceResult(command,result))return undefined
+      try{
+        const key=String(command.args.operationKey),row=await this.row(this.options.pool,this.receiptId(key))
+        if(!row)return undefined
+        const receipt=this.receipt(row,key)
+        if(receipt.tool!==command.tool||receipt.fingerprint!==hash(canonicalJson(command))||canonicalJson(receipt.result)!==canonicalJson(result))return undefined
+        if(command.tool.includes('task')&&(!receipt.detail||!('version' in result)))return undefined
+        if(command.tool.includes('task')&&result.state==='applied'&&'version' in result&&receipt.detail){
+          const id=String(command.args.id)
+          if(result.id!==id)return undefined
+          // Native task display facts have a narrower contract than historical
+          // multi-domain receipt fields. Never strip additive task storage data.
+          const fields=receipt.detail.after
+          if(!plainRecord(fields)||typeof fields.title!=='string'||!fields.title.trim()||fields.title.length>240||!validDate(fields.date)||typeof fields.completed!=='boolean')return undefined
+          const after:ReceiptFields={title:fields.title,date:fields.date,completed:fields.completed}
+          for(const key of ['deleted','important'] as const)if(Object.hasOwn(fields,key)){
+            if(typeof fields[key]!=='boolean')return undefined
+            after[key]=fields[key]
+          }
+          tasks.set(id,{id,version:checkedVersion(result.version),after})
+        }
+        if(command.tool.includes('calendar_event')&&result.state==='saved'){
+          const {change}=this.guardedPayload(receipt)
+          if(change.id!==result.mutationId)return undefined
+          const creating=command.tool==='create_calendar_event'
+          const selected=snapshot?.events.find(e=>e.calendarId===change.calendarId&&e.id===change.eventId)
+          const saved=snapshot?.events.filter(e=>e.calendarId===change.calendarId&&e.mutationId===change.id)
+          const cal=snapshot?.calendars.find(c=>c.id===change.calendarId)
+          const uid=creating?change.id+'@daymark':change.uid??selected?.uid??(saved?.length===1?saved[0]!.uid:undefined)
+          const resource=creating&&cal?new URL(change.id+'.ics',cal.url.endsWith('/')?cal.url:cal.url+'/').href:selected?.resource??(saved?.length===1?saved[0]!.resource:undefined)
+          // No raw provider URL, description, notes, capability or tool body.
+          calendar.set(String(change.calendarId)+'\0'+(resource??change.id),{mutationId:change.id,calendarId:String(change.calendarId),resourceKey:resource&&change.scope!=='series'?hash(resource):null,uid:uid&&uid.length<=500?uid:null,start:change.start,end:change.end,allDay:change.allDay,deleted:change.operation==='delete',recurrenceId:typeof command.args.recurrenceId==='string'?command.args.recurrenceId:null})
+        }
+      }catch{return undefined /* Invalid/legacy receipts cannot authorize a truncated success. */}
+    }
+    const value:DisplaySync={version:1,tasks:[...tasks.values()],calendar:[...calendar.values()]}
+    return (value.tasks.length||value.calendar.length)&&Buffer.byteLength(JSON.stringify(value),'utf8')<=16384?value:undefined
   }
   // Source-only receipt reconciliation for an already bound command. Unlike
   // execute(), this never starts/retries a domain write or reads a provider/cache.

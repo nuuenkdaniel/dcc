@@ -343,7 +343,9 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
     Box(Modifier.fillMaxWidth(),contentAlignment=if(entry.role=="user")Alignment.CenterEnd else Alignment.CenterStart){
         Surface(Modifier.fillMaxWidth(.92f).testTag("chat-${entry.id}"),shape=MaterialTheme.shapes.medium,color=if(entry.role=="user")MaterialTheme.colorScheme.primary.copy(alpha=.18f) else MaterialTheme.colorScheme.surfaceVariant){
             Column(Modifier.padding(12.dp)){
-                Text(if(entry.role=="user")"You" else if(entry.id.startsWith("tools:"))"Tool results" else "Hermes",style=MaterialTheme.typography.labelSmall)
+                Text(if(entry.role=="user")"You" else if(entry.id.startsWith("sync:"))"Visibility" else if(entry.id.startsWith("tools:")){
+                    if(state.timeline.any{it.id=="sync:${entry.turnKey}"})"Earlier tool results" else "Tool results"
+                } else if(entry.id.startsWith("reply:")&&state.timeline.any{it.id=="sync:${entry.turnKey}"})"Hermes · earlier reply" else "Hermes",style=MaterialTheme.typography.labelSmall)
                 SelectionContainer{Text(entry.text.ifEmpty{if(entry.kind=="receipt"&&receipt!=null)receipt.getString("line") else "Message text expired."},fontSize=16.sp,lineHeight=24.sp,color=MaterialTheme.colorScheme.onSurface)}
                 if(entry.kind=="receipt"){
                     TextButton(onClick={details=!details}){Text(if(details)"Hide details" else "View")}

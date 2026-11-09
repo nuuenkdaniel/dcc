@@ -13,6 +13,7 @@ import java.util.UUID
 import kotlinx.coroutines.launch
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.withLock
 
 @Composable fun ManualTasks(date:String,model:WorkspaceModel?=null) {
  val context=LocalContext.current
@@ -33,10 +34,15 @@ import kotlinx.coroutines.CancellationException
   if(preferences.edit().putString("tasks",next).commit()){raw=next;error=""}else error="Could not save local tasks."
  }
  fun sync(choice:String?=null){if(model==null||syncing)return;syncing=true
-  scope.launch{try{
-   val remote=model.api("/api/v1/planner/manual-tasks")
-   val base=JSONArray(preferences.getString("sync-base","[]")).objects()
-   val merged=mergeManualTasks(base,tasks,remote.getJSONObject("data").getJSONArray("tasks").objects(),choice)
+   scope.launch{try{model.manualTaskLock.withLock{
+    val before=preferences.getString("tasks","[]")?:"[]"
+    val baseRaw=preferences.getString("sync-base","[]")?:"[]"
+    val baseVersion=preferences.getLong("sync-base-version",0)
+    fun unchanged()=preferences.getString("tasks","[]")==before&&preferences.getString("sync-base","[]")==baseRaw&&preferences.getLong("sync-base-version",0)==baseVersion
+    val remote=model.api("/api/v1/planner/manual-tasks")
+    check(unchanged()){"Newer phone edits retained. Review before syncing again."}
+    val base=JSONArray(baseRaw).objects()
+    val merged=mergeManualTasks(base,JSONArray(before).objects(),remote.getJSONObject("data").getJSONArray("tasks").objects(),choice)
    if(merged.second.isNotEmpty()&&choice==null){conflict=true;error="Tasks changed on both devices. Choose which conflicting edits to keep."}
    else{
      val changed=manualTasksNeedWrite(merged.first,remote.getJSONObject("data").getJSONArray("tasks").objects())
@@ -44,12 +50,14 @@ import kotlinx.coroutines.CancellationException
      val snapshot=if(changed)model.api("/api/v1/planner/manual-tasks") else remote
      val confirmed=parseManualTaskReadback(snapshot)
      val fresh=JSONArray(confirmed.tasks)
+     check(unchanged()){"Newer phone edits retained; the server result was not copied over them."}
     check(preferences.edit().putString("tasks",fresh.toString()).putString("sync-base",fresh.toString()).putLong("sync-base-version",confirmed.version).commit()){"Could not save synced tasks on this phone."}
     raw=fresh.toString();conflict=false;error="Tasks synced."
    }
-  }catch(e:Exception){error=e.message?:"Sync unavailable; local tasks retained."}finally{syncing=false}}
+   }}catch(e:CancellationException){throw e}catch(e:Exception){error=e.message?:"Sync unavailable; local tasks retained."}finally{syncing=false}}
   }
-  val receipt=if(model!=null)model.hermes.state.collectAsStateWithLifecycle().value.receipt else null
+   val hermesState=if(model!=null)model.hermes.state.collectAsStateWithLifecycle().value else null
+    val receipt=hermesState?.takeUnless{it.conversationFirst&&it.displaySyncVersion==1}?.receipt
   val receiptKey=receipt?.let{JSONObject(it)}?.takeIf{it.getJSONArray("targets").objects().any{t->t.optString("kind")=="task"&&t.optString("state")=="applied"}}?.getString("key")
   LaunchedEffect(receiptKey,receipt,syncing){
    if(receiptKey==null||model==null||syncing)return@LaunchedEffect
