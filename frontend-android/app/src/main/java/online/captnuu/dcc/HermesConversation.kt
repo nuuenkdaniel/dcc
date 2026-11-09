@@ -395,33 +395,91 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         val submitted=HermesSubmitted(turn,turn,s.draft,false,expiry,context=context,chat=true)
         val user=HermesChatEntry("chat-user:$turn",turn,turn,"user","user",s.draft,expiry,settled=true)
         val pending=HermesChatEntry("chat-status:$turn",turn,turn,"assistant","pending","Thinking…",expiry,settled=true)
-        val next=s.copy(draft="",answer="",view=null,receipt=null,rootKey=turn,attemptKey=turn,submitted=submitted,busy=true,notice="",draftContext=null,timeline=s.timeline+user+pending,receiptCheck=HermesReceiptCheck.IDLE)
+        val previous=s.timeline.map{if(it.kind=="pending")it.copy(kind="unknown",text="Earlier reply delivery is unconfirmed. Nothing was resent.") else it}
+        val next=s.copy(draft="",answer="",view=null,receipt=null,rootKey=turn,attemptKey=turn,submitted=submitted,busy=true,notice="",draftContext=null,timeline=previous+user+pending,receiptCheck=HermesReceiptCheck.IDLE)
         val durable=try{persist(next)}catch(_:Exception){expiresAt=previousExpiry;return}
         generation++;val op=++operationGeneration;readSequence++;readJob?.cancel();mutable.value=durable
+        val boundClient=clientId
         job=scope.launch{
+            fun current()=op==operationGeneration&&owner==boundOwner&&clientId==boundClient&&mutable.value.submitted?.turnKey==turn
+            var failure:HermesDeliveryFailure?=null
             try{
-                val response=api(JSONObject().put("op","start").put("clientId",clientId).put("workspaceOwner",boundOwner).put("key",turn).put("prompt",submitted.text).put("replyVersion",1).put("chatVersion",1).put("context",JSONObject(context)))
-                require(validHermesView(response)&&response.optInt("chatVersion")==1&&response.getString("rootKey")==turn&&response.getString("turnKey")==turn&&!response.has("question"))
-                if(op==operationGeneration&&owner==boundOwner)acceptChat(response)
-            }catch(_:Exception){if(op==operationGeneration&&owner==boundOwner){
-                val current=mutable.value
-                mutable.value=current.copy(busy=false,notice="",timeline=current.timeline.map{if(it.id==pending.id)it.copy(kind="unknown",text="The reply was interrupted. Any attempted operations may be unconfirmed; nothing will be resent automatically. You can continue chatting.") else it})
-                try{persist()}catch(_:Exception){}
-            }}
+                val response=api(JSONObject().put("op","start").put("clientId",boundClient).put("workspaceOwner",boundOwner).put("key",turn).put("prompt",submitted.text).put("replyVersion",1).put("chatVersion",1).put("context",JSONObject(context)))
+                if(!current()||!kotlinx.coroutines.currentCoroutineContext().isActive)return@launch
+                failure=chatReplyFailure(response,submitted)
+                if(failure==null){
+                    try{acceptChat(response)}catch(_:Exception){failure=HermesDeliveryFailure(HermesDeliveryCategory.STORAGE)}
+                    if(failure==null)return@launch
+                }
+            }catch(error:TimeoutCancellationException){failure=hermesDeliveryFailure(error,mutable.value.storageReady)}
+            catch(error:CancellationException){
+                if(current())chatDeliveryFailed(turn,HermesDeliveryFailure(HermesDeliveryCategory.CANCELLED))
+                throw error
+            }catch(error:Exception){failure=hermesDeliveryFailure(error,mutable.value.storageReady)}
+            val original=failure?:return@launch
+            if(!current())return@launch
+            if(!mutable.value.storageReady||!mutable.value.available||original.category in setOf(HermesDeliveryCategory.AUTH,HermesDeliveryCategory.STORAGE)||!scope.isActive||!kotlinx.coroutines.currentCoroutineContext().isActive){
+                chatDeliveryFailed(turn,original);return@launch
+            }
+            if(submitted.expiresAt<=now()){chatDeliveryFailed(turn,original,HermesDeliveryFailure(HermesDeliveryCategory.EXPIRED));return@launch}
+            // One read of this exact original claim, never another dispatch.
+            // A different explicit Send can supersede this wait without losing
+            // the old unknown entry or accepting its late response.
+            val lookup=kotlinx.coroutines.currentCoroutineContext()[Job]
+            readJob=lookup
+            mutable.value=mutable.value.copy(busy=false,notice="",timeline=mutable.value.timeline.map{
+                if(it.id==pending.id)it.copy(text="Reply delivery [${original.code}]. Looking for a saved reply once…") else it
+            })
+            try{
+                val response=withTimeout(receiptTimeoutMillis){api(JSONObject().put("op","read").put("workspaceOwner",boundOwner).put("clientId",boundClient).put("rootKey",turn))}
+                if(!current()||!kotlinx.coroutines.currentCoroutineContext().isActive)return@launch
+                if(!mutable.value.available){chatDeliveryFailed(turn,original);return@launch}
+                val invalid=chatReplyFailure(response,submitted)
+                if(invalid!=null){chatDeliveryFailed(turn,original,invalid);return@launch}
+                if(!mutable.value.storageReady){chatDeliveryFailed(turn,original,HermesDeliveryFailure(HermesDeliveryCategory.STORAGE));return@launch}
+                try{
+                    acceptChat(response)
+                    mutable.value=mutable.value.copy(notice="Stored reply recovered after delivery [${original.code}]. Nothing was resent.")
+                }catch(_:Exception){chatDeliveryFailed(turn,original,HermesDeliveryFailure(HermesDeliveryCategory.STORAGE))}
+            }catch(error:TimeoutCancellationException){if(current())chatDeliveryFailed(turn,original,HermesDeliveryFailure(HermesDeliveryCategory.TIMEOUT))}
+            catch(error:CancellationException){
+                if(current())chatDeliveryFailed(turn,original,HermesDeliveryFailure(HermesDeliveryCategory.CANCELLED))
+                throw error
+            }catch(error:Exception){if(current())chatDeliveryFailed(turn,original,hermesDeliveryFailure(error,mutable.value.storageReady))}
+            finally{if(readJob===lookup)readJob=null}
         }
         scheduleExpiry()
+    }
+    private fun chatReplyFailure(v:JSONObject,sent:HermesSubmitted):HermesDeliveryFailure? {
+        if(!validHermesView(v)||v.optInt("chatVersion")!=1||v.getString("rootKey")!=sent.rootKey||v.getString("turnKey")!=sent.turnKey||v.has("question"))return HermesDeliveryFailure(HermesDeliveryCategory.INVALID)
+        if(minOf(sent.expiresAt,v.getLong("expiresAt"))<=now())return HermesDeliveryFailure(HermesDeliveryCategory.EXPIRED)
+        // These fields are only published for closed turns by the producer.
+        // A valid running receipt without final text/facts is not a recovered reply.
+        if(!v.has("assistantReply")&&!v.has("toolSummary"))return HermesDeliveryFailure(HermesDeliveryCategory.NO_FINAL)
+        return null
+    }
+    private fun chatDeliveryFailed(turn:String,original:HermesDeliveryFailure,recovery:HermesDeliveryFailure?=null){
+        val s=mutable.value
+        val reason="Reply delivery was interrupted [${original.code}]."+(recovery?.let{" Saved reply lookup did not recover a final reply [${it.code}]."}?:"")
+        val text="$reason Any attempted operations may have effects; nothing was resent. You can continue chatting."
+        mutable.value=s.copy(busy=false,notice=if(s.storageReady)"" else s.notice,timeline=s.timeline.map{if(it.id=="chat-status:$turn")it.copy(kind="unknown",text=text) else it})
+        if(s.storageReady)try{persist()}catch(_:Exception){
+            val blocked=mutable.value
+            mutable.value=blocked.copy(timeline=blocked.timeline.map{if(it.id=="chat-status:$turn")it.copy(kind="unknown",text="$reason Reply state could not be saved [STORAGE]. Nothing was resent.") else it})
+        }
     }
     private fun acceptChat(v:JSONObject){
         val current=mutable.value;val sent=current.submitted?:return
         require(v.optInt("chatVersion")==1&&v.getString("rootKey")==sent.rootKey&&v.getString("turnKey")==sent.turnKey&&!v.has("question"))
-        val text=v.optJSONObject("assistantReply")?.getString("text")?:"No reply text was returned. Nothing was automatically resent."
+        val text=v.optJSONObject("assistantReply")?.getString("text")?:v.optJSONObject("toolSummary")?.getString("text")?:"No reply text was returned. Nothing was automatically resent."
         val expiry=minOf(sent.expiresAt,v.getLong("expiresAt"))
         val entry=HermesChatEntry("reply:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant","reply",if(expiry>now())text else "",expiry,settled=true)
         val summary=v.optJSONObject("toolSummary")?.getString("text")?.takeIf{it!=text}?.let{HermesChatEntry("tools:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant","reply",if(expiry>now())it else "",expiry,settled=true)}
         val replies=listOfNotNull(entry,summary)
         val timeline=current.timeline.filterNot{it.id in replies.map{e->e.id}}.flatMap{if(it.id=="chat-status:${sent.turnKey}")replies else listOf(it)}.let{if(it.any{e->e.id==entry.id})it else it+replies}
-        mutable.value=current.copy(busy=false,rootKey=null,attemptKey=null,view=null,receipt=v.getJSONObject("receipt").toString(),submitted=sent.copy(closed=true,expiresAt=expiry),timeline=timeline,notice="")
-        persist();scheduleExpiry()
+        val next=current.copy(busy=false,rootKey=null,attemptKey=null,view=null,receipt=v.getJSONObject("receipt").toString(),submitted=sent.copy(closed=true,expiresAt=expiry),timeline=timeline,notice="")
+        val durable=persist(next)
+        mutable.value=durable;scheduleExpiry()
     }
     fun newRequest(){
         val s=mutable.value;if(owner==null||!s.storageReady)return

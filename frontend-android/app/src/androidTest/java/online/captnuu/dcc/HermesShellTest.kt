@@ -384,6 +384,75 @@ class HermesShellTest {
             compose.onNodeWithText("Close unresolved request?").assertDoesNotExist()
         }finally{scope.cancel();client.dispatcher.executorService.shutdownNow();client.connectionPool.evictAll()}
     }
+    @OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+    @Test @SdkSuppress(minSdkVersion=30)
+    fun lostChatAcknowledgementRecoversViaNativeHttpWithoutReplayAndPreservesDraftAcrossX(){
+        val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate)
+        val memory=object:SessionStorage{var raw:String?=null;override fun read()=raw;override fun write(value:String){raw=value};override fun clear(){error("No clearing")}}
+        val calls=CopyOnWriteArrayList<JSONObject>();val time=1794016800000L
+        val readGate=java.util.concurrent.CountDownLatch(1)
+        val client=OkHttpClient.Builder().addInterceptor{chain->
+            // Terminating interceptor: never proceeds to DNS/network/model/task APIs.
+            val buffer=okio.Buffer();checkNotNull(chain.request().body).writeTo(buffer)
+            val body=JSONObject(buffer.readUtf8());calls+=body
+            val op=body.getString("op")
+            if(calls.size==1){check(op=="start");throw java.io.IOException("Synthetic lost acknowledgement")}
+            val key=if(op=="read"){
+                check(readGate.await(10,java.util.concurrent.TimeUnit.SECONDS))
+                check(body.getString("clientId")==calls[0].getString("clientId"))
+                check(body.getString("workspaceOwner")==calls[0].getString("workspaceOwner"))
+                check(body.getString("rootKey")==calls[0].getString("key"))
+                body.getString("rootKey")
+            }else{check(op=="start");body.getString("key")}
+            val response=JSONObject().put("version",1).put("chatVersion",1).put("rootKey",key).put("turnKey",key).put("expiresAt",time+HERMES_TTL_MS).put("questions",0)
+                .put("receipt",JSONObject().put("version",1).put("key",key).put("outcome","read-only").put("line","No actions performed.").put("verified",0).put("expected",JSONObject.NULL).put("targets",JSONArray()))
+                .put("assistantReply",JSONObject().put("version",1).put("text",if(op=="read")"The stored synthetic reply is here." else "We can discuss the new topic."))
+            if(op=="read")response.put("toolSummary",JSONObject().put("version",1).put("text","No changes recorded."))
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("Synthetic").body(response.toString().toResponseBody("application/json".toMediaType())).build()
+        }.build()
+        val controller=HermesConversationController(scope,{memory},{body->
+            val result=awaitHermesHttp(hermesConversationClient(client,body.getString("op")),Request.Builder().url("https://synthetic.invalid/api/v1/hermes/conversation").post(body.toString().toRequestBody("application/json".toMediaType())).build())
+            if(result.code !in 200..299)throw HermesHttpFailure(status=result.code)
+            JSONObject(result.body)
+        },{time})
+        try{
+            compose.activityRule.scenario.onActivity{it.enableEdgeToEdge();controller.bind("a".repeat(64));controller.availability(true,1,1,1)}
+            compose.setContent{
+                val state by controller.state.collectAsStateWithLifecycle()
+                CompositionLocalProvider(LocalInspectionMode provides true){DccTheme{
+                    Workspace(workspace(),{_,_->},{},{},{_,_->},{_,_->},initialDestination=Destination.Inbox,hermesContent={modifier->
+                        HermesComposer(state,controller::edit,controller::send,controller::newRequest,controller::dismiss,controller::readReceipt,modifier=modifier,docked=true,onClearChat=controller::newConversation,onRecover=controller::recoverSeparately)
+                    })
+                }}
+            }
+            val before=inboxGeometry("reply-recovery-before")
+            openChat();compose.onNodeWithTag("hermes-chat-editor").performTextInput("Synthetic ordinary question")
+            compose.onNodeWithTag("hermes-chat-send").performClick()
+            compose.waitUntil(5000){calls.size==2&&!controller.state.value.busy}
+            show("Reply delivery [NETWORK]. Looking for a saved reply once…")
+            compose.onNodeWithTag("hermes-chat-editor").performTextInput("Different editable topic")
+            compose.onNodeWithTag("hermes-chat-editor").performTextInputSelection(androidx.compose.ui.text.TextRange(2,7))
+            closeChat();assertEquals(before,inboxGeometry("reply-recovery-after-X"))
+            openChat();compose.onNodeWithTag("hermes-chat-editor").assertTextContains("Different editable topic")
+            assertEquals(androidx.compose.ui.text.TextRange(2,7),compose.onNodeWithTag("hermes-chat-editor").fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange])
+            assertEquals(listOf("start","read"),calls.map{it.getString("op")})
+            readGate.countDown()
+            compose.waitUntil(5000){controller.state.value.timeline.any{it.text=="The stored synthetic reply is here."}}
+            show("The stored synthetic reply is here.");show("No changes recorded.")
+            compose.onNodeWithText("View").assertDoesNotExist();compose.onNodeWithText("No actions performed.").assertDoesNotExist()
+            compose.onNodeWithTag("hermes-chat-editor").assertTextContains("Different editable topic")
+            captureFullWindow("stored-reply-recovered",expectIme=true)
+            assertEquals(1,controller.state.value.timeline.count{it.text=="The stored synthetic reply is here."})
+            compose.onNodeWithTag("hermes-chat-send").assertIsEnabled().performClick()
+            compose.waitUntil(5000){calls.size==3&&!controller.state.value.busy}
+            show("We can discuss the new topic.")
+            assertEquals(listOf("start","read","start"),calls.map{it.getString("op")})
+            assertNotEquals(calls[0].getString("key"),calls[2].getString("key"))
+            compose.onNodeWithText("Close unresolved request?").assertDoesNotExist()
+        }catch(error:Throwable){
+            failureArtifacts.capture(error,org.junit.runner.Description.createTestDescription(HermesShellTest::class.java,"reply-recovery-before-cleanup"));throw error
+        }finally{readGate.countDown();scope.cancel();client.dispatcher.executorService.shutdownNow();client.connectionPool.evictAll()}
+    }
     @Test fun lowerDockSurvivesNavigationWithoutLosingDraftOrInboxQuery(){
         var hermes by mutableStateOf(HermesState(available=true))
         compose.setContent{Shell(hermes,{hermes=hermes.copy(draft=it)})}

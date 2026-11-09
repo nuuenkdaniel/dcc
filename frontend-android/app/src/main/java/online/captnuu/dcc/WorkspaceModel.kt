@@ -82,10 +82,10 @@ class WorkspaceModel(application:Application):AndroidViewModel(application) {
                         mutable.value=WorkspaceState(busy=true,notice="Sign-in required [AUTH]. Saved requests were not resent.")
                     }
                 }
-                if(conversation)throw HermesHttpFailure(auth=true)
+                if(conversation)throw HermesHttpFailure(auth=true,status=response.code)
                 throw IllegalStateException("Sign-in required. Check credentials or sign in again.")
             }
-            if(conversation&&response.code !in 200..299)throw HermesHttpFailure()
+            if(conversation&&response.code !in 200..299)throw HermesHttpFailure(status=response.code)
             if(response.code==409) throw IllegalStateException("Changed on another device. Refresh before retrying.")
             check(response.code in 200..299) { "Request failed (HTTP ${response.code})." }
             response.body

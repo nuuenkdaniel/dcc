@@ -49,6 +49,28 @@ Back/IME hiding and X-only dismissal remain in place. A failed message gets plai
 feedback and does not own Send for an unrelated draft. Exact repeated unknown
 submissions are not silently replayed; reopen/refresh never sends a message.
 
+After an eligible reply-delivery failure, chat may read the exact original
+owner/client/root once under the 15-second receipt deadline (12-second HTTP
+read/call bounds). It never repeats start/answer/cancel. Only a validated,
+correlated, unexpired `chatVersion: 1` reply with stored final assistant text or
+tool summary replaces the pending bubble. A running receipt alone is not final
+evidence. A newer Send or owner change fences/cancels the lookup; unsent draft
+edits survive recovery. Auth loss, cancellation and blocked storage do not
+initiate a lookup. Local acceptance is saved before releasing the original claim.
+
+Content-free delivery feedback distinguishes AUTH, HTTP with numeric status,
+TIMEOUT, NETWORK, DECODE, INVALID and STORAGE; failed lookup feedback separately
+retains the original category and a finite recovery outcome (including NO_FINAL,
+EXPIRED or CANCELLED). Raw exception messages, bodies and claim identifiers are
+not diagnostic text. Recovery does not establish the cause of an earlier failure
+or prove task effects independently of the stored result.
+
+Additional focused JVM target: `online.captnuu.dcc.HermesReplyDeliveryTest`.
+Synthetic full-window HTTP recovery target:
+`HermesShellTest.lostChatAcknowledgementRecoversViaNativeHttpWithoutReplayAndPreservesDraftAcrossX`.
+Its terminating HTTP interceptor uses synthetic responses only, not a live API.
+Source coverage is not a passing build/emulator result; those checks are parent-owned.
+
 New chat uses owner-bound encrypted `hermes-chat-<owner>-v1.enc` storage, with an
 explicit separate protected recovery record when needed. Original
 `hermes-<owner>.enc` and earlier separate recovery records are read for legacy

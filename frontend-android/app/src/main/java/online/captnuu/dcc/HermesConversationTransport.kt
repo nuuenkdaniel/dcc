@@ -13,7 +13,7 @@ import kotlin.coroutines.resumeWithException
 
 internal const val HERMES_RECEIPT_TIMEOUT_MS=15000L
 internal const val HERMES_CLOSE_TIMEOUT_MS=22000L
-internal class HermesHttpFailure(val auth:Boolean=false):IOException("Hermes request unavailable")
+internal class HermesHttpFailure(val auth:Boolean=false,val status:Int?=null):IOException("Hermes request unavailable")
 internal data class HermesHttpResult(val code:Int,val body:String)
 
 internal fun hermesConversationClient(base:OkHttpClient,op:String?):OkHttpClient {
