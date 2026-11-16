@@ -17,6 +17,8 @@ some changes require a rebuild/restart. Wireless debugging is also available on 
 
 ## Command line
 
+Use `./android-env gradle :app:assembleDebug :app:testDebugUnitTest :app:lintDebug` from this directory. The wrapper isolates Java, SDK, Gradle, Android keys/AVDs, temporary files and outputs under the ignored project-root `.android-build/`. See [ANDROID-TOOLCHAIN.md](ANDROID-TOOLCHAIN.md). Do not invoke bare Gradle or the old global SDK paths. Existing signing-isolation restrictions below remain in force.
+
 **DCC parent-only build gate:** `app/build.gradle.kts` currently inspects signing
 configuration under JVM `user.home` even for debug builds. Do not run these
 commands with a real signing home. Use the parent's already verified empty JVM
@@ -35,13 +37,19 @@ Do not commit local.properties, signing keys, credentials, SDKs or generated APK
 
 ## Scope
 
+### Content-first UI and HTML email reader (source, synthetic-verified; unreleased)
+
+Source changes remove redundant destination header bands (bottom navigation remains the destination label), compact destination controls, make task/project/email actions more direct, and add a dedicated native email reader for `/api/v1/mail/html/:id` with fixed Close/Back and plaintext fallback. Project lifecycle uses existing honest status actions (Mark complete/Reopen/Archive/Restore/Edit); **true project Delete/cascade is not implemented** pending an approved linked-task/server contract.
+
+HTML rendering uses platform WebView with JavaScript/file/content/bridge/geolocation/DOM/multi-window access disabled, reader-owned request/resource fences, restrictive document wrapping, and no app session cookies exposed to message resources. Selected policies are verified in dedicated synthetic source/device QA, but this is **not DOMPurify-equivalent** and **not an exhaustive security certificate**. The feature remains **unreleased and not phone-installed** in this README edit; phone/live mailbox behavior is unverified. Synthetic verification (current candidate, not deployed/phone-installed): **152 JVM unit tests (25 XML, 0 fail/error/skip)** and **61 native tests** in dedicated synthetic QA, including focused reply-recovery coverage (3) and earlier content-first focused coverage (5) — not phone, not live mailbox, not release. Previous storage, privacy, and recovery descriptions remain unchanged except where explicitly updated below.
+
 ### Active conversation-first chat
 
 #### Automatic assistant-write visibility
 
 Discovery advertises `conversationDisplaySyncVersion: 1`. Updated native requests
 opt in with `X-Dcc-Display-Sync: 1` on the existing conversation route, including
-the one delivery-recovery read. No body, tool permission or execution fingerprint
+bounded read-only delivery-recovery reads. No body, tool permission or execution fingerprint
 changes. Without negotiation, the old envelope is unchanged. With negotiation,
 optional bounded `displaySync` facts come from the full bound journal and durable
 operation receipts, not assistant/summary prose or the four-target history card.
@@ -89,14 +97,22 @@ Back/IME hiding and X-only dismissal remain in place. A failed message gets plai
 feedback and does not own Send for an unrelated draft. Exact repeated unknown
 submissions are not silently replayed; reopen/refresh never sends a message.
 
-After an eligible reply-delivery failure, chat may read the exact original
-owner/client/root once under the 15-second receipt deadline (12-second HTTP
-read/call bounds). It never repeats start/answer/cancel. Only a validated,
-correlated, unexpired `chatVersion: 1` reply with stored final assistant text or
-tool summary replaces the pending bubble. A running receipt alone is not final
-evidence. A newer Send or owner change fences/cancels the lookup; unsent draft
-edits survive recovery. Auth loss, cancellation and blocked storage do not
-initiate a lookup. Local acceptance is saved before releasing the original claim.
+After an eligible reply-delivery failure, chat may perform bounded read-only
+saved-reply checks for the exact original owner/client/root: at most **4
+automatic `op=read` checks** within one overall **60-second recovery window**
+(including backoff/HTTP waits), with per-read bounds preserved and the overall
+deadline winning. It **never replays or retries `start`/`answer`/`cancel`**,
+never starts a new turn automatically, and does not use permanent polling or
+process-restart replenishment. Eligible transient/running outcomes may be
+rechecked; auth/storage/cancel/expiry/correlation/invalid refusals stop recovery.
+Only a validated, correlated, unexpired `chatVersion: 1` reply with stored final
+assistant text or tool summary replaces the pending bubble; a running receipt
+alone is not final evidence. A newer intent/Send, owner/auth/storage/expiry
+change or explicit manual receipt check fences/cancels old recovery; unsent draft
+edits can survive. Local acceptance is saved before releasing the original claim.
+Outcome can remain honestly unconfirmed when the budget is exhausted. Source is
+**unreleased/not phone-installed**; a user-reported phone-off-Tailscale `/health`
+PASS is not proof of the original intermittent cause or a phone fix.
 
 Content-free delivery feedback distinguishes AUTH, HTTP with numeric status,
 TIMEOUT, NETWORK, DECODE, INVALID and STORAGE; failed lookup feedback separately
@@ -106,10 +122,14 @@ not diagnostic text. Recovery does not establish the cause of an earlier failure
 or prove task effects independently of the stored result.
 
 Additional focused JVM target: `online.captnuu.dcc.HermesReplyDeliveryTest`.
-Synthetic full-window HTTP recovery target:
-`HermesShellTest.lostChatAcknowledgementRecoversViaNativeHttpWithoutReplayAndPreservesDraftAcrossX`.
-Its terminating HTTP interceptor uses synthetic responses only, not a live API.
-Source coverage is not a passing build/emulator result; those checks are parent-owned.
+Synthetic full-window HTTP recovery targets:
+`HermesShellTest.lostChatAcknowledgementRecoversViaNativeHttpWithoutReplayAndPreservesDraftAcrossX`,
+`HermesShellTest.delayedSavedReplyRecoveryRecoversTransientDisconnectWithOneDispatchAndThreeEffects` (actual `WorkspaceModel.hermes` wiring),
+`HermesShellTest.delayedSavedReplyRecoveryStopsAfterBoundedBudgetAndKeepsComposerEditable`,
+`HermesShellTest.delayedSavedReplyRecoveryLateOldReplyDoesNotClobberNewIntent`.
+Terminating HTTP fixtures/interceptors use synthetic responses only, not a live API.
+Source coverage/compile is not a passing build/emulator/phone result; native
+execution and release/install remain parent-owned/unproven here.
 
 New chat uses owner-bound encrypted `hermes-chat-<owner>-v1.enc` storage, with an
 explicit separate protected recovery record when needed. Original

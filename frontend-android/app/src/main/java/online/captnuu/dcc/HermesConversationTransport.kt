@@ -25,9 +25,22 @@ internal fun hermesConversationClient(base:OkHttpClient,op:String?):OkHttpClient
         .retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).build()
 }
 
-/** Only the conversation lane uses this cancellable wait. Cancellation closes
- * its actual call; no blocking execute() can outlive a receipt lookup's UI bound. */
-internal suspend fun awaitHermesHttp(factory:Call.Factory,request:Request):HermesHttpResult=suspendCancellableCoroutine{continuation->
+private fun readBoundedBody(response:Response,maxBytes:Int):String {
+    val body=response.body ?: return "{}"
+    val len=body.contentLength()
+    if(len>maxBytes) throw IOException("Response too large")
+    val source=body.source()
+    source.request(maxBytes.toLong()+1)
+    if(source.buffer.size>maxBytes.toLong()) throw IOException("Response too large")
+    val bytes=source.readByteArray(minOf(source.buffer.size,maxBytes.toLong()))
+    if(bytes.size>maxBytes) throw IOException("Response too large")
+    // If more data remains, reject without materializing it.
+    if(!source.exhausted()) throw IOException("Response too large")
+    return bytes.toString(Charsets.UTF_8)
+}
+/** Only selected cancellable waits use this path. Cancellation closes its actual call.
+ * When maxBytes is set for successful responses, bytes are capped before full string parse. */
+internal suspend fun awaitHermesHttp(factory:Call.Factory,request:Request,maxBytes:Int?=null):HermesHttpResult=suspendCancellableCoroutine{continuation->
     val call=factory.newCall(request)
     continuation.invokeOnCancellation{call.cancel()}
     call.enqueue(object:Callback{
@@ -35,7 +48,7 @@ internal suspend fun awaitHermesHttp(factory:Call.Factory,request:Request):Herme
         override fun onResponse(call:Call,response:Response){
             if(!continuation.isActive){response.close();return}
             try{
-                val result=response.use{HermesHttpResult(it.code,if(it.isSuccessful)it.body?.string()?:"{}" else "{}")}
+                val result=response.use{HermesHttpResult(it.code,if(it.isSuccessful){ if(maxBytes!=null) readBoundedBody(it,maxBytes) else it.body?.string()?:"{}" } else "{}")}
                 if(continuation.isActive)continuation.resume(result)
             }catch(error:IOException){if(continuation.isActive)continuation.resumeWithException(error)}
             catch(_:Exception){if(continuation.isActive)continuation.resumeWithException(HermesHttpFailure())}

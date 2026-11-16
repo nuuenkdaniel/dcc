@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Project-local Android tools; does not change the caller's environment.
+set -euo pipefail
+PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+ROOT="$PROJECT/.android-build"
+export HOME="$ROOT/home" JAVA_HOME="$ROOT/java"
+export ANDROID_HOME="$ROOT/sdk" ANDROID_SDK_ROOT="$ROOT/sdk"
+export ANDROID_USER_HOME="$ROOT/android-user" ANDROID_EMULATOR_HOME="$ROOT/android-user"
+export ANDROID_AVD_HOME="$ROOT/android-user/avd"
+unset ANDROID_SDK_HOME ANDROID_PREFS_ROOT
+export GRADLE_USER_HOME="$ROOT/gradle"
+export XDG_CACHE_HOME="$ROOT/xdg/cache" XDG_CONFIG_HOME="$ROOT/xdg/config" XDG_DATA_HOME="$ROOT/xdg/data"
+export TMPDIR="$ROOT/tmp" TMP="$ROOT/tmp" TEMP="$ROOT/tmp"
+export JAVA_TOOL_OPTIONS="-Duser.home=$HOME -Djava.io.tmpdir=$TMPDIR"
+export JAVA_OPTS="$JAVA_TOOL_OPTIONS"
+export GRADLE_OPTS="-Duser.home=$HOME -Djava.io.tmpdir=$TMPDIR"
+export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+[[ -x "$JAVA_HOME/bin/java" && -d "$ANDROID_HOME" && -d "$GRADLE_USER_HOME" ]] || { echo "Project Android toolchain is absent; provision .android-build before use." >&2; exit 2; }
+mkdir -p "$HOME" "$TMPDIR" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+# This wrapper never loads the real release-signing home.
+[[ ! -e "$HOME/.local/share/dcc-signing/signing.properties" ]] || { echo 'Signing isolation violated' >&2; exit 2; }
+command="${1:-help}"; if (($#)); then shift; fi
+case "$command" in
+ gradle)
+  offline=(--offline)
+  if [[ "${1:-}" == --online ]]; then offline=(); shift; fi
+  for arg in "$@"; do [[ "${arg,,}" != *release* ]] || { echo 'Release tasks require a separately approved signing procedure.' >&2; exit 2; }; done
+  cd "$PROJECT/frontend-android"
+  exec "$PROJECT/frontend-android/gradlew" "${offline[@]}" --no-daemon --gradle-user-home "$GRADLE_USER_HOME" --project-cache-dir "$ROOT/project-cache" --init-script "$ROOT/config/build-isolation.gradle" "-Ddcc.android.build.root=$ROOT" "-Duser.home=$HOME" "-Dorg.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8 -Duser.home=$HOME -Djava.io.tmpdir=$TMPDIR -Dkotlin.daemon.runFilesPath=$ROOT/kotlin-daemon" -Dorg.gradle.java.installations.auto-download=false "-Dorg.gradle.java.installations.paths=$JAVA_HOME" "-Pkotlin.project.persistent.dir=$ROOT/kotlin-project" "$@"
+  ;;
+ java|javac) exec "$JAVA_HOME/bin/$command" "$@" ;;
+ emulator) exec "$ANDROID_HOME/emulator/emulator" "$@" ;;
+ adb) exec "$ANDROID_HOME/platform-tools/adb" "$@" ;;
+ sdkmanager|avdmanager) exec "$ANDROID_HOME/cmdline-tools/latest/bin/$command" "$@" ;;
+ env) printf '%s\n' "JAVA_HOME=$JAVA_HOME" "ANDROID_HOME=$ANDROID_HOME" "ANDROID_USER_HOME=$ANDROID_USER_HOME" "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" "GRADLE_USER_HOME=$GRADLE_USER_HOME" "HOME=$HOME" ;;
+ *) echo 'Usage: frontend-android/android-env {gradle|java|javac|emulator|adb|sdkmanager|avdmanager|env} [arguments...]'; exit 2 ;;
+esac

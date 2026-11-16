@@ -5,6 +5,16 @@ internal enum class HermesDeliveryCategory { AUTH, HTTP, TIMEOUT, NETWORK, DECOD
 internal data class HermesDeliveryFailure(val category:HermesDeliveryCategory,val status:Int?=null){
     val code:String get()=category.name+(status?.takeIf{it in 100..599}?.let{" $it"}?:"")
 }
+/** Bounded automatic read-only recovery for one failed chat turn. Production defaults must not be weakened. */
+data class HermesChatRecoveryTiming(
+    val delaysMs:List<Long> = listOf(0,5000,10000,15000),
+    val overallWindowMs:Long = 60000,
+    val perReadTimeoutMs:Long = HERMES_RECEIPT_TIMEOUT_MS
+){
+    init{
+        require(delaysMs.size==4&&delaysMs.all{it>=0}&&overallWindowMs in 1..60000&&perReadTimeoutMs in 1..HERMES_RECEIPT_TIMEOUT_MS)
+    }
+}
 internal fun hermesDeliveryFailure(error:Exception,storageReady:Boolean=true):HermesDeliveryFailure {
     val category=when{
         !storageReady||error is HermesRestoreFailure||error is HermesHistoryLimit->HermesDeliveryCategory.STORAGE

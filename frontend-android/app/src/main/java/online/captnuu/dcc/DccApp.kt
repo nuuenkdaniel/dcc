@@ -60,24 +60,26 @@ fun JSONArray?.objects():List<JSONObject> = if(this==null) emptyList() else (0 u
  val destination=restoredDestination(selected)
  val pages=rememberSaveableStateHolder()
   var hermesModalOpen by remember{mutableStateOf(false)}
-  var hermesOwnsIme by remember{mutableStateOf(false)}
+  var mailModalOpen by remember{mutableStateOf(false)}
+  var modalOwnsIme by remember{mutableStateOf(false)}
   val modalVisibility=remember { {visible:Boolean->
    hermesModalOpen=visible
-   if(visible)hermesOwnsIme=true
+   if(visible)modalOwnsIme=true
   } }
+  val anyModalOpen=hermesModalOpen || mailModalOpen
   val workspaceIme=WindowInsets.ime
   val density=LocalDensity.current
   val imeBottom=workspaceIme.getBottom(density)
   // Do not release on X/Back alone: the dismissing Dialog's IME may still be
   // animating. Releasing only once hidden avoids a transient background reflow.
-  LaunchedEffect(hermesModalOpen,imeBottom){
-   if(!hermesModalOpen&&imeBottom==0){
+  LaunchedEffect(anyModalOpen,imeBottom){
+   if(!anyModalOpen&&imeBottom==0){
     withFrameNanos{}
-    if(!hermesModalOpen&&workspaceIme.getBottom(density)==0)hermesOwnsIme=false
+    if(!anyModalOpen&&workspaceIme.getBottom(density)==0)modalOwnsIme=false
    }
   }
-  val keyboardVisible=!hermesOwnsIme&&imeBottom>0
-   Box(Modifier.fillMaxSize().windowInsetsPadding(if(hermesOwnsIme)WindowInsets(0,0,0,0) else workspaceIme)) {
+  val keyboardVisible=!modalOwnsIme&&imeBottom>0
+   Box(Modifier.fillMaxSize().windowInsetsPadding(if(modalOwnsIme)WindowInsets(0,0,0,0) else workspaceIme)) {
  Scaffold(bottomBar={Column {
   if(state.signedIn&&(projectModel!=null||hermesContent!=null))Surface(modifier=Modifier.testTag("hermes-dock"),tonalElevation=3.dp) {
     val dockModifier=Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=2.dp)
@@ -97,13 +99,8 @@ fun JSONArray?.objects():List<JSONObject> = if(this==null) emptyList() else (0 u
   }
  }}}) { padding ->
   Column(Modifier.fillMaxSize().padding(padding).testTag("workspace-page").clipToBounds().padding(horizontal=20.dp)) {
-   if(!keyboardVisible)Row(Modifier.fillMaxWidth().padding(vertical=8.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
-    Text(destination.label,style=MaterialTheme.typography.headlineSmall,modifier=Modifier.weight(1f))
-    IconButton(onClick=onRefresh,enabled=(state.signedIn||state.restorePending)&&!state.busy){Icon(Icons.Default.Refresh,"Refresh")}
-    IconButton(onClick={settings=true}){Icon(Icons.Default.Settings,"Settings")}
-   }
    if(!keyboardVisible&&!androidx.compose.ui.platform.LocalInspectionMode.current)UpdateControl(compact=true)
-   if(state.notice!="Workspace refreshed" && state.notice!="Signed in") Text(state.notice,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+   if(state.notice.isNotBlank() && state.notice!="Workspace refreshed" && state.notice!="Signed in") Text(state.notice,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
    if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical=8.dp))
    if(selected=="Prices")Text("Price tracker retired; stored history is preserved.",style=MaterialTheme.typography.bodySmall)
    if(state.restoring) {
@@ -115,10 +112,10 @@ fun JSONArray?.objects():List<JSONObject> = if(this==null) emptyList() else (0 u
    } else if(!state.signedIn&&!local&&destination!=Destination.Focus) {
     LoginForm(state.busy,onLogin);TextButton(onClick={local=true}) { Text("Continue locally") }
    } else pages.SaveableStateProvider(destination.name) { when(destination) {
-    Destination.Focus->FocusScreen()
-    Destination.Today->TodayScreen(state,onComplete,projectModel)
-    Destination.Inbox->InboxScreen(state,onFeedback,projectModel)
-    Destination.Projects->ProjectPage(state,projectModel,onRefresh,onComplete)
+    Destination.Focus->FocusScreen(onRefresh=onRefresh,onSettings={settings=true})
+    Destination.Today->TodayScreen(state,onComplete,projectModel,onRefresh=onRefresh,onSettings={settings=true})
+    Destination.Inbox->InboxScreen(state,onFeedback,projectModel,onRefresh=onRefresh,onSettings={settings=true},onMailModal={open->mailModalOpen=open;if(open)modalOwnsIme=true})
+    Destination.Projects->ProjectPage(state,projectModel,onRefresh,onComplete,onSettings={settings=true})
    } }
   }
  }
@@ -144,7 +141,7 @@ private fun snapshot(state:WorkspaceState,name:String)=workspaceSnapshot(state,n
 @Composable private fun InfoCard(title:String,body:String,extra:@Composable ColumnScope.()->Unit={}) {
  OutlinedCard(Modifier.fillMaxWidth().padding(vertical=6.dp)) { Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) { Text(title,style=MaterialTheme.typography.titleMedium);if(body.isNotBlank())Text(body);extra() } }
 }
-@Composable private fun TodayScreen(state:WorkspaceState,onComplete:(JSONObject,Boolean)->Unit,model:WorkspaceModel?) {
+@Composable private fun TodayScreen(state:WorkspaceState,onComplete:(JSONObject,Boolean)->Unit,model:WorkspaceModel?,onRefresh:()->Unit={},onSettings:()->Unit={}) {
  var date by rememberSaveable { mutableStateOf(LocalDate.now().toString()) }
  var tasksVisible by rememberSaveable { mutableStateOf(false) }
  var month by rememberSaveable { mutableStateOf(java.time.YearMonth.now().toString()) }
@@ -152,9 +149,15 @@ private fun snapshot(state:WorkspaceState,name:String)=workspaceSnapshot(state,n
  val actions=planner.optJSONArray("actions").objects().filter { it.getJSONObject("data").optString("date")==date&&!it.getJSONObject("data").optBoolean("dismissed") }
  val groups=actions.groupBy { entry -> val d=entry.getJSONObject("data");d.optString("preparationId").takeIf{it.isNotBlank()} ?: if(d.optBoolean("assignmentStep"))d.optString("projectId") else d.optString("id") }
   Column(Modifier.fillMaxSize()) {
-  Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+  Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
    FilterChip(selected=!tasksVisible,onClick={tasksVisible=false},label={Text("Calendar")},modifier=Modifier.weight(1f))
    FilterChip(selected=tasksVisible,onClick={tasksVisible=true},label={Text("Tasks")},modifier=Modifier.weight(1f))
+   var todayMenu by remember{mutableStateOf(false)}
+   Box{IconButton(onClick={todayMenu=true},modifier=Modifier.size(40.dp)){Icon(Icons.Default.MoreVert,"Page actions")}
+    DropdownMenu(expanded=todayMenu,onDismissRequest={todayMenu=false}){
+     DropdownMenuItem(text={Text("Refresh")},onClick={todayMenu=false;onRefresh()})
+     DropdownMenuItem(text={Text("Settings")},onClick={todayMenu=false;onSettings()})
+    }}
   }
   key(tasksVisible) {
   LazyColumn(modifier=Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(10.dp),contentPadding=PaddingValues(bottom=20.dp)) {
@@ -166,9 +169,6 @@ private fun snapshot(state:WorkspaceState,name:String)=workspaceSnapshot(state,n
     IconButton(onClick={date=LocalDate.parse(date).plusDays(1).toString()}){Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight,"Next day")}
   } }
   if(tasksVisible) {
-  item { Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
-   Text("Tasks",style=MaterialTheme.typography.titleMedium)
-  } }
   item { ManualTasks(date,model) }
   if(actions.isEmpty())item { Text("No actions for this day",style=MaterialTheme.typography.bodyMedium,modifier=Modifier.padding(vertical=24.dp)) }
   items(groups.entries.toList(),key={it.key}) { group ->
@@ -218,78 +218,87 @@ private fun snapshot(state:WorkspaceState,name:String)=workspaceSnapshot(state,n
  }
  }
 
-@Composable private fun InboxScreen(state:WorkspaceState,onFeedback:(String,Boolean)->Unit,model:WorkspaceModel?) {
+@Composable private fun InboxScreen(state:WorkspaceState,onFeedback:(String,Boolean)->Unit,model:WorkspaceModel?,onRefresh:()->Unit={},onSettings:()->Unit={},onMailModal:(Boolean)->Unit={}) {
  var search by rememberSaveable { mutableStateOf("") };var account by rememberSaveable { mutableStateOf("all") };var important by rememberSaveable { mutableStateOf(false) }
+ var filtersOpen by rememberSaveable { mutableStateOf(false) };var briefOpen by rememberSaveable { mutableStateOf(false) }
+ var reading by rememberSaveable { mutableStateOf<String?>(null) }
+ val listState=androidx.compose.foundation.lazy.rememberLazyListState()
  val messages=snapshot(state,"mail").optJSONArray("messages").objects().filter { m -> val d=m.getJSONObject("data");(account=="all"||d.optString("account")==account)&&(d.optString("subject")+d.optString("sender")).contains(search,true)&&(!important||if(!m.isNull("override"))m.optBoolean("override") else m.optJSONObject("analysis")?.optBoolean("important")==true) }
- LazyColumn(Modifier.fillMaxSize().testTag("inbox-list")) {
+ val activeFilters=account!="all"||important
+ reading?.let{id-> val entry=snapshot(state,"mail").optJSONArray("messages").objects().firstOrNull{it.getJSONObject("data").optString("id")==id} ?: snapshot(state,"mail").optJSONArray("briefing").objects().firstOrNull{it.getJSONObject("data").optString("id")==id}; if(entry!=null) MailReader(mailMessage(entry),model,busy=state.busy,onFeedback=onFeedback){reading=null; onMailModal(false)} else {reading=null; onMailModal(false)} }
+ LazyColumn(Modifier.fillMaxSize().testTag("inbox-list"),state=listState) {
   item(key="mail-search") {
-   OutlinedTextField(search,{search=it},label={Text("Search email")},modifier=Modifier.fillMaxWidth())
+   OutlinedTextField(search,{search=it},label={Text("Search email")},modifier=Modifier.fillMaxWidth().testTag("mail-search"),singleLine=true,keyboardOptions=androidx.compose.foundation.text.KeyboardOptions(imeAction=androidx.compose.ui.text.input.ImeAction.Search),keyboardActions=androidx.compose.foundation.text.KeyboardActions(onSearch={model?.loadMoreMail(search,account,important)}),trailingIcon={if(search.isNotBlank()||activeFilters)TextButton(onClick={model?.loadMoreMail(search,account,important)},enabled=state.signedIn&&!state.busy){Text("Search all")}else null})
   }
-  item(key="mail-accounts") {
-  Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(4.dp)) {
-   listOf("all","personal","school","work").forEach { a ->
-    TextButton(
-     onClick={account=a},
-     modifier=Modifier.weight(1f).semantics { selected = a==account },
-     shape=androidx.compose.foundation.shape.CircleShape,
-     contentPadding=PaddingValues(horizontal=4.dp,vertical=8.dp),
-     colors=ButtonDefaults.textButtonColors(
-      containerColor=if(a==account)MaterialTheme.colorScheme.primary else Color.Transparent,
-      contentColor=if(a==account)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary
-     )
-    ){Text(a)}
+  item(key="mail-filter-toggle") {
+   Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){
+    FilterChip(selected=filtersOpen||activeFilters,onClick={filtersOpen=!filtersOpen},label={Text(if(activeFilters)"Filters · active" else "Filters")})
+    if(activeFilters||search.isNotBlank())TextButton(onClick={search="";account="all";important=false;filtersOpen=false;model?.loadMoreMail("","all",false)}){Text("Reset")}
+    Spacer(Modifier.weight(1f))
+    IconButton(onClick=onRefresh,enabled=(state.signedIn||state.restorePending)&&!state.busy,modifier=Modifier.size(40.dp)){Icon(Icons.Default.Refresh,"Refresh")}
+    IconButton(onClick=onSettings,modifier=Modifier.size(40.dp)){Icon(Icons.Default.Settings,"Settings")}
    }
   }
+  if(filtersOpen) item(key="mail-filters") {
+   Column(verticalArrangement=Arrangement.spacedBy(4.dp)){
+    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(4.dp)) {
+     listOf("all","personal","school","work").forEach { a ->
+      TextButton(onClick={account=a},modifier=Modifier.weight(1f).semantics { selected = a==account },shape=androidx.compose.foundation.shape.CircleShape,contentPadding=PaddingValues(horizontal=4.dp,vertical=8.dp),colors=ButtonDefaults.textButtonColors(containerColor=if(a==account)MaterialTheme.colorScheme.primary else Color.Transparent,contentColor=if(a==account)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary)){Text(a)}
+     }
+    }
+    Row(modifier=Modifier.fillMaxWidth().toggleable(value=important,onValueChange={important=it},role=androidx.compose.ui.semantics.Role.Checkbox).padding(vertical=2.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+     Checkbox(checked=important,onCheckedChange=null,modifier=Modifier.size(48.dp))
+     Text("Important only",modifier=Modifier.weight(1f))
+    }
+    MailControls(state,model)
+   }
   }
-  item(key="mail-important") {
-   Row(
-   modifier=Modifier.fillMaxWidth().then(Modifier.toggleable(
-    value=important,onValueChange={important=it},role=androidx.compose.ui.semantics.Role.Checkbox
-   )).padding(vertical=4.dp),
-   verticalAlignment=androidx.compose.ui.Alignment.CenterVertically
-  ) {
-   Checkbox(checked=important,onCheckedChange=null,modifier=Modifier.size(48.dp))
-   Text("Important only",modifier=Modifier.weight(1f))
+  item(key="mail-brief-header") { TextButton(onClick={briefOpen=!briefOpen},contentPadding=PaddingValues(0.dp)){Text(if(briefOpen)"Daily brief · hide" else "Daily brief · today",style=MaterialTheme.typography.titleMedium)} }
+  if(briefOpen) {
+   val brief=(snapshot(state,"mail").optJSONArray("briefing")?:snapshot(state,"mail").optJSONArray("messages")).objects().filter { m -> receivedEasternToday(m.getJSONObject("data").optString("receivedAt")) && (if(!m.isNull("override"))m.optBoolean("override") else m.optJSONObject("analysis")?.optBoolean("important")==true) }
+   if(brief.isEmpty()) item(key="mail-brief-empty") { Text("No important email loaded for today.",style=MaterialTheme.typography.bodySmall) }
+   items(brief,key={"brief-"+it.getJSONObject("data").getString("id")}) { m -> val msg=mailMessage(m)
+    OutlinedCard(Modifier.fillMaxWidth().padding(vertical=4.dp).clickable{onMailModal(true);reading=msg.id}) { Column(Modifier.padding(12.dp)) { Text(msg.subject,style=MaterialTheme.typography.titleSmall);Text(msg.account,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant);Text(m.optJSONObject("analysis")?.optString("summary")?.takeIf{it.isNotBlank()}?:"Marked important.",style=MaterialTheme.typography.bodySmall,maxLines=2) } }
+   }
   }
-  }
-  item(key="mail-actions") {
-   Row{TextButton(onClick={model?.loadMoreMail(search,account,important)},enabled=state.signedIn&&!state.busy){Text("Search all mail")};TextButton(onClick={search="";account="all";important=false;model?.loadMoreMail("","all",false)},enabled=state.signedIn&&!state.busy){Text("Reset")}}
-  }
-  item(key="mail-settings") {
-   MailControls(state,model)
-  }
-  item { Text("Daily brief",style=MaterialTheme.typography.titleMedium,modifier=Modifier.padding(top=16.dp));Text("Important email received today · Eastern time",style=MaterialTheme.typography.bodySmall) }
-  val brief=(snapshot(state,"mail").optJSONArray("briefing")?:snapshot(state,"mail").optJSONArray("messages")).objects().filter { m -> receivedEasternToday(m.getJSONObject("data").optString("receivedAt")) && (if(!m.isNull("override"))m.optBoolean("override") else m.optJSONObject("analysis")?.optBoolean("important")==true) }
-  if(brief.isEmpty())item { Text("No important email loaded for today.",style=MaterialTheme.typography.bodySmall) }
-  items(brief,key={"brief-"+it.getJSONObject("data").getString("id")}) { m ->val d=m.getJSONObject("data");InfoCard(d.optString("subject"),d.optString("account")) { Text(m.optJSONObject("analysis")?.optString("summary")?.takeIf{it.isNotBlank()}?:"Marked important. Open Inbox to read the message.",style=MaterialTheme.typography.bodyMedium) } }
-   item { Text("All emails",style=MaterialTheme.typography.titleMedium,modifier=Modifier.padding(top=16.dp)) }
-   item{Text("${snapshot(state,"mail").optJSONArray("messages")?.length()?:0} cached of ${snapshot(state,"mail").optInt("total")} messages · filters above search cached metadata",style=MaterialTheme.typography.bodySmall)}
-   if(messages.isEmpty())item { Text("No matching cached messages. Use Search all mail when online.") }
+   item { Text("Messages",style=MaterialTheme.typography.titleMedium,modifier=Modifier.padding(top=8.dp)) }
+   item{Text("${snapshot(state,"mail").optJSONArray("messages")?.length()?:0} cached of ${snapshot(state,"mail").optInt("total")}",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+   if(messages.isEmpty())item { Text("No matching cached messages. Use Search all mail when online.",style=MaterialTheme.typography.bodySmall) }
    if(!snapshot(state,"mail").isNull("nextCursor"))item{TextButton(onClick={model?.loadMoreMail()},enabled=state.signedIn&&!state.busy){Text("Load older messages")}}
-   items(messages,key={it.getJSONObject("data").getString("id")}) { m -> val d=m.getJSONObject("data");var open by rememberSaveable(d.getString("id")) { mutableStateOf(false) }
-    InfoCard(d.optString("subject"),d.optString("account")+" · "+d.optString("sender")) {
-     TextButton(onClick={open=!open}){Text(if(open)"Close" else "Read message")}
-     if(open) { MailBody(d,model);Row { TextButton(onClick={onFeedback(d.getString("id"),true)},enabled=!state.busy){Text("Important")};TextButton(onClick={onFeedback(d.getString("id"),false)},enabled=!state.busy){Text("Not important")} };if((d.optJSONArray("attachments")?.length()?:0)>0)MailAttachments(d,model) }
+   items(messages,key={it.getJSONObject("data").getString("id")}) { m -> val msg=mailMessage(m)
+    OutlinedCard(Modifier.fillMaxWidth().padding(vertical=4.dp).clickable{onMailModal(true);reading=msg.id}.testTag("mail-row-${msg.id}")) {
+     Column(Modifier.padding(12.dp)) { Text(msg.subject,style=MaterialTheme.typography.titleMedium);Text(listOf(msg.account,msg.sender).filter{it.isNotBlank()}.joinToString(" · "),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
     }
    }
   }
 }
-@Composable private fun FocusScreen(model:TimerModel?=if(androidx.compose.ui.platform.LocalInspectionMode.current)null else viewModel()) {
+@Composable private fun FocusScreen(model:TimerModel?=if(androidx.compose.ui.platform.LocalInspectionMode.current)null else viewModel(),onRefresh:()->Unit={},onSettings:()->Unit={}) {
  val timer = model?.state?.collectAsStateWithLifecycle()?.value ?: TimerState()
  val timerLifecycle=androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
  LaunchedEffect(model,timerLifecycle){timerLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED){if(model!=null)while(true){model.refreshDisplay();delay(1000)}}}
- var setup by rememberSaveable {mutableStateOf(false)}
- Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical=24.dp),horizontalAlignment=androidx.compose.ui.Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(20.dp)) {
-  Text(timer.label,style=MaterialTheme.typography.titleLarge)
+ var setup by rememberSaveable {mutableStateOf(false)};var permissions by rememberSaveable {mutableStateOf(false)}
+ Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical=16.dp),horizontalAlignment=androidx.compose.ui.Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(12.dp)) {
+  Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){
+   Spacer(Modifier.weight(1f))
+   Text(timer.label,style=MaterialTheme.typography.titleLarge)
+   Spacer(Modifier.weight(1f))
+   var focusMenu by remember{mutableStateOf(false)}
+   Box{IconButton(onClick={focusMenu=true},modifier=Modifier.size(40.dp)){Icon(Icons.Default.MoreVert,"Page actions")}
+    DropdownMenu(expanded=focusMenu,onDismissRequest={focusMenu=false}){
+     DropdownMenuItem(text={Text("Refresh")},onClick={focusMenu=false;onRefresh()})
+     DropdownMenuItem(text={Text("Settings")},onClick={focusMenu=false;onSettings()})
+    }}
+  }
   Text(String.format(Locale.US,"%02d:%02d",timer.remaining/60,timer.remaining%60),style=MaterialTheme.typography.displayLarge)
   if(timer.steps.isNotEmpty()&&!timer.onBreak)Text("${timer.index+1} of ${timer.steps.size}",style=MaterialTheme.typography.labelMedium)
-  Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-   Button(onClick={model?.toggle()}){Text(if(timer.running)"Pause" else "Start")}
-   OutlinedButton(onClick={model?.reset()}){Text("Reset")}
+  Button(onClick={model?.toggle()},modifier=Modifier.defaultMinSize(minWidth=160.dp,minHeight=48.dp)){Text(if(timer.running)"Pause" else "Start")}
+  Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+   TextButton(onClick={model?.reset()}){Text("Reset")}
+   TextButton(onClick={if(timer.running)model?.toggle();setup=true}){Text("Timer settings")}
   }
-  TextButton(onClick={if(timer.running)model?.toggle();setup=true}){Text("Timer settings")}
-  if(timer.steps.isNotEmpty())Column {timer.steps.withIndex().forEach{(i,step)->ListItem(headlineContent={Text(step.name)},supportingContent={Text("${step.minutes} min")},trailingContent={Text(if(!timer.onBreak&&i==timer.index)"Current" else if(timer.onBreak||i<timer.index)"Done" else "")})}}
-  TimerPermissions()
+  if(timer.steps.isNotEmpty())Column(Modifier.fillMaxWidth()) {timer.steps.withIndex().forEach{(i,step)->ListItem(headlineContent={Text(step.name)},supportingContent={Text("${step.minutes} min")},trailingContent={Text(if(!timer.onBreak&&i==timer.index)"Current" else if(timer.onBreak||i<timer.index)"Done" else "")})}}
+  TextButton(onClick={permissions=!permissions}){Text(if(permissions)"Hide timer permissions" else "Timer permissions & alerts")}
+  if(permissions)TimerPermissions()
  }
  if(setup)TimerSetup(timer,{setup=false},{f,b,steps->model?.configure(f,b,steps);setup=false})
 }

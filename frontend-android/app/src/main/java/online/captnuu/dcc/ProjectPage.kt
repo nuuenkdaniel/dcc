@@ -1,13 +1,17 @@
 package online.captnuu.dcc
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -32,7 +36,7 @@ fun projectFieldError(title:String,deadline:String,minutes:String):String? = whe
 }
 fun newProjectDraft()=JSONObject().put("id",UUID.randomUUID().toString()).put("title","").put("kind","project").put("category","school").put("description","").put("deadline","").put("importance",2).put("remainingMinutes",60).put("progress","").put("status","active").put("resources",JSONArray())
 
-@Composable fun ProjectPage(state:WorkspaceState,model:WorkspaceModel?,refresh:()->Unit,complete:(JSONObject,Boolean)->Unit) {
+@Composable fun ProjectPage(state:WorkspaceState,model:WorkspaceModel?,refresh:()->Unit,complete:(JSONObject,Boolean)->Unit,onSettings:()->Unit={}) {
  val planner=workspaceSnapshot(state,"planner")
  var filter by rememberSaveable {mutableStateOf("active")}
  var draft by rememberSaveable {mutableStateOf<String?>(null)}
@@ -42,11 +46,21 @@ fun newProjectDraft()=JSONObject().put("id",UUID.randomUUID().toString()).put("t
  val scope=rememberCoroutineScope()
  val enabled=(state.signedIn||state.restorePending) && !state.busy && !working && model!=null
  val projects=planner.optJSONArray("projects").objects().filter{filter=="all"||it.getJSONObject("data").optString("status")==filter}.sortedBy{it.getJSONObject("data").optString("deadline").ifBlank{"9999"}}
+ fun setStatus(entry:JSONObject,status:String){if(model==null)return;working=true;scope.launch {try{model.saveProject(JSONObject(entry.getJSONObject("data").toString()).put("status",status),entry.getInt("version"));message="Project updated or queued. Check Pending edits for sync status."}catch(e:Exception){message=e.message?:"Could not update project."}finally{working=false}}}
  Column(Modifier.fillMaxSize()) {
-  Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+  val queued=planner.optJSONObject("status")?.optBoolean("requested")==true
+  var pageMenu by remember{mutableStateOf(false)}
+  Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=Alignment.CenterVertically) {
    Button(onClick={version=0;draft=newProjectDraft().toString()},enabled=enabled){Text("New project")}
+   Spacer(Modifier.weight(1f))
+   Box{IconButton(onClick={pageMenu=true}){Icon(Icons.Default.MoreVert,"Page actions")}
+    DropdownMenu(expanded=pageMenu,onDismissRequest={pageMenu=false}){
+     DropdownMenuItem(text={Text("Refresh")},onClick={pageMenu=false;refresh()},enabled=enabled)
+     DropdownMenuItem(text={Text(if(queued)"Planning queued" else "Request planning")},onClick={pageMenu=false;working=true;scope.launch {try{model!!.requestPlanning();message="Planning requested."}catch(e:Exception){message=e.message?:"Could not request planning."}finally{working=false}}},enabled=enabled&&!queued)
+     DropdownMenuItem(text={Text("Settings")},onClick={pageMenu=false;onSettings()})
+    }}
   }
-  Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(4.dp)) {listOf("active","complete","all").forEach{value->FilterChip(filter==value,{filter=value},label={Text(value.replaceFirstChar{it.uppercase()})})}}
+  Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(4.dp)) {listOf("active","complete","all").forEach{value->FilterChip(filter==value,{filter=value},label={Text(value.replaceFirstChar{it.uppercase()})},modifier=Modifier.testTag("project-filter-$value"))}}
   if(!state.signedIn)Text("Sign in to manage projects.",style=MaterialTheme.typography.bodySmall)
   if(message.isNotBlank())Text(message,style=MaterialTheme.typography.bodySmall)
   LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(10.dp)) {
@@ -54,15 +68,30 @@ fun newProjectDraft()=JSONObject().put("id",UUID.randomUUID().toString()).put("t
    items(projects,key={it.getJSONObject("data").getString("id")}) {entry->
     val d=entry.getJSONObject("data")
     var open by rememberSaveable(d.getString("id")){mutableStateOf(false)}
+    var menu by remember{mutableStateOf(false)}
     val tasks=planner.optJSONArray("actions").objects().filter{it.getJSONObject("data").optString("projectId")==d.getString("id")}.sortedBy{it.getJSONObject("data").optString("date")}
-    OutlinedCard(Modifier.fillMaxWidth()) {Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
-     Text(d.optString("title"),style=MaterialTheme.typography.titleMedium)
-     Text(listOf(d.optString("category"),d.optString("status"),d.optString("deadline").takeIf{it.isNotBlank()}?.let{"Due $it"}).filterNotNull().joinToString(" · "),style=MaterialTheme.typography.bodySmall)
-     Text("${tasks.count{it.getJSONObject("data").optBoolean("completed")}} / ${tasks.size} tasks completed",style=MaterialTheme.typography.bodySmall)
-     Row {TextButton(onClick={open=!open}){Text(if(open)"Hide details" else "Details & tasks")};TextButton(onClick={version=entry.getInt("version");draft=d.toString()},enabled=enabled){Text("Edit")}}
+    val status=d.optString("status")
+    OutlinedCard(Modifier.fillMaxWidth()) {Column(Modifier.padding(12.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
+     Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+      Column(Modifier.weight(1f).clickable{open=!open}) {
+       Text(d.optString("title"),style=MaterialTheme.typography.titleMedium)
+       Text(listOf(d.optString("category"),status,d.optString("deadline").takeIf{it.isNotBlank()}?.let{"Due $it"}).filterNotNull().joinToString(" · "),style=MaterialTheme.typography.bodySmall)
+       Text("${tasks.count{it.getJSONObject("data").optBoolean("completed")}} / ${tasks.size} tasks",style=MaterialTheme.typography.bodySmall)
+      }
+      Box {
+       IconButton(onClick={menu=true},enabled=enabled,modifier=Modifier.testTag("project-actions-${d.getString("id")}")){Icon(Icons.Default.MoreVert,"Project actions")}
+       DropdownMenu(expanded=menu,onDismissRequest={menu=false}){
+        DropdownMenuItem(text={Text("Edit")},onClick={menu=false;version=entry.getInt("version");draft=d.toString()})
+        if(status!="complete")DropdownMenuItem(text={Text("Mark complete")},onClick={menu=false;setStatus(entry,"complete")},modifier=Modifier.testTag("project-mark-complete"))
+        if(status=="complete"||status=="archived")DropdownMenuItem(text={Text("Reopen")},onClick={menu=false;setStatus(entry,"active")},modifier=Modifier.testTag("project-reopen"))
+        if(status!="archived")DropdownMenuItem(text={Text("Archive")},onClick={menu=false;setStatus(entry,"archived")},modifier=Modifier.testTag("project-archive"))
+        if(status=="archived")DropdownMenuItem(text={Text("Restore")},onClick={menu=false;setStatus(entry,"active")},modifier=Modifier.testTag("project-restore"))
+       }
+      }
+     }
      if(open) {
-      if(d.optString("description").isNotBlank())Text(d.optString("description"))
-      if(d.optString("progress").isNotBlank())Text("Progress: ${d.optString("progress")}")
+      if(d.optString("description").isNotBlank())Text(d.optString("description"),style=MaterialTheme.typography.bodyMedium)
+      if(d.optString("progress").isNotBlank())Text("Progress: ${d.optString("progress")}",style=MaterialTheme.typography.bodySmall)
       Text("${d.optInt("remainingMinutes")} min allowance · Priority ${d.optInt("importance")}",style=MaterialTheme.typography.bodySmall)
       d.optJSONArray("resources").objects().forEach{r->var show by remember{mutableStateOf(false)};TextButton(onClick={show=!show}){Text(r.optString("name"))};if(show)Text(r.optString("text"),style=MaterialTheme.typography.bodySmall)}
       if(tasks.isEmpty())Text("No generated tasks yet.",style=MaterialTheme.typography.bodySmall)
@@ -77,11 +106,6 @@ fun newProjectDraft()=JSONObject().put("id",UUID.randomUUID().toString()).put("t
      }
     }}
    }
-  }
-  Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-   TextButton(onClick=refresh,enabled=enabled){Text("Sync")}
-   val queued=planner.optJSONObject("status")?.optBoolean("requested")==true
-   TextButton(onClick={working=true;scope.launch {try{model!!.requestPlanning();message="Planning requested."}catch(e:Exception){message=e.message?:"Could not request planning."}finally{working=false}}},enabled=enabled&&!queued){Text(if(queued)"Planning queued" else "Request planning")}
   }
  }
  draft?.let {raw->ProjectEditor(raw,version,enabled,model,{draft=null},{draft=it},{message="Saved or queued on this phone. Check Pending edits for sync status.";draft=null})}

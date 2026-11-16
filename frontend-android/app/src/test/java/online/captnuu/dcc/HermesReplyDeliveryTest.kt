@@ -5,6 +5,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import okio.Timeout
 
 /** Isolated synthetic claims/storage; no endpoint or user data. */
 class HermesReplyDeliveryTest {
@@ -93,15 +96,17 @@ class HermesReplyDeliveryTest {
                     "http"->throw HermesHttpFailure(status=500)
                 }
                 v
-            },{now})
+            },{now},recoveryTiming=HermesChatRecoveryTiming(listOf(0,0,0,0),5000,200))
             try{
-                begin(c);assertEquals(listOf("start","read"),calls);assertFalse(c.state.value.busy)
+                begin(c)
+                val expectedCalls=if(kind=="running"||kind=="http") listOf("start","read","read","read","read") else listOf("start","read")
+                assertEquals(expectedCalls,calls);assertFalse(c.state.value.busy)
                 assertTrue(c.state.value.timeline.none{it.kind=="reply"});assertNotNull(c.state.value.attemptKey)
-                val code=when(kind){"running"->"NO_FINAL";"expired"->"EXPIRED";"decode"->"DECODE";"http"->"HTTP 500";else->"INVALID"}
+                val recoveryCode=when(kind){"running"->"TIMEOUT";"expired"->"EXPIRED";"decode"->"DECODE";"http"->"TIMEOUT";else->"INVALID"}
                 val text=c.state.value.timeline.last().text
-                assertTrue(text.contains("[NETWORK]"));assertTrue(text.contains("[$code]"));assertFalse(text.contains("private"))
+                assertTrue(text.contains("[NETWORK]"));assertTrue(text.contains("[$recoveryCode]"));assertFalse(text.contains("private"))
                 val reopened=HermesConversationController(scope,{saved},{error("No replay")},{now});reopened.bind(owner)
-                assertEquals(listOf("start","read"),calls)
+                assertEquals(expectedCalls,calls)
                 c.edit("A genuinely new topic");assertEquals("A genuinely new topic",c.state.value.draft)
             }finally{scope.cancel()}
         }
@@ -120,15 +125,43 @@ class HermesReplyDeliveryTest {
     }
 
     @Test fun recoveryWatchdogTerminatesOneSuspendedRead()=runBlocking {
-        val scope=CoroutineScope(Dispatchers.Unconfined);val calls=mutableListOf<String>();val done=CompletableDeferred<Unit>()
+        val scope=CoroutineScope(Dispatchers.Unconfined);val calls=mutableListOf<String>()
+        val cancels=java.util.concurrent.atomic.AtomicInteger(0)
+        val readEntered=java.util.concurrent.atomic.AtomicInteger(0)
+        val factory=object:okhttp3.Call.Factory{
+            override fun newCall(request:okhttp3.Request):okhttp3.Call=object:okhttp3.Call{
+                @Volatile private var canceled=false
+                override fun cancel(){canceled=true;cancels.incrementAndGet()}
+                override fun clone():okhttp3.Call=this
+                override fun enqueue(responseCallback:okhttp3.Callback){
+                    readEntered.incrementAndGet()
+                    Thread{
+                        try{
+                            while(!canceled) Thread.sleep(5)
+                            responseCallback.onFailure(this, java.io.IOException("cancelled"))
+                        }catch(_:InterruptedException){responseCallback.onFailure(this, java.io.IOException("interrupted"))}
+                    }.start()
+                }
+                override fun execute():okhttp3.Response=error("unused")
+                override fun isCanceled():Boolean=canceled
+                override fun isExecuted():Boolean=false
+                override fun request():okhttp3.Request=request
+                override fun timeout():okio.Timeout=okio.Timeout.NONE
+            }
+        }
         val c=HermesConversationController(scope,{Memory()},{body->
             calls+=body.getString("op")
             if(calls.size==1)throw java.io.IOException("private detail")
-            try{awaitCancellation()}finally{done.complete(Unit)}
-        },{now},receiptTimeoutMillis=20)
+            val result=awaitHermesHttp(factory,okhttp3.Request.Builder().url("https://synthetic.invalid/api/v1/hermes/conversation").post(body.toString().toRequestBody("application/json".toMediaType())).build())
+            if(result.code !in 200..299)throw HermesHttpFailure(status=result.code)
+            JSONObject(result.body)
+        },{now},receiptTimeoutMillis=20,recoveryTiming=HermesChatRecoveryTiming(listOf(0,0,0,0),2000,15000))
         try{
-            begin(c);withTimeout(2000){done.await();while(c.state.value.timeline.last().kind!="unknown")delay(1)}
-            assertEquals(listOf("start","read"),calls);assertFalse(c.state.value.busy)
+            begin(c);withTimeout(8000){while(calls.size<5||cancels.get()<4||c.state.value.timeline.lastOrNull()?.kind!="unknown")delay(10)}
+            assertEquals(listOf("start","read","read","read","read"),calls)
+            assertEquals(4,readEntered.get())
+            assertEquals(4,cancels.get())
+            assertFalse(c.state.value.busy)
             assertTrue(c.state.value.timeline.last().text.contains("[TIMEOUT]"))
         }finally{scope.cancel()}
     }
@@ -140,15 +173,18 @@ class HermesReplyDeliveryTest {
             val c=HermesConversationController(scope,{saved},{body->
                 calls+=body.getString("op")
                 if(calls.size==1){first=body;throw java.io.IOException("private detail")}
-                if(body.getString("op")=="read")withContext(NonCancellable){gate.await();finalReply(first!!)}
-                else finalReply(body)
-            },{now})
+                if(body.getString("op")=="read" && body.getString("rootKey")==first!!.getString("key")){
+                    withContext(NonCancellable){gate.await()};finalReply(first!!)
+                } else finalReply(body)
+            },{now},recoveryTiming=HermesChatRecoveryTiming(listOf(0,0,0,0),5000,200))
             try{
                 begin(c);assertEquals(listOf("start","read"),calls)
                 if(switchOwner){c.unbind();c.bind("b".repeat(64));c.edit("Other owner draft")}
                 else{c.edit("New explicit topic");c.send();c.edit("Newer editable draft")}
                 val before=c.state.value
                 gate.complete(Unit)
+                // finite barrier: allow actual non-cooperative late completion to arrive and be fenced
+                kotlinx.coroutines.runBlocking { kotlinx.coroutines.yield(); kotlinx.coroutines.delay(50); kotlinx.coroutines.yield() }
                 assertEquals(before,c.state.value)
                 assertEquals(if(switchOwner)listOf("start","read") else listOf("start","read","start"),calls)
                 assertTrue(c.state.value.timeline.none{it.id=="reply:${first!!.getString("key")}"})
@@ -162,7 +198,7 @@ class HermesReplyDeliveryTest {
         val c=HermesConversationController(scope,{Memory()},{body->
             if(body.getString("op")=="start"){start=body;throw java.io.IOException("private detail")}
             reads++;finalReply(start!!).also{it.remove("assistantReply");it.put("toolSummary",JSONObject().put("version",1).put("text","No changes recorded."))}
-        },{now})
+        },{now},recoveryTiming=HermesChatRecoveryTiming(listOf(0,0,0,0),5000,200))
         try{
             begin(c);assertEquals(1,reads);assertEquals("No changes recorded.",c.state.value.timeline.last().text)
         }finally{scope.cancel()}
@@ -175,7 +211,7 @@ class HermesReplyDeliveryTest {
                 calls+=body.getString("op")
                 withContext(NonCancellable){gate.await()}
                 throw java.io.IOException("private detail")
-            },{now})
+            },{now},recoveryTiming=HermesChatRecoveryTiming(listOf(0,0,0,0),5000,200))
             try{
                 begin(c)
                 when(kind){
@@ -196,15 +232,102 @@ class HermesReplyDeliveryTest {
             calls+=body.getString("op")
             if(calls.size==1){start=body;throw java.io.IOException("private detail")}
             saved.fail=true;finalReply(start!!)
-        },{now})
+        },{now},recoveryTiming=HermesChatRecoveryTiming(listOf(0,0,0,0),1000,200))
         try{
             begin(c);assertEquals(listOf("start","read"),calls)
-            assertFalse(c.state.value.storageReady);assertNotNull(c.state.value.attemptKey)
+            assertFalse(c.state.value.storageReady)
+            assertNotNull(c.state.value.attemptKey)
             assertFalse(c.state.value.submitted!!.closed)
             assertTrue(c.state.value.timeline.none{it.kind=="reply"})
-            assertTrue(c.state.value.timeline.last().text.contains("[NETWORK]"))
-            assertTrue(c.state.value.timeline.last().text.contains("[STORAGE]"))
+            val text=c.state.value.timeline.last().text
+            assertTrue(text.contains("[NETWORK]"))
+            assertTrue(text.contains("[STORAGE]"))
             assertTrue(JSONObject(saved.raw!!).has("attemptKey"))
         }finally{scope.cancel()}
+    }
+
+    @Test fun genuineLostStartAndFirstReadRecoverLaterFinalReplyWithEffectsOnce(){
+        val scope=CoroutineScope(Dispatchers.Unconfined);val calls=mutableListOf<String>();var start:JSONObject?=null;var effects=0
+        fun reply3(s:JSONObject)=JSONObject().put("version",1).put("chatVersion",1)
+            .put("rootKey",s.getString("key")).put("turnKey",s.getString("key"))
+            .put("questions",0).put("expiresAt",now+HERMES_TTL_MS)
+            .put("receipt",JSONObject().put("version",1).put("key",s.getString("key"))
+                .put("outcome","complete").put("line","Added 3/3 tasks").put("expected",3).put("verified",3)
+                .put("targets",JSONArray((1..3).map{i->JSONObject().put("kind","task").put("id","task$i").put("action","added").put("title","Task $i").put("date","2026-11-07").put("state","applied").put("verification","verified")})))
+            .put("assistantReply",JSONObject().put("version",1).put("text","Added 3 tasks."))
+        val c=HermesConversationController(scope,{Memory()},{body->
+            calls+=body.getString("op")
+            when(calls.size){
+                1->{start=body;effects=3;throw java.io.IOException("private start")}
+                2->throw java.io.IOException("private read")
+                else->reply3(start!!)
+            }
+        },{now},recoveryTiming=HermesChatRecoveryTiming(listOf(0,0,0,0),5000,200))
+        try{
+            begin(c)
+            assertEquals(listOf("start","read","read"),calls)
+            assertEquals(3,effects)
+            assertEquals("Added 3 tasks.",c.state.value.timeline.last{it.kind=="reply"}.text)
+            assertNotNull(c.state.value.receipt)
+            val r=JSONObject(c.state.value.receipt!!)
+            assertEquals("complete",r.getString("outcome"));assertEquals(3,r.getInt("verified"));assertEquals(3,r.getJSONArray("targets").length())
+            assertTrue(c.state.value.notice.contains("recovered",ignoreCase=true))
+            assertFalse(c.state.value.timeline.any{it.text.contains("private")})
+        }finally{scope.cancel()}
+    }
+
+    @Test fun validRunningNoFinalContinuesRecoveryUntilFinal(){
+        val scope=CoroutineScope(Dispatchers.Unconfined);val calls=mutableListOf<String>();var start:JSONObject?=null
+        fun running(s:JSONObject)=finalReply(s).also{it.remove("assistantReply");it.getJSONObject("receipt").put("outcome","uncertain")}
+        val c=HermesConversationController(scope,{Memory()},{body->
+            calls+=body.getString("op")
+            if(calls.size==1){start=body;throw java.io.IOException("private start")}
+            if(calls.size<=3)running(start!!) else finalReply(start!!)
+        },{now},recoveryTiming=HermesChatRecoveryTiming(listOf(0,0,0,0),5000,200))
+        try{
+            begin(c)
+            assertEquals(listOf("start","read","read","read"),calls)
+            assertEquals("Stored synthetic reply",c.state.value.timeline.last{it.kind=="reply"}.text)
+            assertEquals(1,c.state.value.timeline.count{it.kind=="reply"})
+        }finally{scope.cancel()}
+    }
+
+    @Test fun persistentNetworkDownStopsWithinBoundedBudgetAndLeavesComposerEditable(){
+        val scope=CoroutineScope(Dispatchers.Unconfined);val calls=mutableListOf<String>()
+        val c=HermesConversationController(scope,{Memory()},{body->
+            calls+=body.getString("op")
+            throw java.io.IOException("private detail")
+        },{now},recoveryTiming=HermesChatRecoveryTiming(listOf(0,0,0,0),1000,50))
+        try{
+            begin(c)
+            assertEquals(listOf("start","read","read","read","read"),calls)
+            assertFalse(c.state.value.busy)
+            val text=c.state.value.timeline.last().text
+            assertTrue(text.contains("[NETWORK]"));assertTrue(text.contains("Outcome unconfirmed",ignoreCase=true)||text.contains("unconfirmed",ignoreCase=true))
+            assertNotNull(c.state.value.attemptKey)
+            c.edit("A genuinely different message");assertEquals("A genuinely different message",c.state.value.draft)
+            assertFalse(c.state.value.notice.contains("private detail"))
+        }finally{scope.cancel()}
+    }
+
+    @Test fun cancellationAndNewTurnFenceOldRecovery(){
+        val scope=CoroutineScope(Dispatchers.Unconfined);val gate=CompletableDeferred<Unit>();val calls=mutableListOf<String>();var first:JSONObject?=null
+        val c=HermesConversationController(scope,{Memory()},{body->
+            calls+=body.getString("op")
+            if(calls.size==1){first=body;throw java.io.IOException("private detail")}
+            if(body.getString("op")=="read" && body.getString("rootKey")==first!!.getString("key")){
+                withContext(NonCancellable){gate.await()};finalReply(first!!)
+            } else finalReply(body)
+        },{now},recoveryTiming=HermesChatRecoveryTiming(listOf(0,0,0,0),5000,200))
+        try{
+            begin(c);assertEquals(listOf("start","read"),calls)
+            c.edit("New explicit topic");c.send()
+            val before=c.state.value;gate.complete(Unit)
+            // allow non-cooperative late read response to arrive and be fenced
+            kotlinx.coroutines.runBlocking { kotlinx.coroutines.yield(); kotlinx.coroutines.delay(50); kotlinx.coroutines.yield() }
+            assertEquals(before,c.state.value)
+            assertTrue(c.state.value.timeline.none{it.id=="reply:${first!!.getString("key")}"})
+            assertEquals(listOf("start","read","start"),calls)
+        }finally{gate.complete(Unit);scope.cancel()}
     }
 }

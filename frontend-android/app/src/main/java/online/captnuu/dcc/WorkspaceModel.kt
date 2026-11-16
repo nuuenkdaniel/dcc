@@ -25,7 +25,28 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collect
 
 private const val ORIGIN = "https://dcc.home.captnuu.online"
+internal const val MAIL_MAX_DECODED_BYTES = 2 * 1024 * 1024
+internal const val MAIL_MAX_WIRE_BYTES = MAIL_MAX_DECODED_BYTES * 6 + 4096 // bounded before parse; JSON string escaping worst case
+internal const val MAIL_CACHE_AUTHORITY_FILE = "mail-read-owner.enc"
 data class WorkspaceState(val restoring:Boolean=false,val restorePending:Boolean=false,val signedIn:Boolean=false,val busy:Boolean=false,val notice:String="Sign in to connect to your workspace.",val pending:List<String> = emptyList(),val snapshots:Map<String,String> = emptyMap())
+internal fun parseMailHtmlPayload(raw:String,wireCap:Int=MAIL_MAX_WIRE_BYTES):WorkspaceModel.MailHtmlResult {
+    require(raw.toByteArray(Charsets.UTF_8).size<=wireCap){"Formatted message is too large to cache safely."}
+    val result=JSONObject(raw)
+    val hasHtml=result.opt("hasHtml")
+    val html=result.opt("html")
+    require(hasHtml is Boolean){"Invalid formatted message response."}
+    val htmlValue=when{
+        html==JSONObject.NULL || html==null -> null
+        html is String -> html
+        else -> throw IllegalArgumentException("Invalid formatted message response.")
+    }
+    if(htmlValue!=null){
+        require((hasHtml as Boolean) && htmlValue.isNotBlank() && htmlValue.toByteArray(Charsets.UTF_8).size<=MAIL_MAX_DECODED_BYTES){"Formatted message exceeds the safe size limit."}
+    } else {
+        require(!(hasHtml as Boolean)){"Invalid formatted message response."}
+    }
+    return WorkspaceModel.MailHtmlResult(htmlValue,hasHtml as Boolean)
+}
 
 /** Terminal I/O injection for isolated native hosts; no alternate sync logic. */
 internal class WorkspaceModelDependencies(
@@ -33,13 +54,16 @@ internal class WorkspaceModelDependencies(
     val httpClient:OkHttpClient?,
     val registerConnectivity:Boolean,
     val clearCachedMailBodies:()->Unit,
-    val displaySyncTiming:HermesDisplaySyncTiming=HermesDisplaySyncTiming()
+    val displaySyncTiming:HermesDisplaySyncTiming=HermesDisplaySyncTiming(),
+    val mailCacheDir:(()->java.io.File)?=null,
+    val recoveryTiming:HermesChatRecoveryTiming=HermesChatRecoveryTiming()
 )
 private fun workspaceModelDependencies(application:Application)=WorkspaceModelDependencies(
     storage={name,strict,existingKeyOnly->EncryptedSessionStorage(application,name,strict,existingKeyOnly)},
     httpClient=null,
     registerConnectivity=true,
-    clearCachedMailBodies={application.noBackupFilesDir.listFiles()?.filter{Regex("mail-body-[a-f0-9]{64}\\.enc").matches(it.name)}?.forEach{it.delete()};Unit}
+    clearCachedMailBodies={application.noBackupFilesDir.listFiles()?.filter{Regex("mail-(body|html)-([a-f0-9]{64}-[a-f0-9]{64}|[a-f0-9]{64})\\.enc").matches(it.name)}?.forEach{it.delete()};Unit},
+    mailCacheDir={application.noBackupFilesDir}
 )
 
 class WorkspaceModel internal constructor(application:Application,private val dependencies:WorkspaceModelDependencies):AndroidViewModel(application) {
@@ -47,7 +71,11 @@ class WorkspaceModel internal constructor(application:Application,private val de
     private fun stored(name:String,strict:Boolean=false,existingKeyOnly:Boolean=false)=dependencies.storage(name,strict,existingKeyOnly)
     private val mutable = MutableStateFlow(WorkspaceState(restoring=true,busy=true,notice="Restoring session…"))
     val state = mutable.asStateFlow()
-    private fun clearWorkspaceCache(){cache.clear();dependencies.clearCachedMailBodies()}
+    private val mailAuthority=stored(MAIL_CACHE_AUTHORITY_FILE)
+    private fun persistMailReadAuthority(owner:String){ if(Regex("^[a-f0-9]{64}$").matches(owner)) runCatching{mailAuthority.write(JSONObject().put("owner",owner).toString())} }
+    private fun readMailReadAuthority():String? = runCatching{ val raw=mailAuthority.read()?:return null; JSONObject(raw).optString("owner").takeIf{Regex("^[a-f0-9]{64}$").matches(it)} }.getOrNull()
+    private fun clearMailReadAuthority(){ runCatching{mailAuthority.clear()} }
+    private fun clearWorkspaceCache(){cache.clear();dependencies.clearCachedMailBodies();clearMailReadAuthority()}
     private val queue=MutationQueue(stored("outbox.enc",strict=true))
     private val queueLock=Mutex()
     internal val manualTaskLock=Mutex()
@@ -59,10 +87,10 @@ class WorkspaceModel internal constructor(application:Application,private val de
     private val sessions=PersistentSessionJar(stored("session.enc"),ORIGIN.toHttpUrl())
     private val client = (dependencies.httpClient?.newBuilder()?:OkHttpClient.Builder()).callTimeout(20,TimeUnit.SECONDS)
         .followRedirects(false).followSslRedirects(false).cookieJar(sessions).build()
-    val hermes:HermesConversationController=HermesConversationController(viewModelScope,{owner->stored("hermes-$owner.enc",strict=true)},{body->api("/api/v1/hermes/conversation",body)},recoveryStorageFor={owner->stored("hermes-chat-$owner-separate-v1.enc",strict=true,existingKeyOnly=true)},chatStorageFor={owner->stored("hermes-chat-$owner-v1.enc",strict=true)},legacyRecoveryStorageFor={owner->stored("hermes-$owner-separate-v1.enc",strict=true,existingKeyOnly=true)},onDisplaySync=::scheduleDisplaySync)
+    val hermes:HermesConversationController=HermesConversationController(viewModelScope,{owner->stored("hermes-$owner.enc",strict=true)},{body->api("/api/v1/hermes/conversation",body)},recoveryStorageFor={owner->stored("hermes-chat-$owner-separate-v1.enc",strict=true,existingKeyOnly=true)},chatStorageFor={owner->stored("hermes-chat-$owner-v1.enc",strict=true)},legacyRecoveryStorageFor={owner->stored("hermes-$owner-separate-v1.enc",strict=true,existingKeyOnly=true)},onDisplaySync=::scheduleDisplaySync,recoveryTiming=dependencies.recoveryTiming)
     private suspend fun bindHermes(session:JSONObject){
         val owner=session.optString("workspaceOwner")
-        if(Regex("^[a-f0-9]{64}$").matches(owner))hermes.bind(owner) else hermes.unbind()
+        if(Regex("^[a-f0-9]{64}$").matches(owner)){ hermes.bind(owner); persistMailReadAuthority(owner) } else { hermes.unbind(); clearMailReadAuthority() }
         try{hermes.chatCapabilities(api("/api/v1/hermes/action-capabilities"))}catch(_:Exception){hermes.availability(false)}
     }
     init {
@@ -97,7 +125,7 @@ class WorkspaceModel internal constructor(application:Application,private val de
         bindHermes(result)
         refreshAll()
     }
-    private suspend fun request(path:String,body:JSONObject?=null,ownerFence:HermesOwnerFence?=null,boundedRead:Boolean=false):String {
+    internal suspend fun request(path:String,body:JSONObject?=null,ownerFence:HermesOwnerFence?=null,boundedRead:Boolean=false,maxBodyBytes:Int?=null):String {
       val scoped=path=="/api/v1/hermes/conversation"||ownerFence!=null
       val fence=ownerFence?:if(scoped)hermes.ownerFence()?.takeIf{it.owner==body?.optString("workspaceOwner")} else null
       return withContext(Dispatchers.IO) {
@@ -106,7 +134,7 @@ class WorkspaceModel internal constructor(application:Application,private val de
         val conversation=path=="/api/v1/hermes/conversation"
         if(conversation&&hermes.state.value.displaySyncVersion==1)builder.header("X-Dcc-Display-Sync","1")
         val callClient=if(boundedRead)hermesConversationClient(client,"read") else if(conversation)hermesConversationClient(client,body?.optString("op")) else if(path.endsWith("/extract")||path.endsWith("/session")||path.endsWith("/material"))client.newBuilder().callTimeout(180,TimeUnit.SECONDS).build() else client
-        val response=if(conversation||boundedRead)awaitHermesHttp(callClient,builder.build()) else callClient.newCall(builder.build()).execute().use{HermesHttpResult(it.code,if(it.isSuccessful)it.body?.string()?:"{}" else "{}")}
+        val response=if(conversation||boundedRead)awaitHermesHttp(callClient,builder.build(),maxBytes=maxBodyBytes) else callClient.newCall(builder.build()).execute().use{HermesHttpResult(it.code,if(it.isSuccessful)it.body?.string()?:"{}" else "{}")}
             if(response.code==401) {
                 withContext(Dispatchers.Main.immediate){
                     // A delayed response from a prior Hermes/account generation
@@ -267,11 +295,119 @@ class WorkspaceModel internal constructor(application:Application,private val de
         page.put("query",query?:previous.optString("query","")).put("accountFilter",if(query!=null)account else previous.optString("accountFilter","all")).put("importantFilter",if(query!=null)important.toString() else previous.optString("importantFilter","false"))
         val next=mutable.value.snapshots+("mail" to page.toString());mutable.value=mutable.value.copy(snapshots=next,notice="");withContext(Dispatchers.IO){cache.write(JSONObject(next).toString())}
     }
-    suspend fun mailBody(id:String):String=withContext(Dispatchers.IO){
+    private val mailCacheLock=Mutex()
+    private fun mailFenceCurrent(fence:HermesOwnerFence?)=fence!=null && mutable.value.signedIn && hermes.isCurrent(fence)
+    private fun mailOwnerScopedName(kind:String,owner:String,id:String)="mail-$kind-$owner-$id.enc"
+    private fun mailLegacyName(kind:String,id:String)="mail-$kind-$id.enc"
+    private fun readOwnerScopedMail(kind:String,owner:String,id:String):String? = try{stored(mailOwnerScopedName(kind,owner,id)).read()}catch(_:Exception){null}
+    private fun mailCacheDirectory()=dependencies.mailCacheDir?.invoke() ?: getApplication<Application>().noBackupFilesDir
+    private fun hasLegacyMail(kind:String,id:String):Boolean = mailCacheDirectory().listFiles()?.any{it.name==mailLegacyName(kind,id)}==true
+    internal fun mailCachedReadAuthorized(owner:String?):Boolean {
+        if(owner==null || !Regex("^[a-f0-9]{64}$").matches(owner)) return false
+        if(!sessions.hasSession()) return false
+        val bound=hermes.ownerFence()?.owner
+        if(bound!=null) return bound==owner
+        // Offline recreation: previously authorized owner metadata, no fabricated live Hermes fence.
+        return readMailReadAuthority()==owner
+    }
+    private fun staleMailFence(fence:HermesOwnerFence?):Boolean = fence!=null && !hermes.isCurrent(fence)
+    private fun mailLiveFenceCurrent(fence:HermesOwnerFence?):Boolean = fence!=null && mutable.value.signedIn && hermes.isCurrent(fence)
+    private data class MailCacheWrite(val fence:HermesOwnerFence,val id:String,val kind:String,val encoded:String,val utf8Bytes:Int,val maxCount:Int,val budgetBytes:Long)
+    private val mailEncryptedOverheadBytes=64L
+    private suspend fun commitMailCache(write:MailCacheWrite){
+        if(!mailLiveFenceCurrent(write.fence)) return
+        mailCacheLock.withLock{
+            if(!mailLiveFenceCurrent(write.fence)) return
+            val dir=mailCacheDirectory()
+            val name=mailOwnerScopedName(write.kind,write.fence.owner,write.id)
+            val pattern=Regex("mail-${Regex.escape(write.kind)}-${Regex.escape(write.fence.owner)}-[a-f0-9]{64}\\.enc")
+            val files=dir.listFiles()?.filter{pattern.matches(it.name)}?.sortedBy{it.lastModified()}.orEmpty()
+            var total=files.filter{it.name!=name}.sumOf{it.length()}
+            val estimated=write.utf8Bytes.toLong()+mailEncryptedOverheadBytes
+            if(estimated>write.budgetBytes){return} // oversize valid body can render without cache
+            val keep=files.filter{it.name!=name}.toMutableList()
+            while(keep.size>=write.maxCount-1 || total+estimated>write.budgetBytes){
+                val oldest=keep.removeFirstOrNull()?:break
+                if(!mailLiveFenceCurrent(write.fence)) return
+                total-=oldest.length(); runCatching{oldest.delete()} // metadata prune only; no body read
+            }
+            if(!mailLiveFenceCurrent(write.fence)) return
+            // Final record written through protected SessionStorage (encrypted + atomic per storage impl).
+            // Never write plaintext JSON or rename ciphertext across filenames (AAD mismatch).
+            stored(name).write(write.encoded)
+            // No filename-only post-write delete: stale cleanup must not erase a newer same-owner write.
+        }
+    }
+    private fun authorizedCacheOwner(explicitFence:HermesOwnerFence?):String? {
+        if(explicitFence!=null) return if(hermes.isCurrent(explicitFence)) explicitFence.owner else null
+        val bound=hermes.ownerFence()?.owner
+        if(bound!=null) return bound
+        if(!sessions.hasSession()) return null
+        return readMailReadAuthority()
+    }
+    suspend fun mailBody(id:String):String=mailBody(id,hermes.ownerFence())
+    internal suspend fun mailBody(id:String,ownerFence:HermesOwnerFence?):String=withContext(Dispatchers.IO){
         require(Regex("^[a-f0-9]{64}$").matches(id)){"Invalid message ID"}
-        val storage=stored("mail-body-$id.enc")
-        storage.read()?.let{return@withContext it}
-        val body=api("/api/v1/mail/message/$id").getString("body");storage.write(body);body
+        if(ownerFence!=null && !hermes.isCurrent(ownerFence)) throw IllegalStateException("Workspace changed")
+        val cacheOwner=authorizedCacheOwner(ownerFence)
+        if(cacheOwner!=null && mailCachedReadAuthorized(cacheOwner)){
+            val cached=readOwnerScopedMail("body",cacheOwner,id)
+            if(cached!=null){
+                val parsed=runCatching{JSONObject(cached)}.getOrNull()
+                val ok=parsed!=null && parsed.optString("owner")==cacheOwner && parsed.opt("body") is String
+                if(ok && mailCachedReadAuthorized(cacheOwner) && (ownerFence==null || hermes.isCurrent(ownerFence))) {
+                    return@withContext parsed!!.getString("body")
+                }
+            }
+        }
+        if(hasLegacyMail("body",id)){
+            // Preserve untouched legacy bytes; do not attribute/guess owner.
+            val probeOwner=cacheOwner ?: readMailReadAuthority() ?: hermes.ownerFence()?.owner
+            if(probeOwner==null || !mailCachedReadAuthorized(probeOwner) || readOwnerScopedMail("body",probeOwner,id)==null)
+                throw IllegalStateException("Message cache is unavailable for this account.")
+        }
+        val fence=ownerFence?.takeIf{mailLiveFenceCurrent(it)} ?: hermes.ownerFence()?.takeIf{mailLiveFenceCurrent(it)} ?: throw IllegalStateException("Sign in to load messages.")
+        val raw=request("/api/v1/mail/message/$id",ownerFence=fence,boundedRead=true,maxBodyBytes=MAIL_MAX_WIRE_BYTES)
+        if(!mailLiveFenceCurrent(fence)) throw IllegalStateException("Workspace changed")
+        val body=JSONObject(raw).getString("body")
+        val encoded=JSONObject().put("owner",fence.owner).put("body",body).toString()
+        val utf8=encoded.toByteArray(Charsets.UTF_8).size
+        if(body.toByteArray(Charsets.UTF_8).size<=MAIL_MAX_DECODED_BYTES && utf8<=MAIL_MAX_WIRE_BYTES){
+            runCatching{commitMailCache(MailCacheWrite(fence,id,"body",encoded,utf8,20,1_500_000))}
+        }
+        body
+    }
+    internal data class MailHtmlResult(val html:String?,val hasHtml:Boolean)
+    private fun parseMailHtmlResult(raw:String,wireCap:Int=MAIL_MAX_WIRE_BYTES):MailHtmlResult = parseMailHtmlPayload(raw,wireCap)
+    internal suspend fun mailHtml(id:String,ownerFence:HermesOwnerFence?=hermes.ownerFence()):MailHtmlResult=withContext(Dispatchers.IO){
+        require(Regex("^[a-f0-9]{64}$").matches(id)){"Invalid message ID"}
+        if(ownerFence!=null && !hermes.isCurrent(ownerFence)) throw IllegalStateException("Workspace changed")
+        val cacheOwner=authorizedCacheOwner(ownerFence)
+        if(cacheOwner!=null && mailCachedReadAuthorized(cacheOwner)){
+            val cached=readOwnerScopedMail("html",cacheOwner,id)
+            if(cached!=null){
+                val ownerOk=runCatching{JSONObject(cached).optString("owner")==cacheOwner}.getOrDefault(false)
+                val parsed=if(ownerOk) runCatching{parseMailHtmlResult(cached)}.getOrNull() else null
+                if(parsed!=null && mailCachedReadAuthorized(cacheOwner) && (ownerFence==null || hermes.isCurrent(ownerFence))) {
+                    return@withContext parsed
+                }
+            }
+        }
+        if(hasLegacyMail("html",id)){
+            val probeOwner=cacheOwner ?: readMailReadAuthority() ?: hermes.ownerFence()?.owner
+            if(probeOwner==null || !mailCachedReadAuthorized(probeOwner) || readOwnerScopedMail("html",probeOwner,id)==null)
+                throw IllegalStateException("Formatted message cache is unavailable for this account.")
+        }
+        val fence=ownerFence?.takeIf{mailLiveFenceCurrent(it)} ?: hermes.ownerFence()?.takeIf{mailLiveFenceCurrent(it)} ?: throw IllegalStateException("Sign in to load formatted messages.")
+        val raw=request("/api/v1/mail/html/$id",ownerFence=fence,boundedRead=true,maxBodyBytes=MAIL_MAX_WIRE_BYTES)
+        if(!mailLiveFenceCurrent(fence)) throw IllegalStateException("Workspace changed")
+        val value=parseMailHtmlResult(raw)
+        val encoded=JSONObject().put("owner",fence.owner).put("html",value.html?:JSONObject.NULL).put("hasHtml",value.hasHtml).toString()
+        val utf8=encoded.toByteArray(Charsets.UTF_8).size
+        if((value.html==null || value.html.toByteArray(Charsets.UTF_8).size<=MAIL_MAX_DECODED_BYTES) && utf8<=MAIL_MAX_WIRE_BYTES){
+            runCatching{commitMailCache(MailCacheWrite(fence,id,"html",encoded,utf8,20,1_500_000))}
+        }
+        value
     }
     suspend fun attachment(id:String,part:String):ByteArray=withContext(Dispatchers.IO) {
         val url=ORIGIN.toHttpUrl().newBuilder().addPathSegments("api/v1/mail/attachment").addPathSegment(id).addPathSegment(part).build()

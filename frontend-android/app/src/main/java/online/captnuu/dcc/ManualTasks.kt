@@ -6,6 +6,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import org.json.JSONArray
 import org.json.JSONObject
@@ -33,6 +34,7 @@ import kotlinx.coroutines.sync.withLock
   val next=try{check(items.size<=10000){"Task collection exceeds 10000 records."};JSONArray(items.map(::normalizeTask)).toString()}catch(e:Exception){error=e.message?:"Invalid tasks; saved tasks were retained.";return}
   if(preferences.edit().putString("tasks",next).commit()){raw=next;error=""}else error="Could not save local tasks."
  }
+ fun addTask(){if(title.isBlank()||syncing)return;save(tasks+JSONObject().put("id",UUID.randomUUID().toString()).put("date",date).put("title",title.trim()).put("completed",false));title=""}
  fun sync(choice:String?=null){if(model==null||syncing)return;syncing=true
    scope.launch{try{model.manualTaskLock.withLock{
     val before=preferences.getString("tasks","[]")?:"[]"
@@ -80,29 +82,36 @@ import kotlinx.coroutines.sync.withLock
    }catch(e:CancellationException){throw e}
    catch(_:Exception){if(model.hermes.isCurrent(fence))error="Hermes receipt retained. Could not refresh tasks; local edits are unchanged."}
   }
-  Column {
-  TextButton(onClick={sync()},enabled=model!=null&&!syncing){Text(if(syncing)"Syncing tasks…" else "Sync tasks")}
-  if(conflict){TextButton(onClick={sync("local")},enabled=!syncing){Text("Keep local conflicting edits")};TextButton(onClick={sync("remote")},enabled=!syncing){Text("Keep remote conflicting edits")}}
-  OutlinedTextField(title,{title=it},label={Text("Add a task")},modifier=Modifier.fillMaxWidth(),singleLine=true,enabled=!syncing)
-  TextButton(onClick={if(title.isNotBlank()){save(tasks+JSONObject().put("id",UUID.randomUUID().toString()).put("date",date).put("title",title.trim()).put("completed",false));title=""}},enabled=title.isNotBlank()&&!syncing){Text("Add task")}
-  OutlinedTextField(search,{search=it},label={Text("Find manual tasks")},modifier=Modifier.fillMaxWidth(),singleLine=true)
-  FilterChip(onlyOpen,{onlyOpen=!onlyOpen},label={Text("Open only")})
-  tasks.filter{manualTaskVisible(it,date,search,onlyOpen)}.sortedByDescending{it.optBoolean("important")}.forEach { task ->
-   Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
-    Checkbox(task.optBoolean("completed"),{done->save(tasks.map{if(it==task)JSONObject(it.toString()).put("completed",done) else it})},enabled=!syncing)
-    TextButton(onClick={editing=task.toString()},modifier=Modifier.weight(1f),enabled=!syncing){Text((if(task.optBoolean("important"))"★ " else "")+task.optString("title"),style=MaterialTheme.typography.bodyMedium)}
-    TextButton(onClick={save(tasks.map{if(it==task)JSONObject(it.toString()).put("deleted",true) else it})},enabled=!syncing){Text("Delete")}
+  var toolsOpen by rememberSaveable { mutableStateOf(false) }
+  val toolsActive=search.isNotBlank()||onlyOpen||syncing||conflict
+  Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+  OutlinedTextField(title,{title=it},label={Text("Add a task")},modifier=Modifier.fillMaxWidth().testTag("task-add"),singleLine=true,enabled=!syncing,keyboardOptions=androidx.compose.foundation.text.KeyboardOptions(imeAction=androidx.compose.ui.text.input.ImeAction.Done),keyboardActions=androidx.compose.foundation.text.KeyboardActions(onDone={addTask()}),trailingIcon={if(title.isNotBlank())TextButton(onClick={addTask()},enabled=!syncing){Text("Add")} })
+  Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){
+   TextButton(onClick={toolsOpen=!toolsOpen},modifier=Modifier.testTag("task-tools").defaultMinSize(minWidth=48.dp,minHeight=48.dp)){Text(if(toolsOpen||toolsActive)"Task tools · hide" else "Task tools")}
+  }
+  if(toolsOpen||toolsActive){
+   Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){
+    OutlinedTextField(search,{search=it},label={Text("Find tasks")},modifier=Modifier.weight(1f).testTag("task-find"),singleLine=true)
+    FilterChip(onlyOpen,{onlyOpen=!onlyOpen},label={Text("Open")},modifier=Modifier.defaultMinSize(minHeight=48.dp))
+    TextButton(onClick={sync()},enabled=model!=null&&!syncing,modifier=Modifier.defaultMinSize(minWidth=48.dp,minHeight=48.dp)){Text(if(syncing)"Syncing…" else "Sync tasks")}
    }
   }
-  Text("Tasks save on this phone immediately. Sync shares them with the web and other devices.",style=MaterialTheme.typography.bodySmall,modifier=Modifier.padding(bottom=8.dp))
+  if(conflict)Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){TextButton(onClick={sync("local")},enabled=!syncing){Text("Keep local")};TextButton(onClick={sync("remote")},enabled=!syncing){Text("Keep remote")}}
+  tasks.filter{manualTaskVisible(it,date,search,onlyOpen)}.sortedByDescending{it.optBoolean("important")}.forEach { task ->
+   Row(Modifier.fillMaxWidth().defaultMinSize(minHeight=48.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+    Checkbox(task.optBoolean("completed"),{done->save(tasks.map{if(it==task)JSONObject(it.toString()).put("completed",done) else it})},enabled=!syncing)
+    TextButton(onClick={editing=task.toString()},modifier=Modifier.weight(1f),enabled=!syncing,contentPadding=PaddingValues(horizontal=4.dp,vertical=8.dp)){Text((if(task.optBoolean("important"))"★ " else "")+task.optString("title"),style=MaterialTheme.typography.bodyMedium,textAlign=androidx.compose.ui.text.style.TextAlign.Start,modifier=Modifier.fillMaxWidth())}
+   }
+  }
+  Text("Tasks save on this phone immediately. Sync shares them when connected.",style=MaterialTheme.typography.bodySmall)
   if(error.isNotEmpty())Text(error,color=MaterialTheme.colorScheme.error)
-  editing?.let{value->val draft=JSONObject(value)
-   AlertDialog(onDismissRequest={editing=null},title={Text("Edit task")},text={Column{
+  editing?.let{value->val draft=JSONObject(value);val draftId=draft.optString("id")
+   AlertDialog(onDismissRequest={editing=null},title={Text("Edit task")},text={Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
     OutlinedTextField(draft.optString("title"),{editing=JSONObject(value).put("title",it.take(240)).toString()},label={Text("Title")})
     OutlinedTextField(draft.optString("notes"),{editing=JSONObject(value).put("notes",it.take(4000)).toString()},label={Text("Notes")},maxLines=5)
     OutlinedTextField(draft.optString("date"),{editing=JSONObject(value).put("date",it).toString()},label={Text("Date · YYYY-MM-DD")})
     Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){Checkbox(draft.optBoolean("important"),{editing=JSONObject(value).put("important",it).toString()});Text("Important")}
-   }},confirmButton={TextButton(onClick={save(tasks.map{if(it.optString("id")==draft.optString("id"))draft else it});editing=null},enabled=draft.optString("title").isNotBlank()&&runCatching{java.time.LocalDate.parse(draft.optString("date"))}.isSuccess){Text("Save")}},dismissButton={TextButton(onClick={editing=null}){Text("Cancel")}})
+   }},confirmButton={TextButton(onClick={save(tasks.map{if(it.optString("id")==draftId)draft else it});editing=null},enabled=draft.optString("title").isNotBlank()&&runCatching{java.time.LocalDate.parse(draft.optString("date"))}.isSuccess){Text("Save")}},dismissButton={Row{TextButton(onClick={save(tasks.map{if(it.optString("id")==draftId)JSONObject(it.toString()).put("deleted",true) else it});editing=null},enabled=!syncing){Text("Delete")};TextButton(onClick={editing=null}){Text("Cancel")}}})
   }
  }
 }
