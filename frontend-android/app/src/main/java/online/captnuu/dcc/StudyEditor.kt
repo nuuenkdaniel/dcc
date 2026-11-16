@@ -67,7 +67,7 @@ import java.util.UUID
   }
   Row{TextButton(onClick=dismiss,enabled=!busy){Text("Cancel")};Button(onClick={run{
    val start=LocalDate.parse(data.getString("startDate"));require(start<LocalDate.parse(deadline)){"Start before exam day."};val topics=data.getJSONArray("topics").objects();require(topics.isNotEmpty()&&topics.all{it.optString("title").isNotBlank()&&it.optInt("minutes") in 5..1800}){"Review topic titles and estimates."}
-   model.mutate("/api/v1/planner/entity",JSONObject().put("kind","preparation").put("version",base).put("data",data));withContext(Dispatchers.IO){draftStore.clear()};model.refresh();dismiss()
+   model.mutate("/api/v1/planner/entity",JSONObject().put("kind","preparation").put("version",base).put("data",data));withContext(Dispatchers.IO){draftStore.clear()};dismiss()
   }},enabled=!busy&&restored.isSuccess&&reviewed){Text("Save preparation")}}
  }}}
 }

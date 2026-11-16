@@ -1,5 +1,6 @@
 // Bounded user questions, not effect receipts or arbitrary model prose. Pure so
 // the browser can validate the exact same public projection.
+import {conversationTextFits} from './conversation-contract.js'
 export const CLARIFICATION_QUESTIONS={
   task_topics:'Should these study chunks use specific topics, or just general chunks? Give the task names, or say “just general chunks”.',
   task_names:'Please give exactly the requested number of task names, separated by semicolons, or say “just general chunks” for study chunks.',
@@ -22,4 +23,12 @@ export function validClarification(value:unknown):value is Clarification{
   if(prototype!==Object.prototype&&prototype!==null||Reflect.ownKeys(value).some(key=>typeof key!=='string'||!Object.getOwnPropertyDescriptor(value,key)?.enumerable||!Object.hasOwn(Object.getOwnPropertyDescriptor(value,key)??{},'value')))return false
   const v=value as Record<string,unknown>
   return Object.keys(v).sort().join(',')==='question,reason'&&isClarificationReason(v.reason)&&v.question===CLARIFICATION_QUESTIONS[v.reason]
+}
+// Conversation-only display question. Tool results retain the exact fixed codec
+// above; candidate wording is generated from bounded service reads by the host.
+export function validConversationClarification(value:unknown):value is Clarification {
+  if(validClarification(value))return true
+  if(!value||typeof value!=='object'||Array.isArray(value))return false
+  const v=value as Record<string,unknown>
+  return Object.keys(v).sort().join(',')==='question,reason'&&v.reason==='task_names'&&typeof v.question==='string'&&v.question.length<=500&&conversationTextFits([v.question])&&!/[\u0000-\u001f\u007f]/.test(v.question)&&/^(?:Which tasks do you mean\?|I couldn't find matching current tasks\.)/.test(v.question)
 }

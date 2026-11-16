@@ -3,7 +3,7 @@ test('study plans share the task list, search, filters and empty state',async({p
  await page.clock.install({time:new Date('2026-10-03T12:00:00')})
  let actions=[30,45].map((minutes,i)=>({kind:'action',version:1,data:{id:String(i),preparationId:'prep',projectId:'p'+i,title:'Study step '+i,notes:'Logistic regression',minutes,date:'2026-10-03',completed:false,dismissed:false}}))
  await page.route('**/api/v1/planner/snapshot',r=>r.fulfill({json:{projects:[],actions,preparations:[{data:{id:'prep',title:'CSE354 M1'}}],status:{}}}))
- await page.route('**/api/v1/planner/entity',r=>{const change=r.request().postDataJSON();actions=actions.map(a=>a.data.id===change.data.id?{...a,data:change.data,version:a.version+1}:a);return r.fulfill({json:{code:200}})})
+ await page.route('**/api/v1/workspace/writes',r=>{const body=r.request().postDataJSON();if(body.kind!=='planner')return r.fallback();const change=body.payload;actions=actions.map(a=>a.data.id===change.data.id?{...a,data:change.data,version:a.version+1}:a);return r.fulfill({json:{state:'saved',entry:{kind:change.kind,data:change.data,version:change.version+1}}})})
  await page.goto('http://127.0.0.1:5173')
  const list=page.locator('.task-list')
  await expect(list.getByRole('button',{name:'Study for CSE354 M1'})).toBeVisible()

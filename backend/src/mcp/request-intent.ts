@@ -9,9 +9,11 @@ import {validGuard} from './conversation-validation.js'
 
 export const REQUEST_INTENT_KIND='dcc-request-intent-v1'
 export const REQUEST_LIMITS=Object.freeze({maxRounds:4,maxCalls:12,maxWrites:4,timeoutMs:120000})
+export const CHAT_LIMITS=Object.freeze({maxRounds:8,maxCalls:48,maxWrites:16,timeoutMs:120000})
+export const requestLimits=(record:Pick<IntentRecord,'guard'>)=>record.guard?.chatVersion===1?CHAT_LIMITS:REQUEST_LIMITS
 type Executor='legacy-parser-v1'|'mcp-action-v1'
 export type IntentPolicy={executor:Executor;allowedTools:readonly ToolName[]}
-export type ConversationGuard={version:1;binding?:string;checklist?:Checklist;questionOnly?:true;questionReason?:string;readOnly?:true}
+export type ConversationGuard={version:1;binding?:string;checklist?:Checklist;questionOnly?:true;questionReason?:string;readOnly?:true;contextual?:true;chatVersion?:1}
 export type IntentAdmission={actorId:string;purpose:Context['purpose'];key:string;prompt:string;tabId?:string;guard?:ConversationGuard}
 type LegacyEvidence={promptHash:string;completed:boolean;mcpIntentId?:string}
 type Call={id:string;fingerprint:string;command:Command;result?:Result}
@@ -49,6 +51,7 @@ export function admitIntent(prior:IntentRecord|undefined,request:IntentAdmission
   if(request.purpose!=='action')return deny('forbidden')
   if(typeof request.actorId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,199}$(?![\s\S])/.test(request.actorId)||typeof request.key!=='string'||!/^\w[\w-]{15,79}$(?![\s\S])/.test(request.key)||typeof request.prompt!=='string'||!request.prompt.trim()||request.prompt.length>4000)return deny('invalid_arguments')
   if(!['legacy-parser-v1','mcp-action-v1'].includes(policy.executor)||!Array.isArray(policy.allowedTools)||policy.allowedTools.length>ACTIVE_TOOLS.length||!policy.allowedTools.every(isActiveTool)||new Set(policy.allowedTools).size!==policy.allowedTools.length)return deny('invalid_arguments')
+  if(request.guard?.chatVersion===1&&policy.executor!=='mcp-action-v1')return deny('invalid_arguments')
   const promptHash=hash(request.prompt),actorHash=hash(request.actorId)
   const {id,legacyReceiptId}=intentAddress(request.key)
   // Exact same ID formula as tell-hermes.ts, to let its existing receipt fence
@@ -94,7 +97,7 @@ export function startIntent(record:IntentRecord,now:number):Decision {
 }
 export function beginIntentRound(record:IntentRecord,now:number):Decision {
   if(record.executor!=='mcp-action-v1'||record.phase!=='active')return deny('inactive')
-  if(!timely(record,now)||record.rounds>=REQUEST_LIMITS.maxRounds)return deny('budget_exhausted')
+  if(!timely(record,now)||record.rounds>=requestLimits(record).maxRounds)return deny('budget_exhausted')
   return decision({...copy(record),rounds:record.rounds+1},'round')
 }
 
@@ -124,6 +127,17 @@ export function reserveIntentCall(record:IntentRecord,callId:string,tool:unknown
   }
   if(record.phase!=='active')return deny('inactive')
   if(record.guard){
+    if(writing&&record.guard.contextual&&tool.includes('task')){
+      // Context/transcript IDs and versions are never evidence. Require a task
+      // read in THIS turn; advance collection evidence only with service receipts.
+      const read=record.calls.some(c=>c.command.tool==='list_tasks'&&c.result?.state==='ok'&&plainRecord(c.result.data)&&Array.isArray(c.result.data.items)&&c.result.data.items.some(t=>plainRecord(t)&&t.id===args.id))
+      const evidence=[...record.calls].reverse().find(c=>c.command.tool==='list_tasks'&&c.result?.state==='ok'||c.command.tool.includes('task')&&c.result?.state==='applied')
+      const version=evidence?.result?.state==='ok'&&plainRecord(evidence.result.data)?evidence.result.data.collectionVersion:evidence?.result?.state==='applied'&&'version' in evidence.result?evidence.result.version:undefined
+      if(!creating&&!read||version!==args.expectedVersion)return deny('invalid_arguments')
+      const prior=[...record.calls].reverse().find(c=>c.command.tool===tool&&(creating?c.command.args.title===args.title&&c.command.args.date===args.date:c.command.args.id===args.id)&&c.result&&(c.result.state==='conflict'||c.result.state==='rejected'))
+      if(prior&&!record.calls.slice(record.calls.indexOf(prior)+1).some(c=>c.command.tool==='list_tasks'&&c.result?.state==='ok'))return deny('pending_operation')
+    }
+    if(writing&&record.guard.contextual&&record.calls.some(c=>TOOLS[c.command.tool].write&&c.result&&(c.result.state==='applied'||c.result.state==='saved')&&(creating?c.command.tool===tool&&c.command.args.title===args.title&&c.command.args.date===args.date:(c.command.args.id??c.command.args.eventId)===(args.id??args.eventId))))return deny('pending_operation')
     if(writing&&(record.guard.questionOnly||record.guard.readOnly))return deny('forbidden')
     if(tool==='request_clarification'&&(record.guard.checklist||record.guard.questionReason&&args.reason!==record.guard.questionReason))return deny('forbidden')
     if(tool==='request_clarification'&&record.calls.some(c=>TOOLS[c.command.tool].write))return deny('pending_operation')
@@ -132,7 +146,8 @@ export function reserveIntentCall(record:IntentRecord,callId:string,tool:unknown
       if(tool!=='create_task'||!checklist.tasks.some(t=>t.title===args.title&&t.date===args.date)||Object.keys(input).some(k=>!['title','date','expectedVersion'].includes(k))||record.calls.some(c=>TOOLS[c.command.tool].write&&c.command.args.title===args.title))return deny('forbidden')
     }
   }
-  if(!timely(record,now)||record.rounds<1||record.calls.length>=REQUEST_LIMITS.maxCalls||writing&&record.calls.filter(call=>TOOLS[call.command.tool].write).length>=REQUEST_LIMITS.maxWrites)return deny('budget_exhausted')
+  const limits=requestLimits(record)
+  if(!timely(record,now)||record.rounds<1||record.calls.length>=limits.maxCalls||writing&&record.calls.filter(call=>TOOLS[call.command.tool].write).length>=limits.maxWrites)return deny('budget_exhausted')
   if(record.calls.some(call=>TOOLS[call.command.tool].write&&(!call.result||call.result.state==='uncertain')))return deny('pending_operation')
   // Once asking a question, do not guess and write later in the same invocation.
   const questions=record.calls.filter(call=>call.command.tool==='request_clarification')

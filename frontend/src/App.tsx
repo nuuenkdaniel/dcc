@@ -1,10 +1,11 @@
-import {ManualTaskSync} from './ManualTaskSync'
+import {useServerTasks} from './useServerTasks'
+import {useWorkspaceSession} from './workspaceSession'
 import {TellHermes} from './TellHermes'
 import {useMail} from './useMail'
 import {EmailSummary} from './EmailSummary'
 import {usePlanner,studyCardCount,visibleActionGroups,visiblePlanGroups} from './usePlanner'
 import {Projects,ActionCard,StudyCard,PlanControls} from './Projects'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { AuthGate } from './AuthGate'
 import { Schedule } from './Schedule'
@@ -17,9 +18,7 @@ import {useBrowserTimer} from './timerContext'
 import {startFocusTimer,canReorderFocusTimers,reorderFocusTimers} from './focusTimer'
 import { LogoutAction } from './LogoutAction'
 import {AccessibleDialog} from './AccessibleDialog'
-import {applyTaskIntents,requestedTasks,taskIntents,readPendingTaskRestore,stageTaskRestore,commitPendingTaskRestore,type RestoreAccess} from './taskStorage'
-import {useWorkspaceSession,validWorkspaceOwner} from './workspaceSession'
-import {equalSharedTask,mergeTasks,validSharedTask,type SharedTask} from './sharedTasks'
+import {equalSharedTask,validSharedTask} from './sharedTasks'
 
 type Task = { id: string; title: string; date: string; notes: string; completed: boolean; sample?: boolean; important?: boolean; deleted?: boolean }
 type PreviewView = 'home' | 'inbox' | 'pomodoro' | 'login' | 'settings' | 'projects' | 'prices'
@@ -264,80 +263,35 @@ export function PomodoroView() {
 }
 
 export function Workspace() {
-  const workspaceSession=useWorkspaceSession()
   const [previewView, setPreviewView] = useState<PreviewView>(() => viewFromPath(window.location.pathname))
-  const mail=useMail(previewView==='home'||previewView==='inbox')
+  const offlineSession=useWorkspaceSession()?.offline===true
+  const mail=useMail(!offlineSession&&(previewView==='home'||previewView==='inbox'))
   const preferencesState = usePreferences()
   const planner = usePlanner()
-  const [initial] = useState(readTasks)
-  const [tasks, setTasks] = useState<Task[]>(initial.tasks)
-  const [readError, setReadError] = useState(initial.error)
+  const serverTasks=useServerTasks()
+  const tasks:Task[]=serverTasks.tasks
+  const [legacyTasks]=useState(readTasks)
+  const [legacyBase]=useState(()=>{
+    try{
+      const value:unknown=JSON.parse(localStorage.getItem('dcc.manual-tasks.base.v1')??'[]')
+      return Array.isArray(value)?value.filter(validSharedTask):[]
+    }catch{return []}
+  })
+  const legacyChanges=legacyTasks.tasks.filter(task=>!equalSharedTask(task,legacyBase.find(base=>base.id===task.id))&&!equalSharedTask(task,serverTasks.confirmed.find(remote=>remote.id===task.id)))
+  const readError=!serverTasks.online||!serverTasks.ready||serverTasks.unavailable
+  const pendingTaskIds=new Set(serverTasks.jobs.map(job=>job.watch.key))
+  const [deletedTask,setDeletedTask]=useState<Task|null>(null)
+  const [failedDraft,setFailedDraft]=useState<Task|null>(null)
   const [selectedDate, setSelectedDate] = useState(today)
   const [followingToday,setFollowingToday]=useState(true)
   useEffect(()=>{if(!followingToday)return;const update=()=>{const day=today();setSelectedDate(previous=>{if(previous!==day){const now=new Date();now.setDate(1);setMonth(now)}return day})};const timer=setInterval(update,30000);window.addEventListener('focus',update);document.addEventListener('visibilitychange',update);return()=>{clearInterval(timer);window.removeEventListener('focus',update);document.removeEventListener('visibilitychange',update)}},[followingToday])
   const [month, setMonth] = useState(() => { const date = new Date(); date.setDate(1); return date })
   const [title, setTitle] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
-  const [initialUndo]=useState(()=>{try{const pending=readPendingTaskRestore();return {expected:pending?.expected??null,owner:pending?.owner??null,error:''}}catch{return {expected:null,owner:null,error:'Pending Undo is unreadable; retained without applying it.'}}})
-  const candidateOwner=workspaceSession?.owner
-  const verifiedOwner=validWorkspaceOwner(candidateOwner)?candidateOwner:null
-  const undoQuarantined=!!initialUndo.expected&&(!verifiedOwner||initialUndo.owner!==verifiedOwner)
-  const [storageWarning, setStorageWarning] = useState(initialUndo.error)
   const [showSampleData, setShowSampleData] = useState(false)
   const [taskFilter, setTaskFilter] = useState('All')
   const [taskSearch, setTaskSearch] = useState('')
-  const [deletedTask, setDeletedTask] = useState<Task | null>(initialUndo.expected)
-  const [undoPending,setUndoPending]=useState(!!initialUndo.expected&&!undoQuarantined)
-  const undoInFlight=useRef(false),undoRun=useRef(0)
-  const restoreLifecycle=useRef<{controller:AbortController;owner:string|null}|null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const taskWriteGeneration=useRef(0)
-  const committedTasks=useRef(initial.tasks)
-  const taskWrites=useRef<Promise<unknown>>(Promise.resolve())
-  // Order this page's writes without changing their external-storage preconditions.
-  const queueTaskWrite=useCallback(<T,>(operation:()=>Promise<T>)=>{
-    const queued=taskWrites.current.then(async()=>{
-      try{return await operation()}
-      catch(error){const current=readTasks();if(!current.error)committedTasks.current=current.tasks;throw error}
-    })
-    taskWrites.current=queued.catch(()=>{})
-    return queued
-  },[])
-  const finishTaskRestore=useCallback(async(expected:SharedTask,access:RestoreAccess)=>{
-    const run=++undoRun.current,generation=++taskWriteGeneration.current
-    try{
-      const saved=await queueTaskWrite(async()=>{const result=await commitPendingTaskRestore(access);if(access.signal.aborted||!access.isCurrent())throw new DOMException('Undo cancelled','AbortError');committedTasks.current=result;return result})
-      if(access.signal.aborted||!access.isCurrent())return
-      if(generation===taskWriteGeneration.current){setTasks(saved);setStorageWarning('')}
-      setDeletedTask(current=>current?.id===expected.id?null:current)
-    }catch(error){
-      if(!access.signal.aborted&&access.isCurrent()&&generation===taskWriteGeneration.current)setStorageWarning((error instanceof Error?error.message:'Undo could not be saved.')+' Pending Undo retained; no newer task was overwritten.')
-    }finally{if(access.isCurrent()&&run===undoRun.current){undoInFlight.current=false;setUndoPending(false)}}
-  },[queueTaskWrite])
-  useEffect(()=>{
-    const local={controller:new AbortController(),owner:workspaceSession?.owner??null}
-    restoreLifecycle.current=local
-    const eligible=!!initialUndo.expected&&validWorkspaceOwner(local.owner)&&initialUndo.owner===local.owner&&!workspaceSession?.signal.aborted
-    undoInFlight.current=eligible
-    if(eligible&&initialUndo.expected){
-      const access:RestoreAccess={owner:local.owner!,signal:AbortSignal.any([local.controller.signal,...(workspaceSession?[workspaceSession.signal]:[])]),isCurrent:()=>restoreLifecycle.current===local&&!local.controller.signal.aborted&&!workspaceSession?.signal.aborted}
-      void finishTaskRestore(initialUndo.expected,access)
-    }
-    return()=>{local.controller.abort();if(restoreLifecycle.current===local){restoreLifecycle.current=null}}
-  },[workspaceSession,initialUndo,finishTaskRestore])
-  const undoTask=()=>{
-    if(!deletedTask||undoInFlight.current)return
-    const expected={...deletedTask,deleted:true}
-    try{
-      const local=restoreLifecycle.current
-      if(!verifiedOwner||!local||local.owner!==verifiedOwner||local.controller.signal.aborted||workspaceSession?.signal.aborted)throw Error('Verify this workspace by signing in before restoring a task.')
-      // Stage synchronously before entering the asynchronous write queue. A
-      // reload can now finish this exact CAS intent, never guess a new restore.
-      stageTaskRestore(expected,verifiedOwner)
-      undoInFlight.current=true;setUndoPending(true)
-      void finishTaskRestore(expected,{owner:verifiedOwner,signal:AbortSignal.any([local.controller.signal,...(workspaceSession?[workspaceSession.signal]:[])]),isCurrent:()=>restoreLifecycle.current===local&&!local.controller.signal.aborted&&!workspaceSession?.signal.aborted})
-    }catch(error){setStorageWarning(error instanceof Error?error.message:'Undo could not be retained; no task was changed.')}
-  }
 
   const navigate = (view: PreviewView) => {
     const path = VIEW_PATHS[view]
@@ -351,18 +305,6 @@ export function Workspace() {
     return () => window.removeEventListener('popstate', followHistory)
   }, [])
 
-  useEffect(() => {
-    const refresh = (event: StorageEvent) => {
-      if (event.key !== STORAGE_KEY && event.key !== null) return
-      const result = readTasks()
-      taskWriteGeneration.current++
-      setReadError(result.error)
-      if (!result.error) {committedTasks.current=result.tasks;setTasks(result.tasks)}
-    }
-    window.addEventListener('storage', refresh)
-    return () => window.removeEventListener('storage', refresh)
-  }, [])
-
   const days = useMemo(() => calendarDays(month), [month])
   const displayedTasks = [...tasks.filter(task=>!task.deleted), ...(showSampleData ? sampleTasks(selectedDate) : [])]
   const curatedCount = studyCardCount(planner.actions.filter(a=>a.date===selectedDate&&!a.dismissed))
@@ -372,62 +314,15 @@ export function Workspace() {
   const unplacedGroups=visibleActionGroups(planner,unplacedActions,taskFilter,taskSearch)
   const unplacedCount=unplacedGroups.reduce((count,group)=>count+group.length,0)
   const visibleTasks = selectedTasks.filter(task => (!taskSearch || task.title.toLowerCase().includes(taskSearch.toLowerCase())) && (taskFilter === 'All' || (taskFilter === 'Open' && !task.completed) || (taskFilter === 'Completed' && task.completed) || (taskFilter === 'Important' && task.important))).sort((a, b) => Number(Boolean(b.important)) - Number(Boolean(a.important)))
-  const updateTasks = async (next: Task[]) => {
-    if (readError) return false
-    const generation=++taskWriteGeneration.current
-    const previous=tasks,optimistic=requestedTasks(previous,next)
-    const intents=taskIntents(previous,next)
-    setTasks(optimistic)
-    if(!intents.length)return true
-    try{
-      const saved=await queueTaskWrite(async()=>{
-        const known=new Map(committedTasks.current.map(task=>[task.id,task]))
-        const guarded=intents.map(intent=>{
-          const current=known.get(intent.kind==='put'?intent.task.id:intent.id)
-          if(equalSharedTask(current,intent.expected))return intent
-          const intended=intent.kind==='put'?{...intent.expected,...intent.task}:{...intent.expected,deleted:intent.kind==='delete'}
-          // Only an already represented intent can use this page's newer saved
-          // snapshot. Still check that exact record under the Web Lock below.
-          if(current&&equalSharedTask(current,intended))return {...intent,expected:current}
-          throw Error('Tasks changed while syncing or editing. Your edit was not applied; review the saved task and retry.')
-        })
-        const saved=await applyTaskIntents(guarded);committedTasks.current=saved;return saved
-      });if(generation===taskWriteGeneration.current){setTasks(saved);setStorageWarning('')}return true
-    }catch(error){
-      if(generation===taskWriteGeneration.current){const current=readTasks();if(!current.error)setTasks(current.tasks);setStorageWarning(error instanceof Error?error.message:'Task write conflict; no saved tasks were overwritten.')}
-      return false
-    }
-  }
-  const reconcileTasks=async(base:SharedTask[],remote:SharedTask[],signal:AbortSignal)=>{
-    const generation=taskWriteGeneration.current
-    try{
-      return await queueTaskWrite(async()=>{
-        if(signal.aborted)throw new DOMException('Sync cancelled','AbortError')
-        if(readError)throw Error('Task storage needs attention; saved tasks were retained.')
-        // Unlike a user intent, readback must be merged after pending local writes
-        // finish. Never treat a render's optimistic snapshot as saved storage.
-        const previous=committedTasks.current,combined=mergeTasks(base,previous,remote)
-        if(combined.conflicts.length)throw Error('Tasks changed while syncing. Local edits retained; sync again to review.')
-        const saved=await applyTaskIntents(taskIntents(previous,combined.tasks))
-        committedTasks.current=saved
-        if(generation===taskWriteGeneration.current)setTasks(current=>JSON.stringify(current)===JSON.stringify(saved)?current:saved)
-        return saved
-      })
-    }catch(error){
-      if(generation===taskWriteGeneration.current&&!(error instanceof DOMException&&error.name==='AbortError')){
-        const current=readTasks();if(!current.error)setTasks(current.tasks)
-        setStorageWarning(error instanceof Error?error.message:'Task reconciliation failed; saved tasks were retained.')
-      }
-      throw error
-    }
-  }
-  const readSavedTasks=()=>queueTaskWrite(async()=>committedTasks.current)
   const addTask = () => {
     const clean = title.trim()
-    if (!clean) return
-    void updateTasks([...tasks, { id: `${Date.now()}-${Math.random()}`, title: clean, date: selectedDate, notes: '', completed: false }]).then(saved=>{if(saved)setTitle('')})
+    if (!clean||readError) return
+    if(serverTasks.save({id:crypto.randomUUID(),title:clean,date:selectedDate,notes:'',completed:false}))setTitle('')
   }
-  const updateTask = (id: string, update: Partial<Task>) => updateTasks(tasks.map((task) => task.id === id ? { ...task, ...update } : task))
+  const updateTask = (id: string, update: Partial<Task>) => {
+    const task=tasks.find(item=>item.id===id)
+    return !!task&&!readError&&serverTasks.save({...task,...update})
+  }
 
   const sidebar = (
     <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
@@ -441,7 +336,7 @@ export function Workspace() {
       <button type="button" className={`nav-item settings-nav ${previewView === 'settings' ? 'active' : ''}`} aria-label="Settings" title="Settings" onClick={() => navigate('settings')}><svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 3-1 2 3 3-1 1-3 3-1 1-3-2-2 1-3-3-2-3 1-2-3Z"/><circle cx="12" cy="11" r="3"/></svg><span className="nav-label">Settings</span></button>
       <button className="sidebar-toggle" type="button" aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!sidebarCollapsed} onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}>{sidebarCollapsed ? '›' : '‹'}</button>
       </div>
-      <div className="sidebar-foot"><span className="status-dot" /> Local workspace<br /><small>Calendar status in Schedule</small></div>
+      <div className="sidebar-foot"><span className="status-dot" /> Workspace</div>
     </aside>
   )
 
@@ -451,7 +346,7 @@ export function Workspace() {
          <main className="app-shell">
           {sidebar}
           {previewView === 'prices' ? <section className="content"><h1>Feature retired</h1><p>Price tracking is no longer available. Stored history is preserved; no checks are scheduled.</p></section> : previewView === 'projects' ? <Projects planner={planner}/> : previewView === 'settings' ? <Settings {...preferencesState} /> : previewView === 'inbox' ? (
-            <Inbox mail={mail} />
+            offlineSession?<section className="content"><h1>Inbox</h1><p>Connect to open Inbox.</p></section>:<Inbox mail={mail} />
           ) : previewView === 'pomodoro' ? (
             <PomodoroView />
           ) : (
@@ -465,22 +360,29 @@ export function Workspace() {
                   <div className="calendar-grid">{days.map(({ date, day, current }) => <button key={date} className={`calendar-day ${current ? '' : 'outside'} ${date === selectedDate ? 'selected' : ''}`} onClick={() => {setFollowingToday(false);setSelectedDate(date)}} aria-pressed={date === selectedDate} aria-current={date === today() ? 'date' : undefined} aria-label={formatDay(date)}><span>{day}</span></button>)}</div>
                   <Schedule planner={planner} date={selectedDate} />
                 </section>
-                <section className="card tasks-card" aria-labelledby="tasks-heading"><ManualTaskSync tasks={tasks} readSavedTasks={readSavedTasks} onReconcile={reconcileTasks}/>
+                <section className="card tasks-card" aria-labelledby="tasks-heading">
                   <div className="section-heading"><div><p className="eyebrow">{formatDay(selectedDate)}</p><h2 id="tasks-heading">Daily plan</h2></div><span className="task-count">{selectedTasks.length+curatedCount}</span></div>
                   <form className="task-form" onSubmit={(event) => { event.preventDefault(); addTask() }}><label htmlFor="task-title">Task title</label><div className="form-row"><input id="task-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Add a daily action…" /><button type="submit" disabled={readError}>Add task</button></div></form>
                   <div className="task-filters"><div className="filter-tabs">{['All', 'Open', 'Important', 'Completed'].map(filter => <button key={filter} aria-pressed={taskFilter === filter} onClick={() => setTaskFilter(filter)}>{filter}</button>)}</div><input aria-label="Search tasks" placeholder="Search tasks" value={taskSearch} onChange={event => setTaskSearch(event.target.value)} /></div>
-                  <div className="task-list">{planGroups.map(group=>(group[0].preparationId||group[0].assignmentStep)?<StudyCard key={group[0].preparationId??group[0].projectId} actions={group} planner={planner}/>:<ActionCard key={group[0].id} action={group[0]} planner={planner}/>)}{visibleTasks.length === 0 && planGroups.length === 0 ? <div className="empty-state"><span className="empty-icon">○</span><p>{selectedTasks.length+curatedCount ? 'No matching tasks' : planner.loadState==='loading'?'Loading tasks…':planner.loadState==='signed-out'?'Sign in to load generated tasks':planner.loadState==='offline'?'Unable to refresh tasks — showing cached data':planner.loadState==='storage-error'?'Task storage needs attention':'No tasks for this day'}</p><small>Start with one clear, achievable step.</small></div> : visibleTasks.map((task) => <article className={`task-card ${task.completed ? 'completed' : ''} ${task.sample ? 'sample' : ''}`} key={task.id}><div className="task-summary"><input type="checkbox" checked={task.completed} disabled={task.sample} onChange={() => updateTask(task.id, { completed: !task.completed })} aria-label={`Complete ${task.title}`} /><button className="task-title" aria-expanded={expanded === task.id} onClick={() => setExpanded(expanded === task.id ? null : task.id)} aria-label={`${expanded === task.id ? 'Collapse' : 'Expand'} ${task.title}`}>{task.title}</button><span className="task-state">{task.sample ? 'Sample' : task.completed ? 'Completed' : task.important ? 'Important' : 'Open'}</span></div>{expanded === task.id && <div className="task-details"><div className="task-edit-grid"><label>Name<input aria-label={`${task.title} name`} value={task.title} disabled={task.sample || readError} onChange={event => { if (event.target.value.trim()) updateTask(task.id, { title: event.target.value }) }} /></label></div><label className="priority-toggle"><input type="checkbox" checked={Boolean(task.important)} disabled={task.sample || readError} onChange={event => updateTask(task.id, { important: event.target.checked })} />Important</label><textarea aria-label={`${task.title} notes`} value={task.notes} disabled={task.sample} placeholder="Add context or notes" onChange={(event) => updateTask(task.id, { notes: event.target.value })} /><button className="delete-task" disabled={task.sample || readError} onClick={() => { setDeletedTask(task); updateTasks(tasks.filter(item => item.id !== task.id)) }}>Delete task</button></div>}</article>)}</div>
-                  {deletedTask && <div className="undo-message" role="status">{undoPending?'Restoring task… Undo is retained in this tab for recovery after reload.':undoQuarantined?'Pending Undo is quarantined: its workspace is different or unverified. It was retained without applying it. Review the original workspace before retrying.':'Task removed.'} <button disabled={undoPending||!verifiedOwner||(initialUndo.owner!==null&&initialUndo.owner!==verifiedOwner)} onClick={undoTask}>{undoPending?'Restoring…':undoQuarantined?'Review and restore Undo':'Undo'}</button></div>}
+                  <div className="task-list">{planGroups.map(group=>(group[0].preparationId||group[0].assignmentStep)?<StudyCard key={group[0].preparationId??group[0].projectId} actions={group} planner={planner}/>:<ActionCard key={group[0].id} action={group[0]} planner={planner}/>)}{visibleTasks.length === 0 && planGroups.length === 0 ? <div className="empty-state"><span className="empty-icon">○</span><p>{selectedTasks.length+curatedCount ? 'No matching tasks' : planner.loadState==='loading'?'Loading tasks…':planner.loadState==='signed-out'?'Sign in to load generated tasks':planner.loadState==='offline'?'Unable to refresh tasks — showing cached data':planner.loadState==='storage-error'?'Task storage needs attention':'No tasks for this day'}</p><small>Start with one clear, achievable step.</small></div> : visibleTasks.map((task) => <article className={`task-card ${task.completed ? 'completed' : ''} ${task.sample ? 'sample' : ''}`} key={task.id}><div className="task-summary"><input type="checkbox" checked={task.completed} disabled={task.sample||readError||pendingTaskIds.has(task.id)} onChange={() => updateTask(task.id, { completed: !task.completed })} aria-label={`Complete ${task.title}`} /><button className="task-title" aria-expanded={expanded === task.id} onClick={() => setExpanded(expanded === task.id ? null : task.id)} aria-label={`${expanded === task.id ? 'Collapse' : 'Expand'} ${task.title}`}>{task.title}</button><span className="task-state">{task.sample ? 'Sample' : pendingTaskIds.has(task.id) ? 'Saving…' : task.completed ? 'Completed' : task.important ? 'Important' : 'Open'}</span></div>{expanded === task.id && <div className="task-details"><div className="task-edit-grid"><label>Name<input aria-label={`${task.title} name`} key={task.title} defaultValue={task.title} disabled={task.sample||readError||pendingTaskIds.has(task.id)} onBlur={event => { if (event.target.value.trim()&&event.target.value!==task.title) updateTask(task.id, { title: event.target.value }) }} /></label></div><label className="priority-toggle"><input type="checkbox" checked={Boolean(task.important)} disabled={task.sample||readError||pendingTaskIds.has(task.id)} onChange={event => updateTask(task.id, { important: event.target.checked })} />Important</label><textarea aria-label={`${task.title} notes`} key={task.notes} defaultValue={task.notes} disabled={task.sample||readError||pendingTaskIds.has(task.id)} placeholder="Add context or notes" onBlur={(event) => {if(event.target.value!==task.notes)updateTask(task.id,{notes:event.target.value})}} /><button className="delete-task" disabled={task.sample||readError||pendingTaskIds.has(task.id)} onClick={() => { if(updateTask(task.id,{deleted:true}))setDeletedTask(task) }}>Delete task</button></div>}</article>)}</div>
+                  {deletedTask&&serverTasks.confirmed.some(task=>task.id===deletedTask.id&&task.deleted)&&<div className="undo-message" role="status">Task removed. <button disabled={readError} onClick={()=>{if(updateTask(deletedTask.id,{deleted:false}))setDeletedTask(null)}}>Undo</button></div>}
+                  {serverTasks.message&&<p role="status">{serverTasks.message}</p>}
+                  {serverTasks.failed&&!failedDraft&&<button onClick={()=>setFailedDraft(serverTasks.failed!.task)}>Edit failed task</button>}
+                  {failedDraft&&<form className="task-edit-grid" onSubmit={event=>{event.preventDefault();if(serverTasks.save(failedDraft))setFailedDraft(null)}}>
+                    <label>Task title<input value={failedDraft.title} onChange={event=>setFailedDraft({...failedDraft,title:event.target.value})} required maxLength={240}/></label>
+                    <label>Notes<textarea value={failedDraft.notes} onChange={event=>setFailedDraft({...failedDraft,notes:event.target.value})} maxLength={4000}/></label>
+                    <button type="submit" disabled={readError}>Save task</button><button type="button" onClick={()=>setFailedDraft(null)}>Cancel</button>
+                  </form>}
+                  {legacyTasks.error&&<p role="alert">Previous device tasks could not be read. The original data is retained.</p>}
+                  {serverTasks.ready&&legacyChanges.length>0&&<details><summary>Review previous device tasks</summary>{legacyChanges.map(task=><div key={task.id}><span>{task.title}{task.deleted?' (previous deletion)':''}</span>{!task.deleted&&<button disabled={readError||pendingTaskIds.has(task.id)} onClick={()=>serverTasks.save(task)}>Save this version</button>}</div>)}</details>}
                   {showSampleData && <p className="sample-note">Sample cards are temporary and cannot change your saved tasks.</p>}
-                  {readError && <p role="alert" className="storage-warning">Stored tasks could not be read. Editing is paused to protect existing data; recover browser storage before continuing.</p>}
-                  {storageWarning && <p className="storage-warning" role="alert">{storageWarning}</p>}
+                  {readError&&<p role="status">{!serverTasks.online||serverTasks.unavailable?'Connect to make changes':'Loading tasks…'}</p>}
                   {planner.loadState==='signed-out'&&<button className="primary-action" onClick={()=>navigate('login')}>Sign in</button>}
-                  {['offline','storage-error'].includes(planner.loadState)&&<button className="secondary-action" onClick={()=>void planner.sync()}>Retry task sync</button>}
                    {unplacedActions.length>0&&<details className="rescheduling-details"><summary><span>Needs rescheduling</span><span className="rescheduling-count">{unplacedCount} {unplacedCount===1?'task':'tasks'}</span></summary><div className="rescheduling-content"><p>Unfinished tasks without a scheduled day. They stay saved until completed, dismissed, or rescheduled.</p>{unplacedGroups.length>0?<div className="rescheduling-list">{unplacedGroups.map(group=>(group[0].preparationId||group[0].assignmentStep)?<StudyCard key={group[0].preparationId??group[0].projectId} actions={group} planner={planner}/>:<ActionCard key={group[0].id} action={group[0]} planner={planner}/>)}</div>:<p className="rescheduling-empty">No unfinished tasks match the current filters.</p>}</div></details>}
                   <PlanControls planner={planner}/>
                 </section>
               </div>
-              <EmailSummary mail={mail}/>
+              {!offlineSession&&<EmailSummary mail={mail}/>}
             </section>
           )}
          </main>

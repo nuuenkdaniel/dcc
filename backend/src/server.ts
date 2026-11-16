@@ -5,7 +5,7 @@ import { loadConfig } from './config.js'
 import {Pool} from 'pg'
 import {migrate,sessionStore} from './database.js'
 import {readCalendarConfig} from './caldav.js'
-import {sourceHash,runSync,fetchSnapshot} from './sync.js'
+import {sourceHash,runSync,fetchSnapshot,type Snapshot} from './sync.js'
 import {applyChange,createScopedCalendarWriter} from './calendar-write.js'
 import {configuredTaskActions} from './mcp/task-actions.js'
 
@@ -27,7 +27,15 @@ const taskActions=configuredTaskActions({enabled:config.taskActionsEnabled,pool,
   }}:{}),
   bridgeConfigured:!!process.env.HERMES_CURATOR_URL&&!!process.env.HERMES_CURATOR_TOKEN,
   bridge:(input,signal)=>callCurator(input,{signal,timeoutMs:105000})})
-const app = buildApp({ ...(taskActions?{taskActions}:{}), ...(pool?{plannerPool:pool}:{}), logger: { level: config.logLevel }, ...(auth?{auth}:{}), ...(pool && calendar?{calendarRefresh:()=>runSync(pool,calendar.interval,sourceHash(calendar),()=>fetchSnapshot(calendar),true,30),calendarChange:(change)=>applyChange(pool,calendar,change),calendarSnapshot:async()=>{
+const workspaceCalendar=pool&&calendar?{
+ write:createScopedCalendarWriter(pool,calendar).write,
+ refresh:()=>runSync(pool,calendar.interval,sourceHash(calendar),()=>fetchSnapshot(calendar),true),
+ snapshot:async()=>{
+  const row=(await pool.query('SELECT snapshot,source_hash,error FROM calendar_sync_state WHERE id=1')).rows[0]
+  return row?.source_hash===sourceHash(calendar)?{...row.snapshot as Snapshot,error:row.error as string|null}:{calendars:[],events:[]}
+ }
+}:undefined
+const app = buildApp({...(workspaceCalendar?{workspaceCalendar}:{}), ...(taskActions?{taskActions}:{}), ...(pool?{plannerPool:pool}:{}), logger: { level: config.logLevel }, ...(auth?{auth}:{}), ...(pool && calendar?{calendarRefresh:()=>runSync(pool,calendar.interval,sourceHash(calendar),()=>fetchSnapshot(calendar),true,30),calendarChange:(change)=>applyChange(pool,calendar,change),calendarSnapshot:async()=>{
  const row=(await pool.query('SELECT snapshot,last_success,error,source_hash FROM calendar_sync_state WHERE id=1')).rows[0]
  if(row.source_hash!==sourceHash(calendar)) return {calendars:[],events:[],lastSuccess:null,error:'Awaiting first sync'}
  return {...row.snapshot,lastSuccess:row.last_success,error:row.error}

@@ -21,7 +21,7 @@ const mobile='i have a CSE 354 exam coming up. I broke my studying into chunks. 
 const questionRequest=original+' using specific topics'
 const policy={executor:'mcp-action-v1' as const,allowedTools:ACTIVE_TOOLS}
 function setup(limit=3,prompt=questionRequest){
-  const conversations=new IntentPool(),journal=new IntentPool(),domain=new ServicePool(),store=new SqlIntentStore(journal.pool,'actor-A'),transport=new ServiceTransport({pool:domain.pool,actorId:'actor-A'})
+  const conversations=new IntentPool(),journal=conversations,domain=new ServicePool(),store=new SqlIntentStore(journal.pool,'actor-A'),transport=new ServiceTransport({pool:domain.pool,actorId:'actor-A'})
   let calls=0,now=Date.parse('2026-11-08T02:00:00Z')
   const runner:ModelRunner=async request=>{
     calls++
@@ -42,7 +42,7 @@ function setup(limit=3,prompt=questionRequest){
   }
   const api=new Conversations({pool:conversations.pool,store,transport,now:()=>now,run:(input,signal)=>controller.run(input,policy,signal),fence:async input=>{await store.admit({...input,purpose:'action'},policy);await store.fence(input.key,now)}})
   const start=()=>api.handle({op:'start',clientId,key:'conversation_root_01',prompt},owner)
-  return {api,store,domain,conversations,start,calls:()=>calls,advance:(ms:number)=>{now+=ms}}
+  return {api,store,journal,domain,conversations,start,calls:()=>calls,advance:(ms:number)=>{now+=ms}}
 }
 test('required topics → question → bound names → three persisted tasks → verified receipt; duplicate/conflicting answers',async()=>{
   const h=setup(),q=await h.start()
@@ -94,8 +94,211 @@ test('clear three named tasks go directly; one active per owner/client; malforme
   const h=setup(),r=await h.api.handle({op:'start',clientId,key:'direct_named_tasks_01',prompt:'Add 3 tasks today: Lectures; practice problems; review'},owner)
   assert.equal(r.receipt.outcome,'complete');assert.equal(h.calls(),0)
   const pending=setup();await pending.start()
+  const journalRow=[...pending.journal.rows.values()].find(r=>r.kind==='dcc-request-intent-v1')!
+  journalRow.data.phase='active';delete journalRow.data.outcome
   await assert.rejects(pending.api.handle({op:'start',clientId,key:'another_active_key_01',prompt:original},owner),/active_conversation/)
   for(const bad of [null,{}, {op:'start',clientId,key:'x',prompt:original},{op:'start',clientId,key:'malformed_long_key_01',prompt:'a'.repeat(4001)}, {op:'start',clientId,key:'malformed_actor_key_01',prompt:original,actor:'fake'}])assert.equal(validConversationInput(bad),false)
+})
+test('fresh root supersedes completed bound no-write clarification without resuming old answers',async()=>{
+  const h=setup(),q=await h.start(),journal=await h.store.read(q.turnKey)
+  assert.equal(q.receipt.outcome,'question');assert.ok(q.question)
+  assert.equal(journal.phase,'completed')
+  assert.equal(journal.guard?.binding,createHash('sha256').update(canonicalJson([owner,clientId,q.rootKey])).digest('hex'))
+  assert.deepEqual(journal.calls.map(c=>c.command.tool),['request_clarification'])
+  assert.ok(journal.calls.every(c=>!TOOLS[c.command.tool].write));assert.equal(h.domain.rows.size,0)
+  const fresh={op:'start' as const,clientId,key:'superseding_fresh_root_01',prompt:questionRequest.replace('CSE354','CSE355')}
+  const next=await h.api.handle(fresh,owner)
+  assert.equal(next.rootKey,fresh.key);assert.equal(next.turnKey,fresh.key)
+  assert.equal(next.receipt.outcome,'question');assert.ok(next.question)
+  assert.equal(h.calls(),2,'Only the original and fresh turns invoke the scripted runner; supersession does not')
+  assert.equal(h.domain.rows.size,0)
+  const old=await h.api.handle({op:'read',clientId,rootKey:q.rootKey},owner)
+  assert.equal(old.rootKey,q.rootKey);assert.equal(old.turnKey,q.turnKey);assert.equal(old.receipt.key,q.turnKey)
+  assert.equal(old.receipt.outcome,'failed');assert.equal(old.question,undefined);assert.equal(old.original,undefined)
+  const oldRow=[...h.conversations.rows.values()].find(r=>r.kind==='dcc-hermes-conversation-v1'&&r.data.rootKey===q.rootKey)!
+  assert.equal(oldRow.data.status,'closed');assert.deepEqual(oldRow.data.answers,[])
+  for(const field of ['original','prompt','guard','question','context'])assert.equal(oldRow.data[field],undefined)
+  const slot=[...h.conversations.rows.values()].filter(r=>r.kind==='dcc-hermes-client-v1')
+  assert.equal(slot.length,1);assert.equal(slot[0]!.data.rootKey,fresh.key)
+  await assert.rejects(h.api.handle({op:'answer',clientId,rootKey:q.rootKey,key:'superseded_old_answer_01',parentKey:q.turnKey,questionId:q.question!.id,answer:'Lectures; practice problems; review'},owner),/closed_question/)
+  assert.deepEqual(await h.start(),old,'The old start key returns its closed receipt, never resumes its work')
+  assert.deepEqual(await h.api.handle(fresh,owner),next)
+  assert.deepEqual(await h.store.read(q.turnKey),journal,'Supersession preserves the authoritative old journal')
+  assert.equal(h.calls(),2);assert.equal(h.domain.rows.size,0)
+})
+test('safe clarification supersession never requests a second planner connection',async()=>{
+  const h=setup(),q=await h.start(),connect=h.conversations.connect
+  assert.equal(h.journal,h.conversations,'Conversation and journal share the planner pool')
+  h.conversations.connect=async()=>{
+    assert.equal(h.conversations.connections,0,'A single-connection planner pool cannot serve a nested checkout')
+    return connect.call(h.conversations)
+  }
+  try{
+    const fresh={op:'start' as const,clientId,key:'single_connection_fresh_01',prompt:questionRequest}
+    const next=await h.api.handle(fresh,owner)
+    assert.equal(next.rootKey,fresh.key);assert.equal(next.receipt.outcome,'question')
+    const old=await h.api.handle({op:'read',clientId,rootKey:q.rootKey},owner)
+    assert.equal(old.receipt.outcome,'failed');assert.equal(old.question,undefined)
+    assert.deepEqual(await h.api.handle(fresh,owner),next)
+    assert.equal(h.calls(),2);assert.equal(h.domain.rows.size,0)
+    assert.equal(h.conversations.connections,0)
+  }finally{h.conversations.connect=connect}
+})
+test('unsafe clarification journals and mismatched conversation bindings never release the slot',async()=>{
+  const modes=['missing','corrupt','read-error','active','uncertain','no-guard','no-binding','binding-owner','binding-client','binding-root','running','wrong-owner','wrong-client','wrong-root'] as const
+  for(const mode of modes){
+    const h=setup(),q=await h.start()
+    const row=[...h.journal.rows.values()].find(r=>r.kind==='dcc-request-intent-v1')!
+    const old=[...h.conversations.rows.values()].find(r=>r.kind==='dcc-hermes-conversation-v1')!
+    if(mode==='missing')h.journal.rows.delete(row.id)
+    else if(mode==='corrupt')row.data.calls[0].fingerprint='invalid'
+    else if(mode==='read-error')h.store.readInTransaction=async()=>{throw Error('Synthetic unavailable journal')}
+    else if(mode==='active'||mode==='uncertain'){row.data.phase=mode;delete row.data.outcome;assert.equal((await h.store.read(q.turnKey)).phase,mode)}
+    else if(mode==='no-guard'){delete row.data.guard;assert.equal((await h.store.read(q.turnKey)).guard,undefined)}
+    else if(mode==='no-binding'){delete row.data.guard.binding;assert.equal((await h.store.read(q.turnKey)).guard?.binding,undefined)}
+    else if(mode.startsWith('binding-')){
+      const binding=[owner,clientId,q.rootKey];binding[mode==='binding-owner'?0:mode==='binding-client'?1:2]='synthetic-mismatch'
+      row.data.guard.binding=createHash('sha256').update(canonicalJson(binding)).digest('hex')
+      assert.equal((await h.store.read(q.turnKey)).phase,'completed')
+    }else if(mode==='running')old.data.status='running'
+    else if(mode==='wrong-owner')old.data.owner='different-owner'
+    else if(mode==='wrong-client')old.data.clientId='22222222-2222-4222-a222-222222222222'
+    else if(mode==='wrong-root')old.data.rootKey='different_stored_root_01'
+    const before=structuredClone([...h.conversations.rows.values()])
+    await assert.rejects(h.api.handle({op:'start',clientId,key:'unsafe_supersession_01',prompt:questionRequest},owner),/active_conversation|conversation_conflict/,mode)
+    assert.deepEqual([...h.conversations.rows.values()],before,mode)
+    assert.equal(h.calls(),1,mode);assert.equal(h.domain.rows.size,0,mode)
+    assert.equal(h.conversations.connections,0,mode);assert.equal(h.journal.connections,0,mode)
+  }
+})
+test('admitted writes block supersession even when reserved, uncertain or conclusively rejected',async()=>{
+  for(const mode of ['reserved','uncertain','completed'] as const){
+    const h=setup(),q=await h.start(),time=Date.parse('2026-11-08T02:00:00Z')
+    // Contradictory stale question metadata must not override a real mutation
+    // journal. Build that journal through the normal reserve-before-dispatch API.
+    for(const [id,row] of h.journal.rows)if(row.kind==='dcc-request-intent-v1'||row.kind==='hermes-command')h.journal.rows.delete(id)
+    await h.store.admit({key:q.turnKey,prompt:'Synthetic mutation admission',purpose:'action',guard:{version:1,binding:createHash('sha256').update(canonicalJson([owner,clientId,q.rootKey])).digest('hex')}},policy)
+    const claim=await h.store.start(q.turnKey,time);assert.ok(claim.owner)
+    await h.store.round(q.turnKey,claim.owner,time)
+    const reserved=await h.store.reserve(q.turnKey,claim.owner,'synthetic_write','create_task',{title:'Synthetic never dispatched task',date:'2026-11-07',expectedVersion:0},time)
+    assert.equal(reserved.directive,'dispatch')
+    if(mode==='uncertain'){
+      assert.ok(reserved.command)
+      await h.store.result(q.turnKey,claim.owner,'synthetic_write',{state:'uncertain',operationKey:String(reserved.command.args.operationKey)})
+    }
+    if(mode==='completed'){
+      await h.store.result(q.turnKey,claim.owner,'synthetic_write',{state:'rejected',code:'forbidden'})
+      await h.store.finish(q.turnKey,claim.owner)
+    }
+    const journal=await h.store.read(q.turnKey)
+    assert.equal(journal.phase,mode==='reserved'?'active':mode);assert.equal(journal.calls.length,1)
+    assert.equal(TOOLS[journal.calls[0]!.command.tool].write,true)
+    const before=structuredClone([...h.conversations.rows.values()])
+    await assert.rejects(h.api.handle({op:'start',clientId,key:'write_blocked_fresh_01',prompt:questionRequest},owner),/active_conversation/)
+    assert.deepEqual([...h.conversations.rows.values()],before)
+    assert.deepEqual(await h.store.read(q.turnKey),journal)
+    assert.equal(h.calls(),1);assert.equal(h.domain.rows.size,0)
+  }
+})
+test('supersession rollback preserves the old question and slot without executing the fresh turn',async()=>{
+  const h=setup(),q=await h.start(),journal=await h.store.read(q.turnKey)
+  const before=structuredClone([...h.conversations.rows.values()])
+  const fresh={op:'start' as const,clientId,key:'rollback_fresh_root_01',prompt:questionRequest}
+  h.conversations.fail='commit-before'
+  await assert.rejects(h.api.handle(fresh,owner))
+  assert.deepEqual([...h.conversations.rows.values()],before)
+  assert.deepEqual(await h.store.read(q.turnKey),journal);assert.equal(h.calls(),1)
+  assert.deepEqual(await h.api.handle({op:'read',clientId,rootKey:q.rootKey},owner),q)
+  const next=await h.api.handle(fresh,owner)
+  assert.equal(next.rootKey,fresh.key);assert.equal(next.receipt.outcome,'question')
+  assert.equal(h.calls(),2);assert.equal(h.domain.rows.size,0)
+})
+test('concurrent fresh roots cannot both take a safely superseded clarification slot',{timeout:5000},async()=>{
+  const h=setup(),q=await h.start()
+  let entered!:()=>void,release!:()=>void
+  const entry=new Promise<void>(resolve=>{entered=resolve}),gate=new Promise<void>(resolve=>{release=resolve})
+  const admit=h.store.admit.bind(h.store)
+  h.store.admit=async(input,policy)=>{if(input.key==='concurrent_fresh_root_01'){entered();await gate}return admit(input,policy)}
+  const first=h.api.handle({op:'start',clientId,key:'concurrent_fresh_root_01',prompt:questionRequest},owner)
+  try{
+    await entry // The new slot is committed, but its turn is not yet admitted.
+    await assert.rejects(h.api.handle({op:'start',clientId,key:'concurrent_fresh_root_02',prompt:questionRequest},owner),/active_conversation/)
+    const slot=[...h.conversations.rows.values()].find(r=>r.kind==='dcc-hermes-client-v1')!
+    assert.equal(slot.data.rootKey,'concurrent_fresh_root_01')
+    assert.equal((await h.api.handle({op:'read',clientId,rootKey:q.rootKey},owner)).receipt.outcome,'failed')
+    assert.equal(h.calls(),1);assert.equal(h.domain.rows.size,0)
+  }finally{release();await first}
+  assert.equal((await first).rootKey,'concurrent_fresh_root_01');assert.equal(h.calls(),2)
+  assert.equal([...h.conversations.rows.values()].filter(r=>r.kind==='dcc-hermes-conversation-v1'&&r.data.status==='question').length,1)
+})
+test('late original completion cannot reopen a clarification superseded after a journal-only read',{timeout:5000},async()=>{
+  const conversations=new IntentPool(),journal=conversations,domain=new ServicePool()
+  const store=new SqlIntentStore(journal.pool,'late-question-fixture'),transport=new ServiceTransport({pool:domain.pool,actorId:'late-question-fixture'})
+  const now=()=>Date.parse('2026-11-08T02:00:00Z');let calls=0,entered!:()=>void,release!:()=>void
+  const entry=new Promise<void>(resolve=>{entered=resolve}),gate=new Promise<void>(resolve=>{release=resolve})
+  const controller=new RequestController({store,transport,now,runner:async()=>{calls++;return {calls:[{id:'question',tool:'request_clarification',arguments:{reason:'task_topics'}}],done:true}}})
+  const oldKey='late_old_question_01'
+  const api=new Conversations({pool:conversations.pool,store,transport,now,run:async(input,signal)=>{
+    const result=await controller.run(input,policy,signal)
+    if(input.key===oldKey){entered();await gate}
+    return result
+  },fence:async()=>{throw Error('Completed clarification must not require fencing')}})
+  const originalStart=api.handle({op:'start',clientId,key:oldKey,prompt:questionRequest},owner)
+  try{
+    await entry
+    const q=await api.handle({op:'read',clientId,rootKey:oldKey},owner)
+    assert.equal(q.receipt.outcome,'question')
+    const fresh=await api.handle({op:'start',clientId,key:'late_result_fresh_01',prompt:questionRequest},owner)
+    const before=structuredClone([...conversations.rows.values()])
+    release()
+    const late=await originalStart
+    assert.equal(late.receipt.outcome,'failed');assert.equal(late.question,undefined)
+    assert.deepEqual([...conversations.rows.values()],before)
+    assert.deepEqual(await api.handle({op:'read',clientId,rootKey:fresh.rootKey},owner),fresh)
+    await assert.rejects(api.handle({op:'answer',clientId,rootKey:oldKey,key:'late_old_answer_01',parentKey:q.turnKey,questionId:q.question!.id,answer:'just general chunks'},owner),/closed_question/)
+    assert.equal(calls,2);assert.equal(domain.rows.size,0)
+  }finally{release();await originalStart}
+})
+test('fresh starts under another owner or client cannot supersede the original scope question',async()=>{
+  const h=setup(),q=await h.start(),journal=await h.store.read(q.turnKey)
+  const otherClient='22222222-2222-4222-a222-222222222222'
+  await h.api.handle({op:'start',clientId:otherClient,key:'other_client_question_01',prompt:questionRequest},owner)
+  await h.api.handle({op:'start',clientId,key:'other_owner_question_01',prompt:questionRequest},'other-owner')
+  assert.deepEqual(await h.api.handle({op:'read',clientId,rootKey:q.rootKey},owner),q)
+  assert.deepEqual(await h.store.read(q.turnKey),journal)
+  const oldSlots=[...h.conversations.rows.values()].filter(r=>r.kind==='dcc-hermes-client-v1'&&r.data.rootKey===q.rootKey)
+  assert.equal(oldSlots.length,1)
+  const answer={op:'answer' as const,clientId,rootKey:q.rootKey,key:'cross_scope_answer_01',parentKey:q.turnKey,questionId:q.question!.id,answer:'just general chunks'}
+  await assert.rejects(h.api.handle({...answer,clientId:otherClient},owner),/conversation_conflict/)
+  await assert.rejects(h.api.handle(answer,'other-owner'),/conversation_conflict/)
+  assert.equal(h.calls(),3);assert.equal(h.domain.rows.size,0)
+})
+test('reply-opted generic greeting with completed zero-call journal reports no actions independently of readOnly guard',async()=>{
+  const conversations=new IntentPool(),journal=conversations,domain=new ServicePool()
+  const store=new SqlIntentStore(journal.pool,'greeting-fixture'),transport=new ServiceTransport({pool:domain.pool,actorId:'greeting-fixture'})
+  const now=()=>Date.parse('2026-11-08T02:00:00Z');let calls=0
+  const controller=new RequestController({store,transport,now,nativeRunner:async()=>{
+    calls++
+    return {status:'finished' as const,replyVersion:1 as const,assistantText:'Synthetic hello.'}
+  }})
+  const api=new Conversations({pool:conversations.pool,store,transport,now,run:(input,signal)=>controller.run(input,policy,signal),fence:async()=>{throw Error('Greeting must not require fencing')}})
+  const input={op:'start' as const,clientId,key:'generic_greeting_reply_01',prompt:'hello?',context:{version:1 as const,entries:[]},replyVersion:1 as const}
+  const reply=await api.handle(input,owner),record=await store.read(input.key)
+  assert.equal(record.phase,'completed');assert.deepEqual(record.calls,[]);assert.equal(record.guard?.readOnly,undefined)
+  assert.equal(record.guard?.binding,createHash('sha256').update(canonicalJson([owner,clientId,input.key])).digest('hex'))
+  assert.equal(reply.assistantReply?.text,'Synthetic hello.','Bounded display text is delivered separately from effect authority')
+  assert.equal(reply.receipt.outcome,'read-only','Completed opted-in zero-call greeting must not be labelled uncertain')
+  assert.equal(reply.receipt.line,'No actions performed.');assert.equal(reply.receipt.verified,0)
+  assert.equal(reply.receipt.expected,null);assert.deepEqual(reply.receipt.targets,[])
+  assert.ok(validConversationView(reply));assert.deepEqual(await api.handle(input,owner),reply);assert.equal(calls,1)
+  const legacy=await api.handle({op:'start',clientId,key:'generic_greeting_legacy_01',prompt:'hello?'},owner)
+  assert.equal(legacy.receipt.outcome,'uncertain');assert.equal(legacy.assistantReply,undefined)
+  assert.equal((await projectConversationReceipt(record,transport,false)).outcome,'uncertain')
+  const active=structuredClone(record);active.phase='active';delete active.outcome
+  assert.equal((await projectConversationReceipt(active,transport,true)).outcome,'uncertain')
+  const unknown=structuredClone(active);unknown.phase='uncertain'
+  assert.equal((await projectConversationReceipt(unknown,transport,true)).outcome,'uncertain')
+  assert.equal(calls,2);assert.equal(domain.rows.size,0)
 })
 test('answer combined length fails without consuming question; old uncertain keys are never upgraded',async()=>{
   const h=setup(),q=await h.start()

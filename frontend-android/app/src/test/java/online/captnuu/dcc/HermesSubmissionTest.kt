@@ -104,6 +104,47 @@ class HermesSubmissionTest {
             assertEquals("complete",JSONObject(restored.state.value.receipt!!).getString("outcome"))
         }finally{scope.cancel()}
     }
+    @Test fun receiptRecheckAfterStartTimeoutImmediatelyShowsCheckingThenIdenticalUnconfirmedResultWithoutReplay(){
+        val scope=CoroutineScope(Dispatchers.Unconfined);val memory=Memory();val readGate=CompletableDeferred<JSONObject>()
+        val operations=mutableListOf<String>();var originalBody:JSONObject?=null;var reads=0
+        fun uncertainReply()=reply(originalBody!!).put("expiresAt",now+HERMES_TTL_MS).also{v->
+            v.getJSONObject("receipt").put("outcome","uncertain").put("expected",JSONObject.NULL).put("verified",0)
+                .put("targets",JSONArray()).put("line","Earlier effects remain unconfirmed.")
+        }
+        val controller=HermesConversationController(scope,{memory},{body->
+            operations+=body.getString("op")
+            when(body.getString("op")){
+                "start"->{originalBody=JSONObject(body.toString());throw java.net.SocketTimeoutException("Synthetic start timeout")}
+                "read"->{reads++;if(reads==1)uncertainReply() else readGate.await()}
+                else->error("Unexpected synthetic operation")
+            }
+        },{now})
+        try{
+            controller.bind(owner);controller.availability(true);controller.edit("Synthetic earlier request");controller.send()
+            val originalClaim=controller.state.value.submitted!!
+            controller.edit("A different fresh synthetic draft")
+            // Establish the earlier uncertain receipt; the next lookup returns
+            // exactly the same valid view, so feedback cannot rely on a diff.
+            controller.readReceipt()
+            val identicalView=uncertainReply();val earlierReceipt=controller.state.value.receipt
+            controller.readReceipt()
+            assertTrue("Receipt lookup must immediately show Checking receipt while the read is suspended",
+                controller.state.value.notice.contains("Checking receipt",ignoreCase=true))
+            controller.readReceipt() // A repeated tap must not create another read.
+            assertEquals(listOf("start","read","read"),operations)
+            assertEquals("A different fresh synthetic draft",controller.state.value.draft)
+            readGate.complete(identicalView)
+            val checked=controller.state.value
+            assertTrue("An unchanged uncertain receipt needs a visible checked-but-still-unconfirmed result",
+                checked.notice.contains("checked",ignoreCase=true)&&
+                    (checked.notice.contains("unconfirmed",ignoreCase=true)||checked.notice.contains("uncertain",ignoreCase=true)))
+            assertFalse(checked.notice.contains("Checking receipt",ignoreCase=true))
+            assertEquals(earlierReceipt,checked.receipt)
+            assertEquals(originalClaim,checked.submitted);assertEquals(originalClaim.rootKey,checked.rootKey);assertEquals(originalClaim.turnKey,checked.attemptKey)
+            assertEquals("A different fresh synthetic draft",checked.draft)
+            assertEquals(listOf("start","read","read"),operations)
+        }finally{readGate.cancel();scope.cancel()}
+    }
     @Test fun answerSubmissionKeepsParentQuestionIdentityAndClearsOnlyItsEditor(){
         val scope=CoroutineScope(Dispatchers.Unconfined);val memory=Memory();val gate=CompletableDeferred<JSONObject>();val bodies=mutableListOf<JSONObject>()
         val controller=HermesConversationController(scope,{memory},{body->

@@ -12,22 +12,17 @@ test('timer dialog contains keyboard focus, closes with Escape, and restores its
  await page.keyboard.press('Escape');await expect(dialog).toHaveCount(0);await expect(trigger).toBeFocused()
 })
 
-test('calendar dialog cannot be dismissed while its local draft is saving',async({page})=>{
- await page.route('**/api/v1/calendar/snapshot',r=>r.fulfill({json:{calendars:[{id:'fixture',name:'Test calendar'}],events:[],lastSuccess:new Date().toISOString()}}))
+test('calendar dialog restores keyboard focus after handing off a pending save',async({page})=>{
+ await page.route('**/api/v1/calendar/snapshot',route=>route.fulfill({json:{calendars:[{id:'fixture',name:'Calendar'}],events:[],lastSuccess:new Date().toISOString()}}))
+ await page.route('**/api/v1/workspace/writes',route=>route.fulfill({status:202,json:{state:'saving'}}))
+ await page.route('**/api/v1/workspace/writes/*',route=>route.fulfill({json:{state:'saving'}}))
  await page.goto('/')
  const trigger=page.getByRole('button',{name:'New event',exact:true})
- await expect(trigger).toBeVisible()
- await page.evaluate(async()=>{
-  const request=indexedDB.open('daymark-calendar-outbox',1)
-  const db=await new Promise<IDBDatabase>((resolve,reject)=>{request.onupgradeneeded=()=>request.result.createObjectStore('changes',{keyPath:'change.id'});request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)})
-  const tx=db.transaction('changes','readwrite'),store=tx.objectStore('changes');let hold=true
-  const keepAlive=()=>{const next=store.get('__modal-test-hold__');next.onsuccess=()=>{if(hold)keepAlive()}}
-  keepAlive();(window as typeof window&{releaseModalTest?:()=>void}).releaseModalTest=()=>{hold=false}
- })
  await trigger.click()
- const dialog=page.getByRole('dialog',{name:'New event'});await page.getByLabel('Event title',{exact:true}).fill('Protected draft')
- await page.getByRole('button',{name:'Save event'}).click();await expect(page.getByRole('button',{name:'Saving…'})).toBeDisabled()
- await page.keyboard.press('Escape');await expect(dialog).toBeVisible();await expect(trigger).not.toBeFocused()
- await page.evaluate(()=>(window as typeof window&{releaseModalTest?:()=>void}).releaseModalTest?.())
- await expect(dialog).toHaveCount(0);await expect(trigger).toBeFocused()
+ const dialog=page.getByRole('dialog',{name:'New event'})
+ await dialog.getByLabel('Event title').fill('Pending draft')
+ await dialog.getByRole('button',{name:'Save event'}).click()
+ await expect(dialog).toHaveCount(0)
+ await expect(trigger).toBeFocused()
+ await expect(page.locator('.schedule-event')).toContainText('Pending draft')
 })

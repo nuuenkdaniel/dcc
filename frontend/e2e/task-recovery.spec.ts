@@ -3,7 +3,7 @@ test('16 unplaced tasks stay compact, expand by keyboard, and update after compl
  let actions=Array.from({length:16},(_,index)=>({kind:'action',version:1,data:{id:`unplaced-${index}`,title:`Unfinished review ${index+1}`,date:'',needsRescheduling:true,assignmentStep:true,minutes:45,notes:'',completed:false,dismissed:false,projectId:'recovery-project'}}))
  const projects=[{kind:'project',version:1,data:{id:'recovery-project',title:'Recovery project',kind:'assignment'}}]
  await page.route('**/api/v1/planner/snapshot',r=>r.fulfill({json:{projects,preparations:[],actions,status:{}}}));
- await page.route('**/api/v1/planner/entity',r=>{const change=r.request().postDataJSON();actions=actions.map(entry=>entry.data.id===change.data.id?{...entry,version:entry.version+1,data:change.data}:entry);return r.fulfill({json:{saved:true}})});
+ await page.route('**/api/v1/workspace/writes',r=>{const change=r.request().postDataJSON().payload;actions=actions.map(entry=>entry.data.id===change.data.id?{...entry,version:entry.version+1,data:change.data}:entry);return r.fulfill({json:{state:'saved',entry:{kind:change.kind,data:change.data,version:change.version+1}}})});
  await page.goto('/');
  const details=page.locator('.rescheduling-details')
  const summary=details.locator('summary')

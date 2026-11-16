@@ -26,7 +26,6 @@ test('shared controls stay themed and operable across primary routes',async({pag
  await page.goto('/inbox')
  await expectThemed(page,'.mail-controls select')
  await expectThemed(page,'.mail-controls input')
- await expectThemed(page,'.inbox-view .secondary-action')
 
  await page.goto('/prices')
  await expect(page.getByRole('heading',{name:'Feature retired',exact:true})).toBeVisible()
@@ -90,29 +89,14 @@ test('expanded project and study forms theme text, select, file, and dialog cont
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
 })
 
-test('conflicts and pending outbox drafts use semantic actions without native defaults',async({page})=>{
- await page.addInitScript(project=>localStorage.setItem('daymark.planner.v1',JSON.stringify({snapshot:{projects:[{kind:'project',version:2,data:project}],actions:[],preparations:[],status:{}},pending:[{kind:'project',version:1,data:{...project,title:'Retained local project'}}]})),project)
- await page.route('**/api/v1/planner/snapshot',route=>route.fulfill({json:{projects:[{kind:'project',version:2,data:project}],actions:[],preparations:[],status:{}}}))
- await page.route('**/api/v1/planner/entity',route=>route.fulfill({status:409,json:{error:'Synthetic conflict'}}))
+test('previous planner drafts are discoverable without an automatic upload',async({page})=>{
+ await page.addInitScript(project=>localStorage.setItem('daymark.planner.v1',JSON.stringify({snapshot:{projects:[],actions:[]},pending:[{kind:'project',version:0,data:project}]})),project)
+ let writes=0
+ await page.route('**/api/v1/workspace/writes',route=>{writes++;return route.fulfill({json:{state:'failed',code:409},status:409})})
  await page.goto('/projects')
- await expect(page.getByRole('heading',{name:'Review conflicting edits'})).toBeVisible()
- await expectThemed(page,'.planner-conflict .primary-action')
- await expectThemed(page,'.planner-conflict .danger-action')
- await page.getByRole('button',{name:'Discard my draft'}).click()
- await expect(page.getByRole('heading',{name:'Review conflicting edits'})).toHaveCount(0)
-
- await page.route('**/api/v1/calendar/snapshot',route=>route.fulfill({json:{calendars:[{id:'calendar',name:'Synthetic calendar'}],events:[],lastSuccess:new Date().toISOString()}}))
- await page.route('**/api/v1/calendar/changes',route=>route.fulfill({status:409,json:{error:'Synthetic calendar conflict'}}))
- await page.goto('/')
- await page.getByRole('button',{name:'New event',exact:true}).click()
- await page.getByLabel('Event title').fill('Pending synthetic draft')
- await page.getByRole('button',{name:'Save event',exact:true}).click()
- await expect(page.getByText('Pending calendar changes',{exact:true})).toBeVisible()
- await expectThemed(page,'.pending-calendar .danger-action')
- await page.getByText('Draft details',{exact:true}).click()
- await expect(page.locator('.pending-calendar').getByText('Pending synthetic draft',{exact:true})).toBeVisible()
- await page.getByRole('button',{name:'Discard draft',exact:true}).click()
- await expect(page.getByText('Pending synthetic draft',{exact:true})).toHaveCount(0)
+ await page.getByText('Review previous device drafts',{exact:true}).click()
+ await expect(page.getByRole('button',{name:'Save this draft'})).toBeEnabled()
+ expect(writes).toBe(0)
 })
 
 test('login controls use the same dark primary treatment at mobile width',async({page})=>{
@@ -141,7 +125,7 @@ test('Schedule controls remain contained at constrained, phone, and desktop widt
   await page.goto('/')
   const card=page.locator('.calendar-card')
   const controls=page.locator('.schedule-actions')
-  await expect(controls.getByRole('button',{name:'Sync calendar',exact:true})).toBeVisible()
+  await expect(controls.getByRole('button',{name:'Sync calendar',exact:true})).toHaveCount(0)
   await expect(controls.getByRole('button',{name:'New event',exact:true})).toBeVisible()
   const geometry=await controls.evaluate((element)=>{
    const card=element.closest('.calendar-card')!.getBoundingClientRect()

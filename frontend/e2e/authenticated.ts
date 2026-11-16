@@ -1,8 +1,8 @@
 import {test as base,expect,type BrowserContext,type Page,type Route} from '@playwright/test'
-import {assertRecurrencePreserved,canonicalTaskJson,type SharedTask} from '../src/sharedTasks'
+import {assertRecurrencePreserved,canonicalTaskJson,equalSharedTask,type SharedTask} from '../src/sharedTasks'
 import {validManualTask} from '../../backend/src/manual-tasks'
 
-type SyntheticState={manualTasks:SharedTask[];manualVersion:number;mailRules:string}
+type SyntheticState={manualTasks:SharedTask[];manualVersion:number;mailRules:string;receipts:Map<string,unknown>}
 
 // Mirror saveTasks' collection CAS/idempotency, tombstone and additive-field
 // rules. A stateful mock must not silently accept stale whole-collection writes.
@@ -21,6 +21,10 @@ export function saveSyntheticTasks(state:{manualTasks:SharedTask[];manualVersion
 async function syntheticApi(route:Route,state:SyntheticState){
  const request=route.request(),method=request.method(),path=new URL(request.url()).pathname
  if(method==='GET'){
+  if(path.startsWith('/api/v1/workspace/writes/')){
+   const receipt=state.receipts.get(path.split('/').pop()!)
+   return receipt?route.fulfill({json:receipt}):route.fulfill({status:404})
+  }
   if(path==='/api/v1/calendar/snapshot')return route.fulfill({json:{calendars:[],events:[],lastSuccess:null}})
   if(path==='/api/v1/planner/snapshot')return route.fulfill({json:{preparations:[],projects:[],actions:[],status:{}}})
   if(path==='/api/v1/planner/manual-tasks')return route.fulfill({json:{version:state.manualVersion,data:{tasks:state.manualTasks}}})
@@ -30,6 +34,26 @@ async function syntheticApi(route:Route,state:SyntheticState){
   if(path.startsWith('/api/v1/mail/message/'))return route.fulfill({status:404,json:{error:'Synthetic message not found'}})
   if(path==='/api/v1/prices/snapshot')return route.fulfill({status:410,json:{retired:true,error:'Price tracker retired; stored history preserved.'}})
   return route.fulfill({json:{}})
+ }
+ if(path==='/api/v1/workspace/writes'){
+  const {id,kind,payload}=request.postDataJSON()
+  const previous=state.receipts.get(id)
+  if(previous)return route.fulfill({json:previous})
+  if(kind==='task'){
+   const task=payload.task as SharedTask
+   const existing=state.manualTasks.find(item=>item.id===task.id)
+   if(!validManualTask(task)||!equalSharedTask(existing,payload.expected??undefined))return route.fulfill({status:409,json:{state:'failed',code:409}})
+   state.manualTasks=[...state.manualTasks.filter(item=>item.id!==task.id),task]
+   const receipt={state:'saved',task,version:++state.manualVersion}
+   state.receipts.set(id,receipt)
+   return route.fulfill({json:receipt})
+  }
+  if(kind==='planner'){
+   const receipt={state:'saved',entry:{kind:payload.kind,data:payload.data,version:payload.version+1}}
+   state.receipts.set(id,receipt)
+   return route.fulfill({json:receipt})
+  }
+  return route.fulfill({status:400,json:{state:'failed',code:400}})
  }
  if(path==='/api/v1/auth/login')return route.fulfill({status:401,json:{error:'Synthetic login not configured for this test'}})
   if(path==='/api/v1/auth/logout')return route.fulfill({json:{authenticated:false}})
@@ -48,7 +72,7 @@ async function syntheticApi(route:Route,state:SyntheticState){
 }
 
 export async function mockAuthenticatedApi(target:Page|BrowserContext){
- const state:SyntheticState={manualTasks:[],manualVersion:0,mailRules:''}
+ const state:SyntheticState={manualTasks:[],manualVersion:0,mailRules:'',receipts:new Map()}
  await target.route('**/api/v1/**',route=>syntheticApi(route,state))
  await target.route('**/api/v1/auth/session',route=>route.fulfill({json:{authenticated:true,configured:true,workspaceOwner:'a'.repeat(64)}}))
 }

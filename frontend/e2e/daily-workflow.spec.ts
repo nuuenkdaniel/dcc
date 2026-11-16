@@ -1,20 +1,23 @@
 import { test, expect } from './authenticated'
 
-test('local task editing, priority, search, delete and undo survive refresh', async ({ page }) => {
+test('confirmed task editing, priority, search, delete and undo survive refresh', async ({ page }) => {
   await page.goto('http://127.0.0.1:5173/')
   await page.getByLabel('Task title', { exact: true }).fill('Read chapter')
   await page.getByRole('button', { name: 'Add task', exact: true }).click()
   await page.getByRole('button', { name: 'Expand Read chapter', exact: true }).click()
   await page.getByLabel('Important', { exact: true }).check()
   await page.getByLabel('Read chapter name', { exact: true }).fill('Practice questions')
+  await page.getByLabel('Read chapter name', { exact: true }).blur()
+  await expect(page.getByLabel('Practice questions notes')).toBeEnabled()
   await page.getByLabel('Practice questions notes').fill('Review mistakes')
+  await page.getByLabel('Practice questions notes').blur()
   await page.getByRole('button', { name: 'Delete task', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Expand Practice questions', exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: 'Undo', exact: true }).click()
   await page.reload()
   await page.getByRole('button', { name: 'Important', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Expand Practice questions', exact: true })).toBeVisible()
-  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('productivity-app.tasks.v1')??'[]').map((task:{title:string;notes:string;important?:boolean;deleted?:boolean})=>({title:task.title,notes:task.notes,important:task.important,deleted:task.deleted})))).toEqual([{title:'Practice questions',notes:'Review mistakes',important:true,deleted:false}])
+  await expect.poll(()=>page.evaluate(()=>(JSON.parse(localStorage.getItem('dcc.confirmed.tasks.'+'a'.repeat(64))??'null')?.data.tasks??[]).map((task:{title:string;notes:string;important?:boolean;deleted?:boolean})=>({title:task.title,notes:task.notes,important:task.important,deleted:task.deleted})))).toEqual([{title:'Practice questions',notes:'Review mistakes',important:true,deleted:false}])
   await page.getByLabel('Search tasks').fill('missing')
   await expect(page.getByText('No matching tasks')).toBeVisible()
   await page.getByLabel('Search tasks').clear()
@@ -34,12 +37,10 @@ test('an inbox 401 returns to the required login without a local bypass', async 
 
 test('daily actions keep checkoffs without a planned-date editor', async ({ page }) => {
   await page.goto('http://127.0.0.1:5173/')
-  await page.evaluate(() => localStorage.setItem('productivity-app.tasks.v1', JSON.stringify([{id:'past-task',title:'Earlier task',date:'2020-01-01',notes:'',completed:false}])))
-  await page.reload()
   await expect(page.locator('.overdue-panel')).toHaveCount(0)
   await expect(page.locator('.day-summary')).toHaveCount(0)
-  await page.evaluate(() => { const tasks=JSON.parse(localStorage.getItem('productivity-app.tasks.v1')!); const now=new Date(); tasks[0].date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;localStorage.setItem('productivity-app.tasks.v1',JSON.stringify(tasks)) })
-  await page.reload()
+  await page.getByLabel('Task title',{exact:true}).fill('Earlier task')
+  await page.getByRole('button',{name:'Add task',exact:true}).click()
   await page.getByRole('button', {name:'Expand Earlier task', exact:true}).click()
   await expect(page.getByLabel('Earlier task date')).toHaveCount(0)
   await expect(page.getByText('Planned date', { exact: true })).toHaveCount(0)

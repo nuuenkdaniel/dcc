@@ -17,6 +17,19 @@ spec.loader.exec_module(qa)
 
 
 class AdapterTests(unittest.TestCase):
+    def test_reply_slot_is_exclusive_and_consumed_before_actual_agent_call(self):
+        evidence={'model':'gpt-6-luna','schemaCount':35,'schemaSha256':'b'*64,'schemasUnchanged':True,'completion':{'status':'finished','replyVersion':1,'assistantText':'Synthetic actual final'}}
+        events=[]
+        def run(*_args,**_kwargs):events.append('model');return dict(evidence)
+        runtime=types.SimpleNamespace(capability_environment=Mock(return_value=('a'*64,12345)),quiet_runtime=contextlib.nullcontext,run_action=Mock(side_effect=run))
+        with patch.object(qa,'load',return_value=runtime),patch.dict(os.environ,{'DCC_QA_RUNTIME_APPROVED':'synthetic-loopback-model'},clear=True),patch.object(sys,'argv',[str(PATH),'--bootstrapped']),patch.object(sys,'stdin',io.StringIO('{"prompt":"Synthetic","replyVersion":1}')),patch.object(sys,'stdout',new_callable=io.StringIO) as output,patch.object(sys,'path',list(sys.path)),patch.object(qa.signal,'signal'),patch.object(qa,'consume_reply_slot',side_effect=lambda:events.append('consumed')):
+            self.assertEqual(qa.main(),0)
+            self.assertEqual(events,['consumed','model'])
+            self.assertEqual(json.loads(output.getvalue())['completion'],evidence['completion'])
+        runtime.run_action.assert_called_once_with('a'*64,12345,'Synthetic',product=True,test_stdio_proxy=PATH,reply_version=1)
+        with patch.dict(os.environ,{'DCC_QA_REPLY_APPROVED':'two-consumed-turns','DCC_QA_REPLY_SLOT':'1'},clear=True),patch.object(Path,'read_text',return_value='two-turn-budget-v1\n'),patch.object(qa.os,'open',side_effect=FileExistsError) as create:
+            with self.assertRaises(FileExistsError):qa.consume_reply_slot()
+            self.assertEqual(create.call_count,1)
     def test_official_bootstrap_prefix_is_preserved_and_no_model_called_by_outer_adapter(self):
         runtime = types.SimpleNamespace(run_action=Mock())
         original = ['/official/python', '-I', '-c', 'exact validated bootstrap', str(qa.ROOT / 'deploy/task_action_runtime.py')]

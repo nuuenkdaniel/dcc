@@ -44,11 +44,10 @@ import org.json.JSONObject
     }catch(e:CancellationException){throw e}
     catch(e:Exception){if(current())message=e.message.orEmpty()}
     finally{if(attached[0]&&draftOwner==owner)busy=false}}
-  }}){Text("Mail settings & sync")}
+  }}){Text("Mail settings")}
  if(open)AlertDialog(onDismissRequest={if(!busy)open=false},title={Text("Mail settings")},text={Column {
   state.snapshots["mail"]?.let{JSONObject(it).optJSONArray("accounts").objects().forEach{a->Text("${a.optString("account")} · ${if(!a.isNull("error"))a.optString("error") else a.optString("last_success","Not synced")}",style=MaterialTheme.typography.bodySmall)}}
    OutlinedTextField(rules,{rules=it.take(4000);dirty=true;revision++},label={Text("Importance rules")},enabled=loaded&&!busy,minLines=3,maxLines=7)
-   TextButton(onClick={if(api!=null&&current()){busy=true;scope.launch{try{api("/api/v1/mail/refresh",JSONObject());if(current())message="Mail sync queued. Refresh to retrieve results."}catch(e:CancellationException){throw e}catch(e:Exception){if(current())message=e.message.orEmpty()}finally{if(attached[0]&&draftOwner==owner)busy=false}}}},enabled=state.signedIn&&!busy&&api!=null){Text("Sync mail")}
   if(message.isNotBlank())Text(message,style=MaterialTheme.typography.bodySmall)
   }},confirmButton={TextButton(onClick={if(api!=null&&current()){
     val submitted=rules;val started=revision;busy=true

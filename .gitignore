@@ -54,3 +54,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Project-local Android toolchain, caches, keys and emulator data
+/.android-build/
