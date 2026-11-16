@@ -1,13 +1,16 @@
 import {test,expect} from './authenticated'
-test('reload requests Nextcloud sync and Sync now requests it again',async({page})=>{
- let requests=0
- await page.route('**/api/v1/auth/session',r=>r.fulfill({json:{authenticated:true,configured:true}}))
- await page.route('**/api/v1/calendar/refresh',r=>{requests++;return r.fulfill({json:{status:'synced'}})})
- await page.route('**/api/v1/calendar/snapshot',r=>r.fulfill({json:{calendars:[],events:[],lastSuccess:new Date().toISOString()}}))
- await page.goto('http://127.0.0.1:5173')
- await expect.poll(()=>requests).toBe(1)
+
+test('calendar startup, reload and focus are read-only',async({page})=>{
+ let reads=0,writes=0
+ await page.route('**/api/v1/calendar/refresh',route=>{writes++;return route.fulfill({json:{}})})
+ await page.route('**/api/v1/calendar/snapshot',route=>{reads++;return route.fulfill({json:{calendars:[{id:'fixture',name:'Test calendar'}],events:[],lastSuccess:new Date().toISOString()}})})
+ await page.goto('/')
+ await expect(page.getByRole('button',{name:'New event'})).toBeEnabled()
  await page.reload()
- await expect.poll(()=>requests).toBe(2)
- await page.locator('.schedule-actions').getByRole('button',{name:'Sync calendar',exact:true}).click()
- await expect.poll(()=>requests).toBe(3)
+ await expect(page.getByRole('button',{name:'New event'})).toBeEnabled()
+ const previous=reads
+ await page.evaluate(()=>window.dispatchEvent(new Event('focus')))
+ await expect.poll(()=>reads).toBeGreaterThan(previous)
+ expect(writes).toBe(0)
+ await expect(page.getByRole('button',{name:'Sync calendar'})).toHaveCount(0)
 })

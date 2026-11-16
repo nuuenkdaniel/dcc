@@ -18,6 +18,10 @@ Frontend runs independently at `http://localhost:5173`, preserving the existing 
 
 ## Conversation-first chat
 
+### Workspace saves
+
+Authenticated clients submit one operation to `POST /api/v1/workspace/writes` and read its original receipt at `GET /api/v1/workspace/writes/:id`. Task and planner writes commit their receipts with the database update. Calendar writes persist first, then a server worker verifies the provider and the calendar snapshot. Older API routes remain available to released clients during migration.
+
 ### Optional native display synchronization
 
 Authenticated discovery advertises `conversationDisplaySyncVersion: 1`. Only

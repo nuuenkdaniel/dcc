@@ -172,10 +172,11 @@ class ContentFirstAcceptanceTest {
     call=="GET /api/v1/auth/session" -> json(request,JSONObject().put("authenticated",true).put("workspaceOwner",owner))
     call=="GET /api/v1/hermes/action-capabilities" -> json(request,JSONObject().put("conversation",true).put("conversationChatVersion",1).put("workspaceOwner",owner))
     call=="GET /api/v1/planner/snapshot" -> json(request,plannerJson())
+    call=="GET /api/v1/planner/manual-tasks" -> json(request,JSONObject().put("version",0).put("data",JSONObject().put("tasks",JSONArray())))
     call=="GET /api/v1/calendar/snapshot" -> json(request,JSONObject().put("calendars",JSONArray()).put("events",JSONArray()))
     call=="GET /api/v1/mail/page" -> json(request,JSONObject().put("messages",JSONArray()).put("briefing",JSONArray()).put("accounts",JSONArray()).put("total",0).put("nextCursor",JSONObject.NULL).put("today","2026-05-10"))
-    call=="POST /api/v1/planner/entity" -> {
-     val body=readBody()
+    call=="POST /api/v1/workspace/writes" -> {
+     val body=readBody().getJSONObject("payload")
      if(body.optString("kind")=="project"){
       val current=projectVersion.get(); val sent=body.optInt("version",-1)
       if(sent!=current){ // enforce version==current; reject mismatch
@@ -184,7 +185,7 @@ class ContentFirstAcceptanceTest {
        entityPosts+=JSONObject(body.toString())
        projectData.set(JSONObject(body.getJSONObject("data").toString()))
        projectVersion.incrementAndGet()
-       json(request,JSONObject().put("ok",true).put("version",projectVersion.get()))
+       json(request,JSONObject().put("state","saved").put("entry",JSONObject().put("kind","project").put("version",projectVersion.get()).put("data",projectData.get())))
       }
      } else { entityPosts+=JSONObject(body.toString()); json(request,JSONObject().put("ok",true)) }
     }
@@ -214,7 +215,7 @@ class ContentFirstAcceptanceTest {
     assertEquals(expectedStatus, projectData.get().optString("status"))
     assertEquals(expectedVersion+1, projectVersion.get())
    }
-   val unrelatedBefore=requests.filterNot{ it.contains("/planner/entity") || it.contains("/planner/snapshot") || it.contains("/auth/session") || it.contains("/hermes/action-capabilities") || it.contains("/calendar/snapshot") || it.contains("/mail/page") }.size
+   val unrelatedBefore=requests.filterNot{ it.contains("/workspace/writes")||it.contains("/planner/manual-tasks") || it.contains("/planner/snapshot") || it.contains("/auth/session") || it.contains("/hermes/action-capabilities") || it.contains("/calendar/snapshot") || it.contains("/mail/page") }.size
 
    // 1) Mark complete from Active (version 1 sent)
    val before1=entityPosts.size; openActions(); compose.onNodeWithTag("project-mark-complete", useUnmergedTree=true).performClick(); waitForProjectPost(before1+1,"complete",1)
@@ -237,7 +238,7 @@ class ContentFirstAcceptanceTest {
    assertTrue("all entity records are project mutations", entityPosts.all{it.optString("kind")=="project" && it.getJSONObject("data").getString("id")=="proj-1"})
    // child unchanged (immutable comparison)
    assertEquals("child fixture unchanged", childJson, plannerJson().getJSONArray("actions").getJSONObject(0).getJSONObject("data").toString())
-   val unrelatedAfter=requests.filterNot{ it.contains("/planner/entity") || it.contains("/planner/snapshot") || it.contains("/auth/session") || it.contains("/hermes/action-capabilities") || it.contains("/calendar/snapshot") || it.contains("/mail/page") }.size
+   val unrelatedAfter=requests.filterNot{ it.contains("/workspace/writes")||it.contains("/planner/manual-tasks") || it.contains("/planner/snapshot") || it.contains("/auth/session") || it.contains("/hermes/action-capabilities") || it.contains("/calendar/snapshot") || it.contains("/mail/page") }.size
    assertEquals("no unrelated requests", unrelatedBefore, unrelatedAfter)
    capture("content-project-lifecycle")
   } finally { compose.activityRule.scenario.onActivity{store.clear()}; client.dispatcher.executorService.shutdownNow(); client.connectionPool.evictAll() }

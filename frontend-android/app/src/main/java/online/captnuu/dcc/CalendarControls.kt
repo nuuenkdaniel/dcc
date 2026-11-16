@@ -16,31 +16,42 @@ import java.util.UUID
 
 fun calendarInstant(value:String,allDay:Boolean):String=if(allDay)LocalDate.parse(value).toString() else LocalDateTime.parse(value).atZone(ZoneId.systemDefault()).toInstant().toString()
 @Composable fun CalendarControls(state:WorkspaceState,date:String,model:WorkspaceModel?) {
- var open by rememberSaveable{mutableStateOf(false)};var message by remember{mutableStateOf("")};val scope=rememberCoroutineScope();var busy by remember{mutableStateOf(false)}
- Row{TextButton(onClick={open=true},enabled=model!=null){Text("New event")};TextButton(onClick={busy=true;scope.launch{try{model!!.api("/api/v1/calendar/refresh",JSONObject());model.refresh();message="Calendar sync requested."}catch(e:Exception){message=e.message.orEmpty()}finally{busy=false}}},enabled=model!=null&&!busy){Text("Sync calendar")}}
- if(message.isNotBlank())Text(message,style=MaterialTheme.typography.bodySmall)
- if(open)EventEditor(state,date,null,model!!){open=false}
+ var open by rememberSaveable{mutableStateOf(false)}
+ var recover by rememberSaveable{mutableStateOf<String?>(null)}
+ val failed=state.failedWrite?.let(::JSONObject)?.takeIf{it.optString("kind")=="calendar"}?.optJSONObject("body")
+ Row{
+  TextButton(onClick={recover=null;open=true},enabled=model!=null&&state.online){Text("New event")}
+  if(failed!=null)TextButton(onClick={recover=failed.toString();open=true},enabled=model!=null&&state.online){Text("Edit failed event")}
+ }
+ val draft=recover?.let(::JSONObject)
+ val current=state.snapshots["calendar"]?.let{JSONObject(it).optJSONArray("events").objects()}.orEmpty()
+ val original=draft?.optString("eventId")?.takeIf(String::isNotBlank)?.let{id->current.find{it.optString("id")==id}}
+ if(open&&model!=null){
+  if(draft?.has("eventId")==true&&original==null)AlertDialog(onDismissRequest={open=false},title={Text("Event unavailable")},text={Text("The original event is unavailable. Your draft is retained.")},confirmButton={TextButton(onClick={open=false}){Text("Close")}})
+  else EventEditor(state,date,original,model,draft){open=false}
+ }
+
 }
 @Composable fun EventActions(state:WorkspaceState,event:JSONObject,model:WorkspaceModel?){
  var edit by rememberSaveable(event.optString("id")){mutableStateOf(false)};var prepare by rememberSaveable(event.optString("id")){mutableStateOf(false)}
- Row{TextButton(onClick={edit=true},enabled=model!=null){Text("Edit event")};TextButton(onClick={prepare=true},enabled=model!=null){Text("Prepare")}}
+ Row{TextButton(onClick={edit=true},enabled=model!=null&&state.online&&!event.optBoolean("pending")){Text("Edit event")};TextButton(onClick={prepare=true},enabled=model!=null&&state.online&&!event.optBoolean("pending")){Text("Prepare")}}
  if(edit)EventEditor(state,event.optString("start").take(10),event,model!!){edit=false}
  if(prepare)StudyEditor(state,event,model!!){prepare=false}
 }
-@Composable private fun EventEditor(state:WorkspaceState,date:String,event:JSONObject?,model:WorkspaceModel,dismiss:()->Unit){
+@Composable private fun EventEditor(state:WorkspaceState,date:String,event:JSONObject?,model:WorkspaceModel,draft:JSONObject?=null,dismiss:()->Unit){
  val calendars=state.snapshots["calendar"]?.let{JSONObject(it).optJSONArray("calendars").objects()}.orEmpty()
- var title by rememberSaveable{mutableStateOf(event?.optString("title")?:"")};var description by rememberSaveable{mutableStateOf(event?.optString("description")?:"")};var location by rememberSaveable{mutableStateOf(event?.optString("location")?:"")}
- var allDay by rememberSaveable{mutableStateOf(event?.optBoolean("allDay")?:false)}
+ var title by rememberSaveable{mutableStateOf((draft?:event)?.optString("title")?:"")};var description by rememberSaveable{mutableStateOf((draft?:event)?.optString("description")?:"")};var location by rememberSaveable{mutableStateOf((draft?:event)?.optString("location")?:"")}
+ var allDay by rememberSaveable{mutableStateOf((draft?:event)?.optBoolean("allDay")?:false)}
  fun local(value:String)=runCatching{Instant.parse(value).atZone(ZoneId.systemDefault()).toLocalDateTime().toString()}.getOrDefault(value)
- var start by rememberSaveable{mutableStateOf(event?.optString("start")?.let{if(allDay)it else local(it)}?:"${date}T09:00")}
- var end by rememberSaveable{mutableStateOf(event?.optString("end")?.let{if(allDay)it else local(it)}?:"${date}T10:00")}
- var calendar by rememberSaveable{mutableStateOf(event?.optString("calendarId")?:calendars.firstOrNull()?.optString("id").orEmpty())}
+ var start by rememberSaveable{mutableStateOf((draft?:event)?.optString("start")?.let{if(allDay)it else local(it)}?:"${date}T09:00")}
+ var end by rememberSaveable{mutableStateOf((draft?:event)?.optString("end")?.let{if(allDay)it else local(it)}?:"${date}T10:00")}
+ var calendar by rememberSaveable{mutableStateOf((draft?:event)?.optString("calendarId")?:calendars.firstOrNull()?.optString("id").orEmpty())}
  var mutation by rememberSaveable{mutableStateOf(UUID.randomUUID().toString())};var error by rememberSaveable{mutableStateOf("")};var busy by remember{mutableStateOf(false)};var confirm by remember{mutableStateOf(false)};val scope=rememberCoroutineScope()
  fun save(delete:Boolean=false){busy=true;scope.launch{try{
   val from=calendarInstant(start,allDay);val to=calendarInstant(end,allDay);require(title.isNotBlank()&&calendar.isNotBlank()&&(if(allDay)LocalDate.parse(to)>LocalDate.parse(from) else Instant.parse(to)>Instant.parse(from))){"Choose a calendar, title and an end after the start."}
   val body=JSONObject().put("id",mutation).put("calendarId",calendar).put("title",title).put("description",description).put("location",location).put("start",from).put("end",to).put("allDay",allDay)
   event?.let{body.put("eventId",it.getString("id")).put("etag",it.optString("etag"))};if(delete)body.put("operation","delete")
-  model.mutate("/api/v1/calendar/changes",body);model.refresh();dismiss()
+  model.mutate("/api/v1/calendar/changes",body);dismiss()
  }catch(e:Exception){error=e.message?:"Save failed; draft retained"}finally{busy=false}}}
  Dialog(onDismissRequest={if(!busy)dismiss()},properties=DialogProperties(usePlatformDefaultWidth=false)){Surface(Modifier.fillMaxSize()){Column(Modifier.safeDrawingPadding().padding(16.dp)){
   Text(if(event==null)"New event" else "Edit event",style=MaterialTheme.typography.titleLarge)
@@ -55,7 +66,7 @@ fun calendarInstant(value:String,allDay:Boolean):String=if(allDay)LocalDate.pars
    if(event!=null)item{TextButton(onClick={confirm=true},enabled=!busy){Text("Delete this occurrence")}}
    if(error.isNotBlank())item{Text(error,color=MaterialTheme.colorScheme.error)}
   }
-  Row{TextButton(onClick=dismiss,enabled=!busy){Text("Cancel")};Button(onClick={save()},enabled=!busy){Text("Save")}}
+  Row{TextButton(onClick=dismiss,enabled=!busy){Text("Cancel")};Button(onClick={save()},enabled=!busy&&state.online){Text("Save")}}
  }}}
  if(confirm)AlertDialog(onDismissRequest={confirm=false},title={Text("Delete event?")},text={Text("Only this occurrence is cancelled. Other recurring occurrences are preserved.")},confirmButton={TextButton(onClick={confirm=false;save(true)}){Text("Delete")}},dismissButton={TextButton(onClick={confirm=false}){Text("Cancel")}})
 }

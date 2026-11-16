@@ -18,6 +18,6 @@ import org.json.JSONObject
    Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){Checkbox(d.optBoolean("dismissed"),{field("dismissed",it)},enabled=!busy);Text("Dismiss task")}
    if(d.optString("preparationId").isNotBlank()&&d.optBoolean("completed")){Text("How did it go?");Row{listOf("comfortable","review").forEach{value->FilterChip(d.optString("feedback")==value,{field("feedback",value)},label={Text(if(value=="review")"Needs review" else "Comfortable")},enabled=!busy)}}}
    if(error.isNotBlank())Text(error,color=MaterialTheme.colorScheme.error)
-  }},confirmButton={TextButton(onClick={busy=true;scope.launch{try{model!!.mutate("/api/v1/planner/entity",JSONObject().put("kind","action").put("version",version).put("data",d));model.refresh();open=false}catch(e:Exception){error=e.message.orEmpty()}finally{busy=false}}},enabled=!busy&&d.optString("title").isNotBlank()){Text("Save")}},dismissButton={TextButton(onClick={open=false},enabled=!busy){Text("Cancel")}})
+  }},confirmButton={TextButton(onClick={busy=true;scope.launch{try{model!!.mutate("/api/v1/planner/entity",JSONObject().put("kind","action").put("version",version).put("data",d));open=false}catch(e:Exception){error=e.message.orEmpty()}finally{busy=false}}},enabled=!busy&&d.optString("title").isNotBlank()){Text("Save")}},dismissButton={TextButton(onClick={open=false},enabled=!busy){Text("Cancel")}})
  }
 }

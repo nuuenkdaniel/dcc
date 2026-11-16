@@ -44,9 +44,9 @@ fun newProjectDraft()=JSONObject().put("id",UUID.randomUUID().toString()).put("t
  var working by remember {mutableStateOf(false)}
  var message by rememberSaveable {mutableStateOf("")}
  val scope=rememberCoroutineScope()
- val enabled=(state.signedIn||state.restorePending) && !state.busy && !working && model!=null
+ val enabled=state.online && !working && model!=null
  val projects=planner.optJSONArray("projects").objects().filter{filter=="all"||it.getJSONObject("data").optString("status")==filter}.sortedBy{it.getJSONObject("data").optString("deadline").ifBlank{"9999"}}
- fun setStatus(entry:JSONObject,status:String){if(model==null)return;working=true;scope.launch {try{model.saveProject(JSONObject(entry.getJSONObject("data").toString()).put("status",status),entry.getInt("version"));message="Project updated or queued. Check Pending edits for sync status."}catch(e:Exception){message=e.message?:"Could not update project."}finally{working=false}}}
+ fun setStatus(entry:JSONObject,status:String){if(model==null)return;working=true;scope.launch {try{model.saveProject(JSONObject(entry.getJSONObject("data").toString()).put("status",status),entry.getInt("version"));message=""}catch(e:Exception){message=e.message?:"Could not update project."}finally{working=false}}}
  Column(Modifier.fillMaxSize()) {
   val queued=planner.optJSONObject("status")?.optBoolean("requested")==true
   var pageMenu by remember{mutableStateOf(false)}
@@ -55,7 +55,6 @@ fun newProjectDraft()=JSONObject().put("id",UUID.randomUUID().toString()).put("t
    Spacer(Modifier.weight(1f))
    Box{IconButton(onClick={pageMenu=true}){Icon(Icons.Default.MoreVert,"Page actions")}
     DropdownMenu(expanded=pageMenu,onDismissRequest={pageMenu=false}){
-     DropdownMenuItem(text={Text("Refresh")},onClick={pageMenu=false;refresh()},enabled=enabled)
      DropdownMenuItem(text={Text(if(queued)"Planning queued" else "Request planning")},onClick={pageMenu=false;working=true;scope.launch {try{model!!.requestPlanning();message="Planning requested."}catch(e:Exception){message=e.message?:"Could not request planning."}finally{working=false}}},enabled=enabled&&!queued)
      DropdownMenuItem(text={Text("Settings")},onClick={pageMenu=false;onSettings()})
     }}
@@ -75,11 +74,11 @@ fun newProjectDraft()=JSONObject().put("id",UUID.randomUUID().toString()).put("t
      Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
       Column(Modifier.weight(1f).clickable{open=!open}) {
        Text(d.optString("title"),style=MaterialTheme.typography.titleMedium)
-       Text(listOf(d.optString("category"),status,d.optString("deadline").takeIf{it.isNotBlank()}?.let{"Due $it"}).filterNotNull().joinToString(" · "),style=MaterialTheme.typography.bodySmall)
+       Text(listOf(d.optString("category"),if(entry.optBoolean("pending"))"Saving…" else status,d.optString("deadline").takeIf{it.isNotBlank()}?.let{"Due $it"}).filterNotNull().joinToString(" · "),style=MaterialTheme.typography.bodySmall)
        Text("${tasks.count{it.getJSONObject("data").optBoolean("completed")}} / ${tasks.size} tasks",style=MaterialTheme.typography.bodySmall)
       }
       Box {
-       IconButton(onClick={menu=true},enabled=enabled,modifier=Modifier.testTag("project-actions-${d.getString("id")}")){Icon(Icons.Default.MoreVert,"Project actions")}
+       IconButton(onClick={menu=true},enabled=enabled&&!entry.optBoolean("pending"),modifier=Modifier.testTag("project-actions-${d.getString("id")}")){Icon(Icons.Default.MoreVert,"Project actions")}
        DropdownMenu(expanded=menu,onDismissRequest={menu=false}){
         DropdownMenuItem(text={Text("Edit")},onClick={menu=false;version=entry.getInt("version");draft=d.toString()})
         if(status!="complete")DropdownMenuItem(text={Text("Mark complete")},onClick={menu=false;setStatus(entry,"complete")},modifier=Modifier.testTag("project-mark-complete"))
@@ -108,7 +107,13 @@ fun newProjectDraft()=JSONObject().put("id",UUID.randomUUID().toString()).put("t
    }
   }
  }
- draft?.let {raw->ProjectEditor(raw,version,enabled,model,{draft=null},{draft=it},{message="Saved or queued on this phone. Check Pending edits for sync status.";draft=null})}
+ val failed=state.failedWrite?.let(::JSONObject)?.takeIf{it.optString("kind")=="planner"}?.optJSONObject("body")?.takeIf{it.optString("kind")=="project"}
+ if(failed!=null)TextButton(onClick={
+  val data=failed.getJSONObject("data")
+  version=planner.optJSONArray("projects").objects().firstOrNull{it.getJSONObject("data").optString("id")==data.optString("id")}?.optInt("version")?:0
+  draft=data.toString()
+ },enabled=enabled){Text("Edit failed project")}
+ draft?.let {raw->ProjectEditor(raw,version,enabled,model,{draft=null},{draft=it},{message="";draft=null})}
 }
 
 @Composable private fun ProjectEditor(raw:String,version:Int,enabled:Boolean,model:WorkspaceModel?,dismiss:()->Unit,update:(String)->Unit,saved:()->Unit) {

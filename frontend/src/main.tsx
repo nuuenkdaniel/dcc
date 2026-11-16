@@ -8,3 +8,10 @@ createRoot(document.getElementById('root')!).render(
     <App />
   </StrictMode>,
 )
+
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  void navigator.serviceWorker.register('/workspace-offline.js')
+    .then(() => navigator.serviceWorker.ready)
+    .then(registration => registration.active?.postMessage('retain-workspace-shell'))
+    .catch(() => {})
+}

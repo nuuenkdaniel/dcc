@@ -7,7 +7,7 @@ test('assignment exposes linked tasks and honest empty state',async({page})=>{
  await page.getByText('Project tasks (0)',{exact:true}).click()
  await expect(page.getByText(/No tasks have been created for this project yet/)).toBeVisible()
  actions=[{version:1,data:{id:'a',projectId:'p',title:'Draft the report',date:'2026-10-08',minutes:45,completed:false,dismissed:false,notes:'Outline the required sections.'}}]
- await page.getByRole('button',{name:'Sync now',exact:true}).click()
+ await page.evaluate(()=>window.dispatchEvent(new Event('focus')))
  await expect(page.getByText('Project tasks (1)',{exact:true})).toBeVisible()
  await expect(page.getByText('Draft the report',{exact:true})).toBeVisible()
  await expect(page.getByRole('heading',{name:'Oct 8, 2026',exact:true})).toBeVisible()

@@ -5,7 +5,7 @@ test('long generated project plan stays compact, grouped, and read-only on mount
  const actions=Array.from({length:18},(_,index)=>({id:`task-${index}`,projectId:project.id,title:`Generated task ${index+1} with enough text to exercise compact wrapping`,notes:index%3===0?'A note that should not render as an always-visible paragraph.':'',minutes:25+index,date:index>=15?'':index<8?'2026-10-08':'2026-10-09',needsRescheduling:index>=15,completed:index===0,dismissed:false}))
  let writes=0
  await page.route('**/api/v1/planner/snapshot',route=>route.fulfill({json:{projects:[{data:project,version:1}],actions:actions.map(data=>({data,version:1})),status:{}}}))
- await page.route('**/api/v1/planner/entity',route=>{writes++;return route.fulfill({json:{}})})
+ await page.route('**/api/v1/workspace/writes',route=>{writes++;return route.fulfill({json:{}})})
  await page.goto('http://127.0.0.1:5173/projects')
  await expect(page.getByText('1/18',{exact:true})).toBeVisible()
  await expect(page.getByText('2h 35m',{exact:true})).toBeVisible()

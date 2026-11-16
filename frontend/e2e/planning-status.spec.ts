@@ -3,7 +3,7 @@ test('planning separates historical explanation from sync and keeps controls sty
  let requested=false
  await page.route('**/api/v1/planner/snapshot',r=>r.fulfill({json:{projects:[],actions:[],status:{summary:'Earlier budget estimate',last_success:'2026-10-03T14:00:00Z',requested}}}))
  await page.route('**/api/v1/planner/refresh',r=>{requested=true;return r.fulfill({json:{queued:true}})})
- await page.goto('http://127.0.0.1:5173/');await page.getByText('Planning & sync',{exact:true}).click()
+ await page.goto('http://127.0.0.1:5173/');await page.locator('.planner-details > summary').filter({hasText:'Planning'}).click()
  await expect(page.getByText('Earlier budget estimate',{exact:true})).not.toBeVisible()
  await page.getByText('Last planner explanation',{exact:true}).click()
  await expect(page.getByText('Earlier budget estimate',{exact:true})).toBeVisible()

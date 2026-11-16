@@ -40,14 +40,14 @@ class MailSettingsTest {
             if(body!=null&&allowSave)server=body.getString("rules")
             JSONObject().put("rules",server)
         }}
-        compose.onNodeWithText("Mail settings & sync").performClick()
+        compose.onNodeWithText("Mail settings").performClick()
         compose.onNodeWithText("Importance rules").assertTextContains(server)
         compose.onNodeWithText("Importance rules").performTextReplacement("Unsaved synthetic draft")
         compose.onNodeWithText("Close",useUnmergedTree=true).performClick()
         compose.onNodeWithTag("mail-settings-list").performScrollToIndex(30)
-        compose.onNodeWithText("Mail settings & sync").assertDoesNotExist()
+        compose.onNodeWithText("Mail settings").assertDoesNotExist()
         compose.onNodeWithTag("mail-settings-list").performScrollToIndex(0)
-        compose.onNodeWithText("Mail settings & sync").performClick()
+        compose.onNodeWithText("Mail settings").performClick()
         compose.onNodeWithText("Importance rules").assertTextContains("Unsaved synthetic draft")
         compose.runOnIdle{assertEquals(listOf(Pair("GET",null)),requests)}
         restoration.emulateSavedInstanceStateRestore()
@@ -76,9 +76,9 @@ class MailSettingsTest {
                 else JSONObject().put("rules","Owner B rules")
             }
         }
-        compose.onNodeWithText("Mail settings & sync").performClick()
+        compose.onNodeWithText("Mail settings").performClick()
         compose.runOnIdle{owner="owner-b"}
-        compose.onNodeWithText("Mail settings & sync").performClick()
+        compose.onNodeWithText("Mail settings").performClick()
         compose.onNodeWithText("Importance rules").assertTextContains("Owner B rules")
         compose.runOnIdle{oldRead.complete(JSONObject().put("rules","Late owner A rules"))}
         compose.onNodeWithText("Importance rules").assertTextContains("Owner B rules")
@@ -96,12 +96,12 @@ class MailSettingsTest {
                 else JSONObject().put("rules","Current session rules")
             }
         }
-        compose.onNodeWithText("Mail settings & sync").performClick()
+        compose.onNodeWithText("Mail settings").performClick()
         compose.runOnIdle{session=2;oldRead.complete(JSONObject().put("rules","Stale session rules"))}
         assertEquals("",compose.onNodeWithText("Importance rules").fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
         compose.onNodeWithText("Stale session rules").assertDoesNotExist()
         compose.onNodeWithText("Close",useUnmergedTree=true).performClick()
-        compose.onNodeWithText("Mail settings & sync").performClick()
+        compose.onNodeWithText("Mail settings").performClick()
         compose.onNodeWithText("Importance rules").assertTextContains("Current session rules")
         compose.runOnIdle{assertEquals(2,reads)}
     }

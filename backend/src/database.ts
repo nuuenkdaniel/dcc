@@ -8,6 +8,13 @@ export async function migrate(pool:Pool) {
   await client.query(`CREATE TABLE IF NOT EXISTS app_sessions (
    token_hash text PRIMARY KEY, identity text NOT NULL, expires_at timestamptz NOT NULL
   ); CREATE INDEX IF NOT EXISTS app_sessions_expiry ON app_sessions(expires_at);
+  CREATE TABLE IF NOT EXISTS workspace_writes (
+   owner text NOT NULL, id uuid NOT NULL, fingerprint text NOT NULL,
+   calendar_change jsonb, receipt jsonb NOT NULL,
+   attempts integer NOT NULL DEFAULT 0, next_attempt timestamptz NOT NULL DEFAULT now(),
+   updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(owner,id)
+  ); CREATE INDEX IF NOT EXISTS workspace_writes_due ON workspace_writes(next_attempt)
+    WHERE calendar_change IS NOT NULL;
   CREATE TABLE IF NOT EXISTS calendar_mutations (id uuid PRIMARY KEY,payload_hash text NOT NULL,result jsonb,created_at timestamptz NOT NULL DEFAULT now());
   CREATE TABLE IF NOT EXISTS calendar_sync_state (
    id integer PRIMARY KEY CHECK(id=1), next_run timestamptz NOT NULL DEFAULT now(),

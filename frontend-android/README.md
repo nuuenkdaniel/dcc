@@ -37,6 +37,10 @@ Do not commit local.properties, signing keys, credentials, SDKs or generated APK
 
 ## Scope
 
+### Server-first workspace in 0.3.0
+
+Tasks, calendar events, projects and assignments require a connection for changes. The device retains confirmed snapshots and tracks only in-flight save receipts. New items appear with Saving status, and failed writes restore the confirmed view. Older device drafts remain available for review.
+
 ### Content-first UI and HTML email reader (source, synthetic-verified; unreleased)
 
 Source changes remove redundant destination header bands (bottom navigation remains the destination label), compact destination controls, make task/project/email actions more direct, and add a dedicated native email reader for `/api/v1/mail/html/:id` with fixed Close/Back and plaintext fallback. Project lifecycle uses existing honest status actions (Mark complete/Reopen/Archive/Restore/Edit); **true project Delete/cascade is not implemented** pending an approved linked-task/server contract.

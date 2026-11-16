@@ -6,6 +6,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import java.util.UUID
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,7 +30,7 @@ private const val ORIGIN = "https://dcc.home.captnuu.online"
 internal const val MAIL_MAX_DECODED_BYTES = 2 * 1024 * 1024
 internal const val MAIL_MAX_WIRE_BYTES = MAIL_MAX_DECODED_BYTES * 6 + 4096 // bounded before parse; JSON string escaping worst case
 internal const val MAIL_CACHE_AUTHORITY_FILE = "mail-read-owner.enc"
-data class WorkspaceState(val restoring:Boolean=false,val restorePending:Boolean=false,val signedIn:Boolean=false,val busy:Boolean=false,val notice:String="Sign in to connect to your workspace.",val pending:List<String> = emptyList(),val snapshots:Map<String,String> = emptyMap())
+data class WorkspaceState(val restoring:Boolean=false,val restorePending:Boolean=false,val signedIn:Boolean=false,val busy:Boolean=false,val notice:String="Sign in to connect to your workspace.",val pending:List<String> = emptyList(),val snapshots:Map<String,String> = emptyMap(),val online:Boolean=false,val legacyDrafts:List<String> = emptyList(),val failedWrite:String?=null)
 internal fun parseMailHtmlPayload(raw:String,wireCap:Int=MAIL_MAX_WIRE_BYTES):WorkspaceModel.MailHtmlResult {
     require(raw.toByteArray(Charsets.UTF_8).size<=wireCap){"Formatted message is too large to cache safely."}
     val result=JSONObject(raw)
@@ -77,12 +79,36 @@ class WorkspaceModel internal constructor(application:Application,private val de
     private fun clearMailReadAuthority(){ runCatching{mailAuthority.clear()} }
     private fun clearWorkspaceCache(){cache.clear();dependencies.clearCachedMailBodies();clearMailReadAuthority()}
     private val queue=MutationQueue(stored("outbox.enc",strict=true))
-    private val queueLock=Mutex()
+    private val refreshLock=Mutex()
+    private val writes=linkedMapOf<String,JSONObject>()
+    private var receiptOwner:String?=null
+    private val activeWrites=mutableSetOf<String>()
+    private var foreground=false
+    private var lastRead=0L
+    private var lastMailRead=0L
+    private val readGenerations=mutableMapOf<String,Long>()
+    private val workspaceWritesPath="/api/v1/workspace/writes"
+    private fun connected():Boolean {
+        val manager=connectivity?:return mutable.value.signedIn
+        return manager.getNetworkCapabilities(manager.activeNetwork)?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)==true
+    }
+    fun setWorkspaceForeground(visible:Boolean){
+        foreground=visible
+        if(visible&&connected()&&!mutable.value.restoring)refresh()
+    }
     internal val manualTaskLock=Mutex()
     private var displaySyncJob:Job?=null
+    private var legacyTaskReceipt:String?=null
     private var displaySyncClaim:Triple<HermesOwnerFence,String,Long>?=null
     private val connectivity=if(dependencies.registerConnectivity)application.getSystemService(android.net.ConnectivityManager::class.java) else null
-    private val networkCallback=object:android.net.ConnectivityManager.NetworkCallback(){override fun onAvailable(network:android.net.Network){viewModelScope.launch{if(!mutable.value.restoring&&(mutable.value.signedIn||mutable.value.restorePending))refresh()}}}
+    private val networkCallback=object:android.net.ConnectivityManager.NetworkCallback(){
+        override fun onAvailable(network:android.net.Network){viewModelScope.launch{updateConnectivity();if(!mutable.value.restoring&&(mutable.value.signedIn||mutable.value.restorePending))refresh()}}
+        override fun onLost(network:android.net.Network){viewModelScope.launch{updateConnectivity()}}
+    }
+    private fun updateConnectivity(){
+        val online=connected()&&mutable.value.signedIn
+        mutable.value=mutable.value.copy(online=online,pending=if(online)writes.values.filterNot{it.optBoolean("unconfirmed")}.map(JSONObject::toString) else emptyList())
+    }
     private val cache=stored("workspace.enc")
     private val sessions=PersistentSessionJar(stored("session.enc"),ORIGIN.toHttpUrl())
     private val client = (dependencies.httpClient?.newBuilder()?:OkHttpClient.Builder()).callTimeout(20,TimeUnit.SECONDS)
@@ -90,7 +116,26 @@ class WorkspaceModel internal constructor(application:Application,private val de
     val hermes:HermesConversationController=HermesConversationController(viewModelScope,{owner->stored("hermes-$owner.enc",strict=true)},{body->api("/api/v1/hermes/conversation",body)},recoveryStorageFor={owner->stored("hermes-chat-$owner-separate-v1.enc",strict=true,existingKeyOnly=true)},chatStorageFor={owner->stored("hermes-chat-$owner-v1.enc",strict=true)},legacyRecoveryStorageFor={owner->stored("hermes-$owner-separate-v1.enc",strict=true,existingKeyOnly=true)},onDisplaySync=::scheduleDisplaySync,recoveryTiming=dependencies.recoveryTiming)
     private suspend fun bindHermes(session:JSONObject){
         val owner=session.optString("workspaceOwner")
-        if(Regex("^[a-f0-9]{64}$").matches(owner)){ hermes.bind(owner); persistMailReadAuthority(owner) } else { hermes.unbind(); clearMailReadAuthority() }
+        if(Regex("^[a-f0-9]{64}$").matches(owner)){
+            if(receiptOwner!=owner){
+                if(readMailReadAuthority()?.let{it!=owner}==true){
+                    clearWorkspaceCache()
+                    mutable.value=mutable.value.copy(snapshots=emptyMap())
+                }
+                hermes.bind(owner)
+                writes.clear()
+                legacyTaskReceipt=null
+                receiptOwner=owner
+                val restored=runCatching {
+                    stored("workspace-receipts-$owner.enc").read()?.let{JSONArray(it).objects()}
+                }.getOrNull()
+                for(entry in restored.orEmpty()){
+                    writes[entry.getString("id")]=entry
+                }
+            }else hermes.bind(owner)
+            persistMailReadAuthority(owner)
+        }else{hermes.unbind();receiptOwner=null;writes.clear();clearMailReadAuthority()}
+        updateConnectivity()
         try{hermes.chatCapabilities(api("/api/v1/hermes/action-capabilities"))}catch(_:Exception){hermes.availability(false)}
     }
     init {
@@ -99,10 +144,36 @@ class WorkspaceModel internal constructor(application:Application,private val de
               displaySyncJob?.cancel();displaySyncJob=null;displaySyncClaim=null
               hermes.interruptDisplaySync(claim.first.owner,claim.second)
           }}
+          if(it.displaySyncVersion==0&&it.receipt!=null){
+              val fence=hermes.ownerFence()
+              val receipt=runCatching { JSONObject(it.receipt) }.getOrNull()
+              val id=receipt?.optString("key")
+              val targets=receipt?.optJSONArray("targets").objects()
+              if(fence!=null&&!id.isNullOrBlank()&&id!=legacyTaskReceipt&&targets.any{target->
+                  target.optString("kind")=="task"&&target.optString("state")=="applied"
+              }){
+                  legacyTaskReceipt=id
+                  viewModelScope.launch {
+                      try{refreshDataset("task",fence)}
+                      catch(error:CancellationException){throw error}
+                      catch(_:Exception){ /* Foreground reads will catch up. */ }
+                  }
+              }
+          }
       }}
-      connectivity?.registerDefaultNetworkCallback(networkCallback);viewModelScope.launch {
+      connectivity?.registerDefaultNetworkCallback(networkCallback)
+      if(dependencies.registerConnectivity)viewModelScope.launch {
+        while(true){
+            delay(2000)
+            if(mutable.value.signedIn&&connected()){
+                checkWorkspaceWrites()
+                if(foreground&&System.currentTimeMillis()-lastRead>=15000)refresh()
+            }
+        }
+      }
+      viewModelScope.launch {
         try { withContext(Dispatchers.IO){sessions.restore()
-            if(sessions.hasSession()){mutable.value=mutable.value.copy(pending=queue.list().map{it.toString()})};if(sessions.hasSession())cache.read()?.let {raw->
+            if(sessions.hasSession()){mutable.value=mutable.value.copy(legacyDrafts=runCatching{queue.list().map{it.toString()}}.getOrDefault(emptyList()))};if(sessions.hasSession())cache.read()?.let {raw->
                 val data=JSONObject(raw);mutable.value=mutable.value.copy(snapshots=data.keys().asSequence().associateWith{data.getString(it)})
             } else clearWorkspaceCache()
         };restoreSession() }
@@ -126,15 +197,17 @@ class WorkspaceModel internal constructor(application:Application,private val de
         refreshAll()
     }
     internal suspend fun request(path:String,body:JSONObject?=null,ownerFence:HermesOwnerFence?=null,boundedRead:Boolean=false,maxBodyBytes:Int?=null):String {
+      val workspaceWrite=path.startsWith(workspaceWritesPath)
       val scoped=path=="/api/v1/hermes/conversation"||ownerFence!=null
       val fence=ownerFence?:if(scoped)hermes.ownerFence()?.takeIf{it.owner==body?.optString("workspaceOwner")} else null
       return withContext(Dispatchers.IO) {
         val builder=Request.Builder().url(ORIGIN+path).header("Origin",ORIGIN)
+        if(workspaceWrite&&fence!=null)builder.header("X-Dcc-Workspace-Owner",fence.owner)
         if(body!=null) builder.post(body.toString().toRequestBody("application/json".toMediaType()))
         val conversation=path=="/api/v1/hermes/conversation"
         if(conversation&&hermes.state.value.displaySyncVersion==1)builder.header("X-Dcc-Display-Sync","1")
-        val callClient=if(boundedRead)hermesConversationClient(client,"read") else if(conversation)hermesConversationClient(client,body?.optString("op")) else if(path.endsWith("/extract")||path.endsWith("/session")||path.endsWith("/material"))client.newBuilder().callTimeout(180,TimeUnit.SECONDS).build() else client
-        val response=if(conversation||boundedRead)awaitHermesHttp(callClient,builder.build(),maxBytes=maxBodyBytes) else callClient.newCall(builder.build()).execute().use{HermesHttpResult(it.code,if(it.isSuccessful)it.body?.string()?:"{}" else "{}")}
+        val callClient=if(workspaceWrite)client.newBuilder().retryOnConnectionFailure(false).build() else if(boundedRead)hermesConversationClient(client,"read") else if(conversation)hermesConversationClient(client,body?.optString("op")) else if(path.endsWith("/extract")||path.endsWith("/session")||path.endsWith("/material"))client.newBuilder().callTimeout(180,TimeUnit.SECONDS).build() else client
+        val response=if(conversation||boundedRead||workspaceWrite)awaitHermesHttp(callClient,builder.build(),maxBytes=maxBodyBytes) else callClient.newCall(builder.build()).execute().use{HermesHttpResult(it.code,if(it.isSuccessful)it.body?.string()?:"{}" else "{}")}
             if(response.code==401) {
                 withContext(Dispatchers.Main.immediate){
                     // A delayed response from a prior Hermes/account generation
@@ -148,6 +221,7 @@ class WorkspaceModel internal constructor(application:Application,private val de
                 throw IllegalStateException("Sign-in required. Check credentials or sign in again.")
             }
             if(conversation&&response.code !in 200..299)throw HermesHttpFailure(status=response.code)
+            if(workspaceWrite&&response.code in listOf(400,404,409))return@withContext JSONObject().put("state",if(response.code==404)"missing" else "failed").put("code",response.code).toString()
             if(response.code==409) throw IllegalStateException("Changed on another device. Refresh before retrying.")
             check(response.code in 200..299) { "Request failed (HTTP ${response.code})." }
             response.body
@@ -179,6 +253,7 @@ class WorkspaceModel internal constructor(application:Application,private val de
                         val revision=preferences.getLong("sync-base-version",0)
                         val remote=withTimeout(dependencies.displaySyncTiming.readMillis){hermesTaskReadback(fence)}
                         if(!current())throw CancellationException()
+                        cacheSnapshot("task",JSONObject().put("version",remote.version).put("data",JSONObject().put("tasks",JSONArray(remote.tasks))).toString())
                         if(before!=preferences.getString("tasks","[]")||base!=preferences.getString("sync-base","[]")||revision!=preferences.getLong("sync-base-version",0))"Tasks saved — newer phone edits retained; visibility not confirmed."
                         else{
                             val merged=mergeManualTaskReadback(base,before,remote,maxOf(revision,taskFacts.maxOf{it.getLong("version")}))
@@ -242,43 +317,159 @@ class WorkspaceModel internal constructor(application:Application,private val de
         bindHermes(session)
         refreshAll()
     }
-    private suspend fun queueState(){val entries=withContext(Dispatchers.IO){queue.list().map{it.toString()}};mutable.value=mutable.value.copy(pending=entries)}
-    suspend fun retryPending(key:String){queueLock.withLock{withContext(Dispatchers.IO){queue.retry(key)}};flushQueue();refreshAll()}
-    suspend fun discardPending(key:String){withContext(Dispatchers.IO){queue.remove(key)};queueState()}
-    suspend fun mutate(path:String,body:JSONObject){
-        queueLock.withLock {
-            withContext(Dispatchers.IO){queue.enqueue(path,body)}
-            queueState()
-        }
-        flushQueue()
+    private fun publishWrites(owner:String){
+        if(receiptOwner!=owner)return
+        val receipts=writes.values.map{entry->JSONObject(entry.toString()).apply{remove("body")}}
+        runCatching{stored("workspace-receipts-$owner.enc").write(JSONArray(receipts).toString())}
+        updateConnectivity()
     }
-    private suspend fun flushQueue()=queueLock.withLock {
-        for(entry in withContext(Dispatchers.IO){queue.list()}){
-            if(entry.has("error"))break
-            try {
-                val path=entry.getString("path");val body=entry.getJSONObject("body")
-                request(path,body)
-                if(path.endsWith("entity")){
-                    val fresh=JSONObject(request("/api/v1/planner/snapshot"));val kind=body.getString("kind")
-                    val found=fresh.optJSONArray(if(kind=="preparation")"preparations" else kind+"s").objects().any{containsSubmitted(it.getJSONObject("data"),body.getJSONObject("data"))}
-                    check(found){"Save could not be confirmed"}
+    fun discardLegacyDraft(key:String){
+        viewModelScope.launch {
+            withContext(Dispatchers.IO){queue.remove(key)}
+            mutable.value=mutable.value.copy(legacyDrafts=withContext(Dispatchers.IO){queue.list().map(JSONObject::toString)})
+        }
+    }
+    private fun submitWorkspaceWrite(path:String,body:JSONObject){
+        check(mutable.value.signedIn&&connected()){ "Connect to make changes" }
+        val fence=hermes.ownerFence()?:error("Sign in to make changes")
+        check(receiptOwner==fence.owner)
+        val kind=when(path){
+            "/api/v1/planner/entity"->"planner"
+            "/api/v1/calendar/changes"->"calendar"
+            "/api/v1/planner/manual-tasks"->"task"
+            else->error("Unsupported workspace change")
+        }
+        val entity=when(kind){
+            "planner"->body.getJSONObject("data").getString("id")
+            "calendar"->body.optString("eventId",body.getString("id"))
+            else->body.getJSONObject("task").getString("id")
+        }
+        val key="$kind:$entity"
+        check(writes.values.none{it.optString("key")==key}){"This change is already saving."}
+        val id=if(kind=="calendar")body.getString("id") else UUID.randomUUID().toString()
+        val entry=JSONObject().put("id",id).put("key",key).put("path",path).put("kind",kind)
+            .put("started",System.currentTimeMillis()).put("body",JSONObject(body.toString()))
+        writes[id]=entry
+        mutable.value=mutable.value.copy(failedWrite=null,notice="Saving…")
+        publishWrites(fence.owner)
+        activeWrites.add(id)
+        val operation=JSONObject().put("id",id).put("kind",kind).put("payload",body)
+        viewModelScope.launch {
+            try{
+                val receipt=JSONObject(request(workspaceWritesPath,operation,ownerFence=fence))
+                finishWorkspaceWrite(fence,entry,receipt)
+            }catch(e:CancellationException){throw e}
+            catch(_:Exception){if(hermes.isCurrent(fence))mutable.value=mutable.value.copy(notice="Save not confirmed yet. Checking automatically.")}
+            finally{activeWrites.remove(id)}
+        }
+    }
+    private fun checkWorkspaceWrites(){
+        val fence=hermes.ownerFence()?:return
+        if(receiptOwner!=fence.owner)return
+        writes.toList().forEach { (id,entry) ->
+            if(!activeWrites.add(id))return@forEach
+            viewModelScope.launch {
+                try{
+                    val status=JSONObject(request("$workspaceWritesPath/$id",ownerFence=fence))
+                    finishWorkspaceWrite(fence,entry,status)
+                }catch(e:CancellationException){throw e}
+                catch(_:Exception){ /* The next connected read checks the same receipt. */ }
+                finally{activeWrites.remove(id)}
+            }
+        }
+    }
+    private suspend fun finishWorkspaceWrite(fence:HermesOwnerFence,entry:JSONObject,receipt:JSONObject){
+        val id=entry.getString("id")
+        if(!hermes.isCurrent(fence)||receiptOwner!=fence.owner||writes[id]!==entry)return
+        val status=receipt.optString("state")
+        if(status=="saving"||status=="unconfirmed"){
+            if(status=="unconfirmed"){
+                if(!entry.optBoolean("unconfirmed")){
+                    entry.put("unconfirmed",true)
+                    publishWrites(fence.owner)
                 }
-                withContext(Dispatchers.IO){queue.remove(entry.getString("key"))}
-            }catch(e:kotlinx.coroutines.CancellationException){throw e}
-            catch(_:java.io.IOException){break}
-            catch(e:Exception){withContext(Dispatchers.IO){queue.failure(entry.getString("key"),e.message?:"Review required")};break}
+                mutable.value=mutable.value.copy(notice="Save not confirmed yet. Checking automatically.")
+            }
+            return
         }
-        queueState()
-        if(mutable.value.pending.isNotEmpty())mutable.value=mutable.value.copy(notice="Edits retained on this phone. Review Pending edits in Settings.")
+        if(status=="missing"&&System.currentTimeMillis()-entry.getLong("started")<60000)return
+        if(status=="saved"){
+            val dataset=entry.getString("kind")
+            applyWriteReceipt(dataset,receipt)
+            mutable.value=mutable.value.copy(notice="Saved")
+            if(!foreground&&dependencies.registerConnectivity)notifyWorkspaceSaved(getApplication(),id)
+            viewModelScope.launch {runCatching{refreshDataset(dataset,fence)}}
+        }else{
+            val label=when(entry.getString("kind")){"task"->"task";"calendar"->"event";else->"change"}
+            mutable.value=mutable.value.copy(notice=if(receipt.optInt("code")==409)"Changed elsewhere. Review and try again." else "Couldn’t sync this $label.",failedWrite=entry.toString())
+        }
+        writes.remove(id)
+        publishWrites(fence.owner)
     }
-    private suspend fun refreshAll() {
-        flushQueue()
-        for(name in listOf("planner","calendar","mail")) {
-            val snapshot=request(if(name=="mail")"/api/v1/mail/page" else "/api/v1/$name/snapshot")
-            mutable.value=mutable.value.copy(snapshots=mutable.value.snapshots+(name to snapshot))
-            withContext(Dispatchers.IO){cache.write(JSONObject(mutable.value.snapshots).toString())}
+    private fun applyWriteReceipt(dataset:String,receipt:JSONObject){
+        val snapshot=mutable.value.snapshots[dataset]?.let(::JSONObject)?:JSONObject()
+        when(dataset){
+            "task"->{
+                val version=receipt.optInt("version")
+                val saved=receipt.optJSONObject("task")?:return
+                if(version<=snapshot.optInt("version"))return
+                val data=snapshot.optJSONObject("data")?:JSONObject()
+                val tasks=data.optJSONArray("tasks").objects().filter{it.optString("id")!=saved.optString("id")}+saved
+                snapshot.put("version",version).put("data",data.put("tasks",JSONArray(tasks)))
+            }
+            "planner"->{
+                val saved=receipt.optJSONObject("entry")?:return
+                val field=when(saved.optString("kind")){"project"->"projects";"action"->"actions";"preparation"->"preparations";else->return}
+                val id=saved.getJSONObject("data").getString("id")
+                val current=snapshot.optJSONArray(field).objects()
+                if(current.any{it.getJSONObject("data").optString("id")==id&&it.optInt("version")>=saved.optInt("version")})return
+                snapshot.put(field,JSONArray(current.filter{it.getJSONObject("data").optString("id")!=id}+saved))
+            }
+            "calendar"->{
+                val event=receipt.optJSONObject("event")
+                val id=receipt.optString("previousEventId")
+                val events=snapshot.optJSONArray("events").objects().filter{it.optString("id")!=id&&it.optString("id")!=event?.optString("id")}
+                snapshot.put("events",JSONArray(events+listOfNotNull(event)))
+            }
         }
-        mutable.value=mutable.value.copy(notice=if(mutable.value.pending.isEmpty())"Workspace refreshed" else "Unsent edits retained. Review Pending edits in Settings.")
+        readGenerations[dataset]=(readGenerations[dataset]?:0L)+1
+        cacheSnapshot(dataset,snapshot.toString())
+    }
+    private fun cacheSnapshot(name:String,raw:String){
+        if(name=="task"){
+            val old=mutable.value.snapshots[name]?.let{JSONObject(it).optLong("version")}?:-1
+            if(JSONObject(raw).optLong("version")<old)return
+        }
+        val next=mutable.value.snapshots+(name to raw)
+        mutable.value=mutable.value.copy(snapshots=next)
+        runCatching{cache.write(JSONObject(next).toString())}
+    }
+    private suspend fun refreshDataset(name:String,fence:HermesOwnerFence?=hermes.ownerFence()){
+        val path=when(name){"task"->"/api/v1/planner/manual-tasks";"mail"->"/api/v1/mail/page";else->"/api/v1/$name/snapshot"}
+        val generation=(readGenerations[name]?:0L)+1
+        readGenerations[name]=generation
+        val raw=request(path,ownerFence=fence)
+        if(name=="task")parseManualTaskReadback(JSONObject(raw))
+        if(readGenerations[name]==generation&&(fence==null||hermes.isCurrent(fence)))cacheSnapshot(name,raw)
+    }
+    suspend fun mutate(path:String,body:JSONObject){
+        submitWorkspaceWrite(path,body)
+    }
+    fun saveManualTask(expected:JSONObject?,task:JSONObject){
+        submitWorkspaceWrite("/api/v1/planner/manual-tasks",JSONObject().put("expected",expected?:JSONObject.NULL).put("task",task))
+    }
+    private suspend fun refreshAll()=refreshLock.withLock {
+        lastRead=System.currentTimeMillis()
+        updateConnectivity()
+        val fence=hermes.ownerFence()
+        val names=mutableListOf("task","planner","calendar")
+        if(lastRead-lastMailRead>=60000){names.add("mail");lastMailRead=lastRead}
+        for(name in names){
+            try{refreshDataset(name,fence)}
+            catch(e:CancellationException){throw e}
+            catch(_:Exception){if(!mutable.value.signedIn)break}
+        }
+        checkWorkspaceWrites()
     }
     suspend fun api(path:String,body:JSONObject?=null):JSONObject {
         require(path.startsWith("/api/v1/"))
@@ -418,7 +609,7 @@ class WorkspaceModel internal constructor(application:Application,private val de
     }
     suspend fun saveProject(data:JSONObject,version:Int) {
         mutate("/api/v1/planner/entity",JSONObject().put("kind","project").put("version",version).put("data",data))
-        if(mutable.value.pending.isEmpty())refreshAll()
+
     }
     suspend fun projectMaterial(name:String,content:String):JSONObject = JSONObject(request("/api/v1/planner/material",JSONObject().put("name",name).put("content",content)))
     suspend fun requestPlanning() {
@@ -428,8 +619,8 @@ class WorkspaceModel internal constructor(application:Application,private val de
     }
     fun refresh()=operation { if(mutable.value.signedIn){bindHermes(api("/api/v1/auth/session"));refreshAll()} else restoreSession() }
     fun signOut()=operation {
-        queueState()
-        check(mutable.value.pending.isEmpty()){"Sync or explicitly discard pending edits before signing out."}
+        writes.clear()
+        receiptOwner=null
         hermes.unbind()
         var revoked=false
         try { request("/api/v1/auth/logout",JSONObject());revoked=true }
@@ -442,9 +633,8 @@ class WorkspaceModel internal constructor(application:Application,private val de
     fun complete(entry:JSONObject,done:Boolean)=operation {
         val data=JSONObject(entry.getJSONObject("data").toString()).put("completed",done)
         mutate("/api/v1/planner/entity",JSONObject().put("kind","action").put("version",entry.getInt("version")).put("data",data))
-        refreshAll()
     }
     fun feedback(id:String,important:Boolean)=operation {
-        request("/api/v1/mail/feedback",JSONObject().put("id",id).put("important",important));refreshAll()
+        request("/api/v1/mail/feedback",JSONObject().put("id",id).put("important",important));refreshDataset("mail")
     }
 }

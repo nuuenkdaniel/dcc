@@ -32,10 +32,10 @@ for (const width of [375, 768, 1024, 1920, 3672]) {
 test('development toolbar switches page previews and keeps sample data isolated', async ({ page }) => {
   await page.goto('http://127.0.0.1:5173')
   await expect(page.getByRole('toolbar', { name: 'Development tools' })).toBeVisible()
-  const savedTasks=()=>page.evaluate(()=>JSON.parse(localStorage.getItem('productivity-app.tasks.v1')??'[]'))
+  const savedTasks=()=>page.evaluate(()=>JSON.parse(localStorage.getItem('dcc.confirmed.tasks.'+'a'.repeat(64))??'null')?.data.tasks??[])
   // Empty authenticated sync may persist []; sample isolation concerns content,
   // not whether the normal storage key has been initialized.
-  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('dcc.manual-tasks.base.v1')??'null'))).toEqual([])
+  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('dcc.confirmed.tasks.'+'a'.repeat(64))??'null')?.data.tasks)).toEqual([])
   const baseline=await savedTasks()
   expect(baseline).toEqual([])
   await page.getByRole('checkbox', { name: 'Sample data' }).check()
@@ -52,7 +52,7 @@ test('development toolbar switches page previews and keeps sample data isolated'
   await page.getByRole('checkbox',{name:'Sample data'}).uncheck()
   await page.getByLabel('Task title',{exact:true}).fill('Synthetic saved user task')
   await page.getByRole('button',{name:'Add task',exact:true}).click()
-  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('dcc.manual-tasks.base.v1')??'[]').map((task:{title:string})=>task.title))).toEqual(['Synthetic saved user task'])
+  await expect.poll(()=>page.evaluate(()=>(JSON.parse(localStorage.getItem('dcc.confirmed.tasks.'+'a'.repeat(64))??'null')?.data.tasks??[]).map((task:{title:string})=>task.title))).toEqual(['Synthetic saved user task'])
   const userRecords=await savedTasks()
   expect(userRecords).toHaveLength(1)
   await page.getByRole('checkbox',{name:'Sample data'}).check()

@@ -51,6 +51,15 @@ fun JSONArray?.objects():List<JSONObject> = if(this==null) emptyList() else (0 u
 }
 @Composable fun DccApp(model:WorkspaceModel=viewModel()) {
  val state by model.state.collectAsStateWithLifecycle()
+ val lifecycle=androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+ DisposableEffect(lifecycle,model){
+  val observer=androidx.lifecycle.LifecycleEventObserver{_,event->
+   if(event==androidx.lifecycle.Lifecycle.Event.ON_START)model.setWorkspaceForeground(true)
+   if(event==androidx.lifecycle.Lifecycle.Event.ON_STOP)model.setWorkspaceForeground(false)
+  }
+  lifecycle.addObserver(observer)
+  onDispose{lifecycle.removeObserver(observer);model.setWorkspaceForeground(false)}
+ }
  Workspace(state,model::signIn,model::refresh,model::signOut,model::complete,model::feedback,projectModel=model)
 }
 @Composable fun Workspace(state:WorkspaceState,onLogin:(String,String)->Unit,onRefresh:()->Unit,onLogout:()->Unit,onComplete:(JSONObject,Boolean)->Unit,onFeedback:(String,Boolean)->Unit,initialDestination:Destination=Destination.Today,projectModel:WorkspaceModel?=null,hermesContent:(@Composable (Modifier)->Unit)?=null) {
@@ -105,11 +114,11 @@ fun JSONArray?.objects():List<JSONObject> = if(this==null) emptyList() else (0 u
    if(selected=="Prices")Text("Price tracker retired; stored history is preserved.",style=MaterialTheme.typography.bodySmall)
    if(state.restoring) {
     Text("Checking saved sign-in…")
-   } else if(state.restorePending&&!local&&!state.signedIn) {
+   } else if(state.restorePending&&state.snapshots.isEmpty()&&!local&&!state.signedIn) {
     Button(onClick=onRefresh,enabled=!state.busy){Text("Retry connection")}
     TextButton(onClick=onLogout,enabled=!state.busy){Text("Forget saved sign-in")}
     TextButton(onClick={local=true}){Text("Continue locally")}
-   } else if(!state.signedIn&&!local&&destination!=Destination.Focus) {
+   } else if(!state.signedIn&&!state.restorePending&&!local&&destination!=Destination.Focus) {
     LoginForm(state.busy,onLogin);TextButton(onClick={local=true}) { Text("Continue locally") }
    } else pages.SaveableStateProvider(destination.name) { when(destination) {
     Destination.Focus->FocusScreen(onRefresh=onRefresh,onSettings={settings=true})
@@ -122,11 +131,11 @@ fun JSONArray?.objects():List<JSONObject> = if(this==null) emptyList() else (0 u
  }
   if(settings) AlertDialog(onDismissRequest={settings=false},title={Text("Settings")},text={LazyColumn(Modifier.heightIn(max=420.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
    item{Text("Server: dcc.home.captnuu.online")}
-   item{Text("The session, synced workspace cache, mail bodies, and pending edits are encrypted on this phone. Manual tasks are plaintext in app-private local storage; exported task backup files are also plaintext. Server sessions expire after 30 days. Passwords are never saved.")}
+   item{Text("The session, confirmed workspace cache, mail bodies, and save receipts are encrypted on this phone. Previous device tasks and exported task backups may be plaintext.")}
    item{AppearanceControl()}
    item{TaskBackup()}
    item{UpdateControl()}
-   item{PendingEdits(state,projectModel)}
+   if(state.legacyDrafts.isNotEmpty())item{PendingEdits(state,projectModel)}
   }},confirmButton={TextButton(onClick={settings=false}){Text("Done")}},dismissButton={TextButton(onClick={if(state.signedIn||state.restorePending)onLogout();local=false;settings=false}){Text(if(state.signedIn)"Sign out" else "Sign in")}})
 }
 @Composable private fun LoginForm(busy:Boolean,onLogin:(String,String)->Unit) {
@@ -155,7 +164,6 @@ private fun snapshot(state:WorkspaceState,name:String)=workspaceSnapshot(state,n
    var todayMenu by remember{mutableStateOf(false)}
    Box{IconButton(onClick={todayMenu=true},modifier=Modifier.size(40.dp)){Icon(Icons.Default.MoreVert,"Page actions")}
     DropdownMenu(expanded=todayMenu,onDismissRequest={todayMenu=false}){
-     DropdownMenuItem(text={Text("Refresh")},onClick={todayMenu=false;onRefresh()})
      DropdownMenuItem(text={Text("Settings")},onClick={todayMenu=false;onSettings()})
     }}
   }
@@ -192,7 +200,7 @@ private fun snapshot(state:WorkspaceState,name:String)=workspaceSnapshot(state,n
       val d=entry.getJSONObject("data")
       var details by rememberSaveable(d.getString("id")){mutableStateOf(false)}
       Row(verticalAlignment=androidx.compose.ui.Alignment.Top) {
-       Checkbox(d.optBoolean("completed"),{onComplete(entry,it)},enabled=(state.signedIn||state.restorePending)&&!state.busy&&!entry.optBoolean("pending"))
+       Checkbox(d.optBoolean("completed"),{onComplete(entry,it)},enabled=state.online&&!entry.optBoolean("pending"))
        Column(Modifier.weight(1f).padding(top=10.dp)) {
         Text(d.optString("title"),style=MaterialTheme.typography.bodyMedium)
         Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
@@ -210,7 +218,7 @@ private fun snapshot(state:WorkspaceState,name:String)=workspaceSnapshot(state,n
   item { Text("Schedule",style=MaterialTheme.typography.titleMedium,modifier=Modifier.padding(top=12.dp)) }
   val events=snapshot(state,"calendar").optJSONArray("events").objects().filter { eventOnDay(it.optString("start"),it.optString("end"),it.optBoolean("allDay"),LocalDate.parse(date),java.time.ZoneId.systemDefault()) }.sortedBy{it.optString("start")}
   if(events.isEmpty())item { Text("No events loaded for this day",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
-  items(events) { event -> InfoCard(event.optString("title",event.optString("summary")),eventTimeLabel(event)){EventActions(state,event,model)} }
+  items(events) { event -> InfoCard(event.optString("title",event.optString("summary")),eventTimeLabel(event)+(if(event.optBoolean("pending"))" · Saving…" else "")){EventActions(state,event,model)} }
 
  }
 }
@@ -235,7 +243,6 @@ private fun snapshot(state:WorkspaceState,name:String)=workspaceSnapshot(state,n
     FilterChip(selected=filtersOpen||activeFilters,onClick={filtersOpen=!filtersOpen},label={Text(if(activeFilters)"Filters · active" else "Filters")})
     if(activeFilters||search.isNotBlank())TextButton(onClick={search="";account="all";important=false;filtersOpen=false;model?.loadMoreMail("","all",false)}){Text("Reset")}
     Spacer(Modifier.weight(1f))
-    IconButton(onClick=onRefresh,enabled=(state.signedIn||state.restorePending)&&!state.busy,modifier=Modifier.size(40.dp)){Icon(Icons.Default.Refresh,"Refresh")}
     IconButton(onClick=onSettings,modifier=Modifier.size(40.dp)){Icon(Icons.Default.Settings,"Settings")}
    }
   }
@@ -285,7 +292,6 @@ private fun snapshot(state:WorkspaceState,name:String)=workspaceSnapshot(state,n
    var focusMenu by remember{mutableStateOf(false)}
    Box{IconButton(onClick={focusMenu=true},modifier=Modifier.size(40.dp)){Icon(Icons.Default.MoreVert,"Page actions")}
     DropdownMenu(expanded=focusMenu,onDismissRequest={focusMenu=false}){
-     DropdownMenuItem(text={Text("Refresh")},onClick={focusMenu=false;onRefresh()})
      DropdownMenuItem(text={Text("Settings")},onClick={focusMenu=false;onSettings()})
     }}
   }

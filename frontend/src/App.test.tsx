@@ -9,7 +9,7 @@ import {SyntheticWorkspaceSession} from './test/WorkspaceSession'
 
 vi.mock('./AuthGate',()=>({AuthGate:({children}:{children:ReactNode})=><SyntheticWorkspaceSession>{children}</SyntheticWorkspaceSession>}))
 
-afterEach(() => vi.useRealTimers())
+afterEach(() => {vi.useRealTimers();vi.unstubAllGlobals()})
 it('manual reorder and resume preserve the current RPC-started clock with queued minis',async()=>{
   vi.useFakeTimers();vi.setSystemTime(1000)
   function Rpc(){const port=useBrowserTimer();return <button onClick={()=>{
@@ -128,7 +128,7 @@ it('selects the local day rather than UTC at night', () => {
 it('warns instead of crashing when stored records are invalid', () => {
   window.localStorage.setItem('productivity-app.tasks.v1', '[null]')
   render(<App />)
-  expect(screen.getByRole('alert')).toHaveTextContent(/stored tasks/i)
+  expect(screen.getByRole('alert')).toHaveTextContent(/previous device tasks could not be read/i)
 })
 it('retains but does not display synchronized task tombstones',()=>{
  const now=new Date(),date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`
@@ -139,7 +139,19 @@ it('retains but does not display synchronized task tombstones',()=>{
 })
 it('keeps 16 filtered unplaced tasks in a collapsed native disclosure and updates the count',async()=>{
  const actions=Array.from({length:16},(_,index)=>({kind:'action',version:1,data:{id:`unplaced-${index}`,projectId:'',title:`Unplaced task ${index+1}`,notes:'',minutes:20,date:'',needsRescheduling:true,completed:false,dismissed:false}}))
- window.localStorage.setItem('daymark.planner.v1',JSON.stringify({snapshot:{projects:[],preparations:[],actions,status:{}},pending:[]}))
+ const owner='a'.repeat(64)
+ const planner={projects:[],preparations:[],actions,status:{}}
+ window.localStorage.setItem('dcc.confirmed.planner.'+owner,JSON.stringify(planner))
+ vi.stubGlobal('fetch',vi.fn(async (url:string,options?:RequestInit)=>{
+  if(url==='/api/v1/workspace/writes'){
+   const data=JSON.parse(String(options?.body)).payload.data
+   const index=planner.actions.findIndex(entry=>entry.data.id===data.id)
+   const entry={kind:'action',version:2,data}
+   planner.actions[index]=entry
+   return Response.json({state:'saved',entry})
+  }
+  return Response.json(url.includes('/planner/snapshot')?planner:{})
+ }))
  render(<App/>)
  const details=screen.getByText('Needs rescheduling').closest('details')!
  expect(details).not.toHaveAttribute('open')
@@ -151,83 +163,10 @@ it('keeps 16 filtered unplaced tasks in a collapsed native disclosure and update
  fireEvent.click(within(details).getByText('Needs rescheduling'))
  const completion=within(details).getByRole('checkbox',{name:'Complete Unplaced task 1'})
  expect(completion).toBeVisible()
+ await act(async()=>{await Promise.resolve()})
  fireEvent.click(completion)
  await waitFor(()=>expect(within(details).getByText('15 tasks')).toBeInTheDocument())
  expect(within(details).queryByText('Unplaced task 1')).not.toBeInTheDocument()
-})
-it('persists ordinary deletion as a hidden tombstone and Undo restores deleted false',async()=>{
- const now=new Date(),date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`
- window.localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([{id:'ordinary',title:'Ordinary task',date,notes:'',completed:false}]))
- render(<App/>)
- fireEvent.click(screen.getByRole('button',{name:'Expand Ordinary task'}))
- fireEvent.click(screen.getByRole('button',{name:'Delete task'}))
- expect(await screen.findByRole('button',{name:'Undo'})).toBeInTheDocument()
- expect(screen.queryByText('Ordinary task')).not.toBeInTheDocument()
- expect(screen.getByText('0',{selector:'.task-count'})).toBeInTheDocument()
- await waitFor(()=>expect(JSON.parse(window.localStorage.getItem('productivity-app.tasks.v1')!)[0].deleted).toBe(true))
- fireEvent.change(screen.getByLabelText('Search tasks'),{target:{value:'Ordinary'}})
- expect(screen.queryByText('Ordinary task')).not.toBeInTheDocument()
- fireEvent.click(screen.getByRole('button',{name:'Undo'}))
- expect(await screen.findByText('Ordinary task')).toBeInTheDocument()
- await waitFor(()=>expect(JSON.parse(window.localStorage.getItem('productivity-app.tasks.v1')!)[0].deleted).toBe(false))
-})
-it('Undo stages before a delayed local lock, disables duplicate clicks and confirms only after persistence',async()=>{
- const now=new Date(),date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`
- localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([{id:'undo-local',title:'Undo local',date,notes:'Keep notes',completed:false,important:true,futureMetadata:{synthetic:true}}]))
- render(<App/>);fireEvent.click(screen.getByRole('button',{name:'Expand Undo local'}));fireEvent.click(screen.getByRole('button',{name:'Delete task'}))
- await screen.findByRole('button',{name:'Undo'})
- const removed=JSON.parse(localStorage.getItem('productivity-app.tasks.v1')!)[0]
- const locks=navigator.locks,callbacks:(()=>void)[]=[]
- Object.defineProperty(navigator,'locks',{configurable:true,value:{request:(name:string,...args:unknown[])=>{
-  const callback=args.at(-1) as ()=>unknown
-  if(name!=='daymark.manual-tasks.v1')return Reflect.apply(locks.request,locks,[name,...args])
-  return new Promise((resolve,reject)=>callbacks.push(()=>{try{resolve(callback())}catch(error){reject(error)}}))
- }}})
- try{
-  const undo=screen.getByRole('button',{name:'Undo'});fireEvent.click(undo);fireEvent.click(undo)
-  await waitFor(()=>expect(callbacks).toHaveLength(1))
-  expect(screen.getByRole('button',{name:'Restoring…'})).toBeDisabled()
-  expect(JSON.parse(sessionStorage.getItem('dcc.manual-tasks.pending-undo.v1')!).expected).toEqual(removed)
-  expect(JSON.parse(localStorage.getItem('productivity-app.tasks.v1')!)).toEqual([removed])
-  expect(screen.queryByRole('button',{name:/^(Expand|Collapse) Undo local$/})).toBeNull()
-  await act(async()=>{callbacks[0]();await Promise.resolve()})
-  // Undo preserves the previously expanded task ID; the restored row is open.
-  const restored=await screen.findByRole('button',{name:'Collapse Undo local'})
-  expect(restored).toHaveAttribute('aria-expanded','true')
-  expect(screen.getByLabelText('Undo local notes')).toHaveValue('Keep notes')
-  expect(screen.getByLabelText('Important',{exact:true})).toBeChecked()
-  expect(JSON.parse(localStorage.getItem('productivity-app.tasks.v1')!)).toEqual([{...removed,deleted:false}])
-  expect(sessionStorage.getItem('dcc.manual-tasks.pending-undo.v1')).toBeNull()
- }finally{Object.defineProperty(navigator,'locks',{configurable:true,value:locks})}
-})
-it('unmount cancels a waiting Undo without clearing it; same verified workspace remount recovers',async()=>{
- const now=new Date(),date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`
- localStorage.setItem('productivity-app.tasks.v1',JSON.stringify([{id:'unmount-undo',title:'Unmount Undo',date,notes:'Retain notes',completed:false,important:true}]))
- const first=render(<App/>);fireEvent.click(screen.getByRole('button',{name:'Expand Unmount Undo'}));fireEvent.click(screen.getByRole('button',{name:'Delete task'}));await screen.findByRole('button',{name:'Undo'})
- const removed=JSON.parse(localStorage.getItem('productivity-app.tasks.v1')!)[0],locks=navigator.locks,callbacks:(()=>void)[]=[]
- Object.defineProperty(navigator,'locks',{configurable:true,value:{request:(name:string,...args:unknown[])=>name!=='daymark.manual-tasks.v1'?Reflect.apply(locks.request,locks,[name,...args]):new Promise((resolve,reject)=>callbacks.push(()=>{try{resolve((args.at(-1) as ()=>unknown)())}catch(error){reject(error)}}))}})
- try{
-  fireEvent.click(screen.getByRole('button',{name:'Undo'}));await waitFor(()=>expect(callbacks).toHaveLength(1))
-  const raw=sessionStorage.getItem('dcc.manual-tasks.pending-undo.v1');expect(JSON.parse(raw!).owner).toBe('a'.repeat(64))
-  first.unmount();await act(async()=>{callbacks[0]();await Promise.resolve()})
-  expect(JSON.parse(localStorage.getItem('productivity-app.tasks.v1')!)).toEqual([removed]);expect(sessionStorage.getItem('dcc.manual-tasks.pending-undo.v1')).toBe(raw)
-  render(<App/>);await waitFor(()=>expect(callbacks).toHaveLength(2))
-  await act(async()=>{callbacks[1]();await Promise.resolve()})
-  await screen.findByRole('button',{name:'Expand Unmount Undo'})
-  expect(JSON.parse(localStorage.getItem('productivity-app.tasks.v1')!)).toEqual([{...removed,deleted:false}]);expect(sessionStorage.getItem('dcc.manual-tasks.pending-undo.v1')).toBeNull()
- }finally{Object.defineProperty(navigator,'locks',{configurable:true,value:locks})}
-})
-it('retains a new task draft when safe storage locking is unavailable',async()=>{
- const locks=navigator.locks
- Object.defineProperty(navigator,'locks',{configurable:true,value:undefined})
- try{
-  render(<App/>)
-  fireEvent.change(screen.getByLabelText('Task title'),{target:{value:'Keep this draft'}})
-  fireEvent.click(screen.getByRole('button',{name:'Add task'}))
-  expect(await screen.findByText(/Safe task editing requires browser Web Locks/)).toBeInTheDocument()
-  expect(screen.getByLabelText('Task title')).toHaveValue('Keep this draft')
-  expect(window.localStorage.getItem('productivity-app.tasks.v1')).toBeNull()
- }finally{Object.defineProperty(navigator,'locks',{configurable:true,value:locks})}
 })
 beforeEach(() => {
   window.localStorage.clear()
@@ -245,27 +184,10 @@ it('moves between months and returns to today', () => {
   expect(month.textContent).toBe(new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(new Date()))
 })
 
-it('creates, expands, completes, and restores a local task', async () => {
-  const { unmount } = render(<App />)
-  fireEvent.change(screen.getByLabelText('Task title'), { target: { value: 'Read chapter notes' } })
-  fireEvent.click(screen.getByRole('button', { name: 'Add task' }))
-  expect(screen.getByText('Read chapter notes')).toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: 'Expand Read chapter notes' }))
-  expect(screen.getByPlaceholderText('Add context or notes')).toBeInTheDocument()
-  fireEvent.click(screen.getByRole('checkbox', { name: 'Complete Read chapter notes' }))
-  expect(screen.getByText('Completed', { selector: '.task-state' })).toBeInTheDocument()
-
-  await waitFor(()=>expect(JSON.parse(window.localStorage.getItem('productivity-app.tasks.v1')??'[]')).toEqual(expect.arrayContaining([expect.objectContaining({title:'Read chapter notes',completed:true})])))
-
-  unmount()
-  render(<App />)
-  expect(screen.getByText('Read chapter notes')).toBeInTheDocument()
-})
-
 it('shows a quiet empty state without seeded tasks', () => {
   render(<App />)
-  expect(screen.getByText('Loading tasks…')).toBeInTheDocument()
-  expect(screen.getByText(/manual tasks save locally first and sync/i)).toBeInTheDocument()
+  expect(screen.getAllByText('Loading tasks…').length).toBeGreaterThan(0)
+  expect(screen.queryByRole('button',{name:'Sync tasks'})).toBeNull()
 })
 
 it('switches between development page previews', () => {

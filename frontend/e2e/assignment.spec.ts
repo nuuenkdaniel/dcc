@@ -3,7 +3,7 @@ test('project saves text and extracted file context for planning',async({page})=
  let projects:any[]=[]
  await page.route('**/api/v1/planner/snapshot',r=>r.fulfill({json:{projects,actions:[],preparations:[],status:{}}}))
  await page.route('**/api/v1/planner/material',r=>r.fulfill({json:{name:'rubric.txt',text:'Implement a parser and write a report.'}}))
- await page.route('**/api/v1/planner/entity',r=>{const b=r.request().postDataJSON();projects=[{data:b.data,version:1}];return r.fulfill({json:{code:200}})})
+ await page.route('**/api/v1/workspace/writes',r=>{const b=r.request().postDataJSON().payload;projects=[{data:b.data,version:1}];return r.fulfill({json:{state:'saved',entry:{kind:b.kind,data:b.data,version:1}}})})
  await page.goto('http://127.0.0.1:5173/projects')
  await expect(page.getByRole('button',{name:'Add assignment',exact:true})).toHaveCount(0)
  await expect(page.getByRole('button',{name:'New project',exact:true})).toHaveCount(1)

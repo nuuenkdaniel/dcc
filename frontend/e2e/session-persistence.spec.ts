@@ -1,15 +1,15 @@
 import {test,expect} from './authenticated'
 test('existing session skips login and reuses calendar access after reload',async({page})=>{
- await page.route('**/api/v1/auth/session',r=>r.fulfill({json:{authenticated:true,configured:true}}))
- await page.route('**/api/v1/calendar/snapshot',r=>r.fulfill({json:{calendars:[],events:[],lastSuccess:new Date().toISOString()}}))
+ await page.route('**/api/v1/auth/session',r=>r.fulfill({json:{authenticated:true,configured:true,workspaceOwner:'a'.repeat(64)}}))
+ await page.route('**/api/v1/calendar/snapshot',r=>r.fulfill({json:{calendars:[{id:"fixture",name:"Test calendar"}],events:[],lastSuccess:new Date().toISOString()}}))
  await page.goto('http://127.0.0.1:5173/login')
  await expect(page).toHaveURL('http://127.0.0.1:5173/')
  await page.reload()
- await expect(page.locator('.schedule-actions').getByRole('button',{name:'Sync calendar',exact:true})).toBeEnabled()
+ await expect(page.locator('.schedule-actions').getByRole('button',{name:'New event',exact:true})).toBeEnabled()
  await expect(page.getByLabel('Username',{exact:true})).toHaveCount(0)
  await page.getByRole('button',{name:'Focus',exact:true}).click()
  await page.getByRole('button',{name:'Home',exact:true}).click()
- await expect(page.locator('.schedule-actions').getByRole('button',{name:'Sync calendar',exact:true})).toBeEnabled()
+ await expect(page.locator('.schedule-actions').getByRole('button',{name:'New event',exact:true})).toBeEnabled()
  await expect(page.getByLabel('Username',{exact:true})).toHaveCount(0)
 })
 test('expired session gates the requested route with the single login screen',async({page})=>{

@@ -579,6 +579,7 @@ class HermesShellTest {
                             }
                     }
                 }
+                !started.get()&&call=="GET /api/v1/planner/manual-tasks"->JSONObject().put("version",3).put("data",JSONObject().put("tasks",JSONArray(base)))
                 started.get()&&call=="GET /api/v1/planner/manual-tasks"->{
                     readEntered.set(true)
                     if(!readGate.await(10,java.util.concurrent.TimeUnit.SECONDS)){unexpected+="Synthetic task gate expired";code=599}
@@ -637,7 +638,7 @@ class HermesShellTest {
             assertTrue("Synthetic authenticated startup must complete",model.state.value.signedIn)
             assertTrue("Synthetic chat capability must be available",model.hermes.state.value.conversationFirst)
             assertTrue("Unexpected synthetic startup request: $unexpected",unexpected.isEmpty())
-            assertEquals(listOf("GET /api/v1/auth/session","GET /api/v1/hermes/action-capabilities","GET /api/v1/planner/snapshot","GET /api/v1/calendar/snapshot","GET /api/v1/mail/page"),requests.toList())
+            assertEquals(listOf("GET /api/v1/auth/session","GET /api/v1/hermes/action-capabilities","GET /api/v1/planner/manual-tasks","GET /api/v1/planner/snapshot","GET /api/v1/calendar/snapshot","GET /api/v1/mail/page"),requests.toList())
             startupFinished.set(true)
             compose.setContent{
                 val state by model.state.collectAsStateWithLifecycle()
@@ -649,10 +650,11 @@ class HermesShellTest {
                 assertEquals(0,model.hermes.state.value.displaySyncVersion)
                 compose.onNodeWithText("Tasks",useUnmergedTree=true).performClick()
                 compose.onNodeWithTag("task-tools").assertIsDisplayed().performClick()
-                compose.onNodeWithText("Sync tasks").assertExists()
+                compose.onNodeWithText("Sync tasks").assertDoesNotExist()
+                compose.onNodeWithText("Review previous device tasks").performClick()
                 compose.onNodeWithText("Unsent phone edit").assertExists()
                 assertEquals(local,preferences.getString("tasks",null))
-                assertEquals(0,requests.count{it=="GET /api/v1/planner/manual-tasks"})
+                assertEquals(1,requests.count{it=="GET /api/v1/planner/manual-tasks"})
             }
             openChat();compose.onNodeWithTag("hermes-chat-editor").performTextInput(if(calendarScenario)"Create a synthetic calendar event" else "Create twelve synthetic tasks for today")
             compose.onNodeWithTag("hermes-chat-send").performClick()
@@ -674,7 +676,7 @@ class HermesShellTest {
                 assertTrue(status,when(scenario){"calendar-delayed"->status.contains("Calendar synced");"calendar-budget"->status.contains("not yet visible");else->status.contains("unavailable")})
                 show(status);assertEquals(if(scenario=="calendar-budget")6 else if(scenario=="calendar-error")1 else 2,calendarReads.get())
                 assertEquals(local,preferences.getString("tasks",null))
-                assertEquals(0,requests.count{it=="GET /api/v1/planner/manual-tasks"})
+                assertEquals(1,requests.count{it=="GET /api/v1/planner/manual-tasks"})
                 assertEquals(1,requests.count{it.startsWith("POST ")})
                 if(scenario=="calendar-delayed"){
                     assertEquals(resource,JSONObject(model.state.value.snapshots.getValue("calendar")).getJSONArray("events").getJSONObject(0).getString("resource"))
@@ -688,7 +690,7 @@ class HermesShellTest {
             if(scenario in setOf("missing-facts","old-server","no-tool")){
                 compose.waitForIdle()
                 assertEquals(local,preferences.getString("tasks",null))
-                assertEquals(0,requests.count{it=="GET /api/v1/planner/manual-tasks"})
+                assertEquals(1,requests.count{it=="GET /api/v1/planner/manual-tasks"})
                 assertTrue(model.hermes.state.value.timeline.none{it.id.startsWith("sync:")})
                 assertEquals(1,requests.count{it.startsWith("POST ")});return
             }
@@ -713,18 +715,20 @@ class HermesShellTest {
                 assertEquals(if(scenario=="newer-edit")"Even newer phone edit" else "Unsent phone edit",held.single{it.getString("id")=="offline-edit"}.getString("title"))
                 assertTrue(held.single{it.getString("id")=="offline-delete"}.getBoolean("deleted"))
                 assertEquals(3L,preferences.getLong("sync-base-version",0))
-                assertEquals(1,requests.count{it=="GET /api/v1/planner/manual-tasks"})
+                assertEquals(2,requests.count{it=="GET /api/v1/planner/manual-tasks"})
                 if(scenario=="new-turn")compose.waitUntil(5000){model.hermes.state.value.submitted?.text=="Different fresh topic"&&model.hermes.state.value.submitted?.closed==true}
                 assertEquals(if(scenario=="new-turn")2 else 1,requests.count{it.startsWith("POST ")})
                 if(scenario=="new-draft")assertEquals("Different fresh topic",model.hermes.state.value.draft)
                 assertTrue("Unexpected request: $unexpected",unexpected.isEmpty());return
             }
             if(mountedOldServer){
-                fun createdOnPhone()=JSONArray(preferences.getString("tasks","[]")).objects().count{it.getString("id").startsWith("synthetic-created-")}
+                fun createdOnPhone()=JSONObject(model.state.value.snapshots.getValue("task")).getJSONObject("data").getJSONArray("tasks").objects().count{it.getString("id").startsWith("synthetic-created-")}
                 try{compose.waitUntil(5000){createdOnPhone()==12}}catch(_:androidx.compose.ui.test.ComposeTimeoutException){/* Keep the focused regression assertion. */}
                 assertTrue("Unexpected old-server request: $unexpected",unexpected.isEmpty())
                 assertEquals("Old-server chat-v1 applied receipts must retain mounted task readback without Sync tasks",12,createdOnPhone())
-                assertTrue(model.hermes.state.value.timeline.none{it.id.startsWith("sync:")}) // no unsupported full-batch certification
+                assertTrue(model.hermes.state.value.timeline.none{it.id.startsWith("sync:")})
+                assertEquals(local,preferences.getString("tasks",null))
+                return
             }
             closeChat();openChat();show("Created twelve synthetic tasks.");closeChat()
             fun cached()=JSONArray(preferences.getString("tasks","[]")).objects()
@@ -788,10 +792,10 @@ class HermesShellTest {
         var hermes by mutableStateOf(HermesState(available=true))
         compose.setContent{Shell(hermes)}
         compose.onNodeWithText("Filters").performScrollTo().performClick()
-        compose.onNodeWithText("Mail settings & sync").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Mail settings").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("inbox-list").performScrollToNode(hasText("Synthetic message 29"))
         compose.onNodeWithText("Synthetic message 29").assertIsDisplayed()
-        for(label in listOf("Search email","personal","Important only","Search all mail","Mail settings & sync","Daily brief",))compose.onNodeWithText(label,substring=label=="Daily brief").assertDoesNotExist()
+        for(label in listOf("Search email","personal","Important only","Search all mail","Mail settings","Daily brief",))compose.onNodeWithText(label,substring=label=="Daily brief").assertDoesNotExist()
         compose.onNodeWithText("Hermes").assertIsDisplayed();assertReservedGeometry()
         val scrollBefore=compose.onNodeWithTag("inbox-list").fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
         val q=fixtures().getJSONObject("question")

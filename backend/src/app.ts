@@ -1,3 +1,4 @@
+import {workspaceWriteRoutes,processCalendarWrite,type CalendarOperations} from './workspace-writes.js'
 import {manualTaskRoutes} from './manual-tasks.js'
 import {tellHermes} from './tell-hermes.js'
 import {priceRoutes} from './prices.js'
@@ -14,7 +15,7 @@ import {CONVERSATION_PATH,validConversationInput} from './mcp/conversation.js'
 import {plainRecord} from './mcp/contracts.js'
 
 // Construction is separate from listening so tests require no network port.
-export function buildApp(options: { taskActions?:TaskActions; calendarRefresh?:()=>Promise<string>; plannerPool?:Pool; curator?:(input:unknown)=>Promise<unknown>; logger?: boolean | { level: string }; auth?: AuthConfig; calendarSnapshot?:()=>Promise<unknown>; calendarChange?:(change:EventChange)=>Promise<{code:number;error?:string;saved?:boolean}> } = {}) {
+export function buildApp(options: { taskActions?:TaskActions; workspaceCalendar?:CalendarOperations; calendarRefresh?:()=>Promise<string>; plannerPool?:Pool; curator?:(input:unknown)=>Promise<unknown>; logger?: boolean | { level: string }; auth?: AuthConfig; calendarSnapshot?:()=>Promise<unknown>; calendarChange?:(change:EventChange)=>Promise<{code:number;error?:string;saved?:boolean}> } = {}) {
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 1048576 })
   if(options.taskActions){
     let timer:ReturnType<typeof setInterval>|undefined,working=false
@@ -33,6 +34,13 @@ export function buildApp(options: { taskActions?:TaskActions; calendarRefresh?:(
     apiVersion: 'v1',
     capabilities: { dailyPlan: !!options.plannerPool, sync: !!options.calendarSnapshot, authentication: !!options.auth, email: !!options.plannerPool, calendar: !!options.calendarSnapshot },
   }))
+  if(options.plannerPool&&options.workspaceCalendar){
+    let active:Promise<void>|undefined,timer:ReturnType<typeof setInterval>|undefined
+    const tick=()=>{if(!active)active=processCalendarWrite(options.plannerPool!,options.workspaceCalendar!)
+      .catch(()=>{app.log.warn('Could not process workspace calendar writes')}).finally(()=>{active=undefined})}
+    app.addHook('onReady',async()=>{timer=setInterval(tick,1000);timer.unref()})
+    app.addHook('preClose',async()=>{if(timer)clearInterval(timer);await active})
+  }
   app.register(async scope => {
     // Authenticated discovery only: no capability, actor, bridge URL or secret.
     scope.get('/api/v1/hermes/capabilities',async()=>({taskActions:!!options.taskActions&&!!options.auth}))
@@ -96,7 +104,7 @@ export function buildApp(options: { taskActions?:TaskActions; calendarRefresh?:(
       try{const result=await tellHermes(request.body,{pool:options.plannerPool,curator:options.curator,calendarChange:options.calendarChange});return reply.code(result.code).send(result)}catch{return reply.code(502).send({message:'Creation was not confirmed. Retry this same submission safely.'})}
     })
     priceRoutes(scope) // Retired compatibility endpoints never touch storage.
-    if(options.plannerPool){manualTaskRoutes(scope,options.plannerPool);mailRoutes(scope,options.plannerPool)}
+    if(options.plannerPool){manualTaskRoutes(scope,options.plannerPool);mailRoutes(scope,options.plannerPool);workspaceWriteRoutes(scope,options.plannerPool,authenticatedOwner,options.workspaceCalendar)}
     scope.get('/api/v1/planner/snapshot',async(_request,reply)=>options.plannerPool?plannerSnapshot(options.plannerPool):reply.code(503).send({error:'Planner unavailable'}))
     scope.post<{Body:{kind:string;version:number;data:Entity}}>('/api/v1/planner/entity',{schema:{body:{type:'object',required:['kind','version','data'],additionalProperties:false,properties:{kind:{enum:['project','action','preparation']},version:{type:'integer',minimum:0},data:{type:'object',required:['id','title'],properties:{id:{type:'string',format:'uuid'},title:{type:'string',minLength:1,maxLength:240}}}}}}},async(request,reply)=>{
       if(!options.plannerPool)return reply.code(503).send({error:'Planner unavailable'})

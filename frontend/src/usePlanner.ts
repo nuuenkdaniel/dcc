@@ -1,5 +1,7 @@
-import {useEffect,useRef,useState,useCallback} from 'react'
+import {useRef,useState,useCallback} from 'react'
 import {protectedFetch} from './auth'
+import {useWorkspaceSession} from './workspaceSession'
+import {useAutomaticRead,useWorkspaceWrites} from './workspaceWrites'
 export type Project={origin?:'hermes';planSummary?:string;planError?:string;kind?:'assignment'|'project';resources?:{name:string;text:string}[];id:string;title:string;category:string;description:string;deadline:string;importance:number;remainingMinutes:number;progress:string;status:string}
 export type Exam={id:string;calendarId:string;uid:string;recurrenceId:string|null;start:string;allDay:boolean;title:string}
 export type Topic={id:string;title:string;notes:string;minutes:number}
@@ -14,51 +16,74 @@ const key='daymark.planner.v1'
 const empty:Cache={snapshot:{projects:[],actions:[],status:{}},pending:[]}
 function read():Cache{const text=localStorage.getItem(key);if(!text)return empty;const c=JSON.parse(text);if(!Array.isArray(c.pending)||!Array.isArray(c.snapshot?.projects)||!Array.isArray(c.snapshot?.actions))throw Error('Invalid cache');return c}
 export function usePlanner(){
- const [initial]=useState(()=>{try{return {cache:read(),error:false}}catch{return {cache:empty,error:true}}})
- const [syncing,setSyncing]=useState(false)
- const [loadState,setLoadState]=useState<'loading'|'ready'|'offline'|'signed-out'|'storage-error'>(initial.error?'storage-error':'loading')
- const [lastSynced,setLastSynced]=useState<string|null>(null)
- const [cache,setCache]=useState(initial.cache),ref=useRef(initial.cache),busy=useRef(false)
- const [message,setMessage]=useState(initial.error?'Planner storage cannot be read; editing paused to protect it.':''),[conflict,setConflict]=useState<Change|null>(null)
- const commit=useCallback((next:Cache)=>{try{localStorage.setItem(key,JSON.stringify(next));if(JSON.stringify(ref.current)!==JSON.stringify(next)){ref.current=next;setCache(next);}return true}catch{setMessage('Could not save in this browser. Free storage before editing.');return false}},[])
- const sync=useCallback(async(silent=false)=>{
-  if(busy.current||initial.error)return
-  busy.current=true
-  if(!silent){setSyncing(true);setMessage('Syncing projects and tasks…')}
+ const session=useWorkspaceSession()
+ const keyForOwner=session?.owner?`dcc.confirmed.planner.${session.owner}`:null
+ const [snapshot,setSnapshot]=useState<Snapshot>(()=>{
+  try{return keyForOwner?JSON.parse(localStorage.getItem(keyForOwner)??'null')??empty.snapshot:empty.snapshot}catch{return empty.snapshot}
+ })
+ const [legacy]=useState(()=>{try{return read().pending}catch{return []}})
+ const ref=useRef(snapshot),generation=useRef(0)
+ const [loadState,setLoadState]=useState<'loading'|'ready'|'offline'|'signed-out'|'storage-error'>('loading')
+ const [message,setMessage]=useState('')
+ const publish=useCallback((fresh:Snapshot)=>{
+  if(session?.signal.aborted)return
+  ref.current=fresh
+  setSnapshot(fresh)
+  try{if(keyForOwner)localStorage.setItem(keyForOwner,JSON.stringify(fresh))}catch{/* Keep the confirmed view in memory. */}
+ },[keyForOwner,session])
+ const sync=useCallback(async(_silent=false)=>{
+  if(!keyForOwner)return
+  const id=++generation.current
   try{
-   const response=await plannerFetch('/api/v1/planner/snapshot',{credentials:'same-origin'})
-   if(response.status===401){setLoadState('signed-out');setMessage('Sign in once to sync projects and curated actions.');return}
+   const timeout=AbortSignal.timeout(10000)
+   const response=await protectedFetch('/api/v1/planner/snapshot',{signal:session?AbortSignal.any([session.signal,timeout]):timeout})
    if(!response.ok)throw Error()
-   let snapshot:Snapshot=await response.json()
-   if(!commit({...ref.current,snapshot})){setLoadState('storage-error');return}
+   const fresh:Snapshot=await response.json()
+   if(id!==generation.current||session?.signal.aborted)return
+   if(!Array.isArray(fresh.projects)||!Array.isArray(fresh.actions))throw Error()
+   publish(fresh)
    setLoadState('ready')
-   while(ref.current.pending.length){
-    const next=ref.current.pending[0]
-    const r=await plannerFetch('/api/v1/planner/entity',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)})
-    if(r.status===409){setConflict(next);setMessage('A record changed elsewhere. Review both versions before resolving.');return}
-    if(!r.ok){setMessage(r.status===400?'Draft has invalid fields. Edit it before syncing.':'Offline or signed out. Saved drafts will retry.');return}
-    const fresh=await plannerFetch('/api/v1/planner/snapshot');if(!fresh.ok)throw Error();snapshot=await fresh.json()
-    const saved=[...(snapshot.preparations??[]),...snapshot.projects,...snapshot.actions].find(e=>e.data.id===next.data.id)
-    const pending=ref.current.pending.flatMap(p=>p===next?[]:p.data.id===next.data.id?[{...p,version:saved?.version??p.version}]:[p])
-    if(!commit({snapshot,pending}))return
-   }
-   setConflict(null);if(!silent)setLastSynced(new Date().toLocaleTimeString());setMessage('Projects and curated actions are up to date.')
-  }catch{setLoadState('offline');setMessage('Offline — cached projects and actions remain available. Drafts will retry.')}finally{busy.current=false;setSyncing(false)}
- },[commit,initial.error])
- useEffect(()=>{queueMicrotask(()=>void sync(true));const timer=setInterval(()=>void sync(true),30000);const online=()=>void sync(true);const visible=()=>{if(document.visibilityState==='visible')online()};window.addEventListener('online',online);window.addEventListener('focus',online);window.addEventListener('dcc-auth-changed',online);document.addEventListener('visibilitychange',visible);return()=>{clearInterval(timer);window.removeEventListener('online',online);window.removeEventListener('focus',online);window.removeEventListener('dcc-auth-changed',online);document.removeEventListener('visibilitychange',visible)}},[sync])
+  }catch{if(id===generation.current&&!session?.signal.aborted)setLoadState('offline')}
+ },[keyForOwner,publish,session])
+ useAutomaticRead(()=>void sync(true),['dcc-project-actions-applied','dcc-hermes-created'])
+ const writes=useWorkspaceWrites<Change>('planner',(receipt)=>{
+  if(receipt.state==='saved'&&receipt.entry){
+   const entry=receipt.entry as Entry<Project|Action|Preparation>
+   const previous=ref.current
+   const merge=<T,>(items:Entry<T>[])=>items.some(row=>row.data===entry.data||((row.data as {id:string}).id===entry.data.id&&row.version>entry.version))?items:[...items.filter(row=>(row.data as {id:string}).id!==entry.data.id),entry as Entry<T>]
+   if(entry.kind==='project')publish({...previous,projects:merge(previous.projects)})
+   if(entry.kind==='action')publish({...previous,actions:merge(previous.actions)})
+   if(entry.kind==='preparation')publish({...previous,preparations:merge(previous.preparations??[])})
+  }
+  void sync(true)
+ })
+ const all=[...(snapshot.preparations??[]),...snapshot.projects,...snapshot.actions]
+ const versionOf=(id:string)=>all.find(e=>e.data.id===id)?.version??0
+ const disabled=!writes.online||loadState!=='ready'
  const save=(kind:Change['kind'],data:Change['data'],baseVersion?:number)=>{
-  if(initial.error)return false
-  const old=ref.current.pending.find(p=>p.data.id===data.id),entry=[...(ref.current.snapshot.preparations??[]),...ref.current.snapshot.projects,...ref.current.snapshot.actions].find(e=>e.data.id===data.id)
-  const next={kind,version:old?.version??baseVersion??entry?.version??0,data}
-  const ok=commit({...ref.current,pending:[...ref.current.pending.filter(p=>p.data.id!==data.id),next]});if(ok)void sync();return ok
+  if(disabled){setMessage('Connect to make changes');return false}
+  setMessage('')
+  return writes.submit(data.id,{kind,version:baseVersion??versionOf(data.id),data})
  }
- const preparations=new Map((cache.snapshot.preparations??[]).map(e=>[e.data.id,e.data]))
- const projects=new Map(cache.snapshot.projects.map(e=>[e.data.id,e.data])),actions=new Map(cache.snapshot.actions.map(e=>[e.data.id,e.data]))
- for(const p of cache.pending){if(p.kind==='project')projects.set(p.data.id,p.data as Project);else if(p.kind==='preparation')preparations.set(p.data.id,p.data as Preparation);else actions.set(p.data.id,p.data as Action)}
- const resolve=(keep:boolean)=>{if(!conflict)return;const latest=[...(ref.current.snapshot.preparations??[]),...ref.current.snapshot.projects,...ref.current.snapshot.actions].find(e=>e.data.id===conflict.data.id);commit({...ref.current,pending:ref.current.pending.flatMap(p=>p.data.id!==conflict.data.id?[p]:keep?[{...p,version:latest?.version??0}]:[])});setConflict(null);void sync()}
- const refresh=async()=>{await sync();if(ref.current.pending.length){setMessage('Sync or resolve saved drafts before generating a plan.');return}try{const r=await plannerFetch('/api/v1/planner/refresh',{method:'POST'});if(!r.ok)throw Error();setMessage('Plan requested. The worker will pick it up shortly.');await sync()}catch{setMessage('Could not request a plan. Sign in and check the backend connection.')}}
- const versionOf=(id:string)=>ref.current.pending.find(e=>e.data.id===id)?.version??[...(ref.current.snapshot.preparations??[]),...ref.current.snapshot.projects,...ref.current.snapshot.actions].find(e=>e.data.id===id)?.version??0
- return {loadState,syncing,lastSynced,versionOf,preparations:[...preparations.values()],projects:[...projects.values()],actions:[...actions.values()],status:cache.snapshot.status,pending:cache.pending.length,message,save,sync,refresh,conflict,latest:conflict?[...(cache.snapshot.preparations??[]),...cache.snapshot.projects,...cache.snapshot.actions].find(e=>e.data.id===conflict.data.id)?.data:null,resolve,disabled:initial.error}
+ const preparations=new Map((snapshot.preparations??[]).map(e=>[e.data.id,e.data]))
+ const projects=new Map(snapshot.projects.map(e=>[e.data.id,e.data]))
+ const actions=new Map(snapshot.actions.map(e=>[e.data.id,e.data]))
+ for(const {payload} of writes.jobs){
+  if(payload?.kind==='project')projects.set(payload.data.id,payload.data as Project)
+  if(payload?.kind==='preparation')preparations.set(payload.data.id,payload.data as Preparation)
+  if(payload?.kind==='action')actions.set(payload.data.id,payload.data as Action)
+ }
+ const refresh=async()=>{
+  if(disabled){setMessage('Connect to make changes');return}
+  try{
+   const response=await plannerFetch('/api/v1/planner/refresh',{method:'POST'})
+   if(!response.ok)throw Error()
+   setMessage('Plan requested.')
+   await sync(true)
+  }catch{setMessage('Could not request a plan.')}
+ }
+ const legacyChanges=legacy.filter(change=>!all.some(entry=>entry.data.id===change.data.id&&Object.entries(change.data).every(([key,value])=>JSON.stringify(entry.data[key as keyof typeof entry.data])===JSON.stringify(value))))
+ return {loadState,versionOf,preparations:[...preparations.values()],projects:[...projects.values()],actions:[...actions.values()],status:snapshot.status??{},pending:writes.jobs.length,message:message||writes.message,save,sync,refresh,disabled,legacyChanges,failed:writes.failed,pendingIds:new Set(writes.jobs.map(job=>job.watch.key))}
 }
 export type Planner=ReturnType<typeof usePlanner>
 

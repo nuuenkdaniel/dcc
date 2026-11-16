@@ -1,5 +1,5 @@
 import {validPreparation,studyCandidates,resolveExam,examDay,type Preparation,type StudyAction} from './study.js'
-import type {Pool} from 'pg'
+import type {Pool,PoolClient} from 'pg'
 import {randomUUID} from 'node:crypto'
 import {budgetForDay,easternDay,easternHour,validatePlan,type CalendarBlock} from './planner-policy.js'
 export type Entity={id:string;[key:string]:unknown}
@@ -24,32 +24,40 @@ function validManualProjectAction(d:Entity){
 }
 function validEntity(kind:string,d:Entity){
  const text=(k:string,n:number)=>typeof d[k]==='string'&&(d[k] as string).length<=n
- if(!/^[a-f0-9-]{36}$/.test(d.id)||!text('title',240)||!(d.title as string).trim())return false
+ if(!uuidPattern.test(d.id)||!text('title',240)||!(d.title as string).trim())return false
  if(kind==='preparation')return validPreparation(d as unknown as Preparation)
  if(kind==='project'&&d.resources!==undefined&&(!Array.isArray(d.resources)||d.resources.length>20||d.resources.some((r:any)=>!r||typeof r.name!=='string'||r.name.length>200||typeof r.text!=='string')||d.resources.reduce((n:number,r:any)=>n+r.text.length,0)>100000))return false
  if(kind==='project')return text('description',12000)&&text('progress',4000)&&['school','work','personal','club'].includes(String(d.category))&&['active','complete','archived'].includes(String(d.status))&&Number.isInteger(d.importance)&&Number(d.importance)>=1&&Number(d.importance)<=3&&Number.isInteger(d.remainingMinutes)&&Number(d.remainingMinutes)>=0&&Number(d.remainingMinutes)<=100000&&(d.deadline===''||validDate(d.deadline))
  return kind==='action'&&(d.source==='manual-project'?validManualProjectAction(d):text('notes',4000)&&typeof d.completed==='boolean'&&typeof d.dismissed==='boolean'&&(d.feedback===undefined||['','comfortable','review'].includes(String(d.feedback)))&&Number.isInteger(d.minutes)&&Number(d.minutes)>=5&&Number(d.minutes)<=180)
 }
-export async function saveEntity(pool:Pool,kind:string,version:number,data:Entity){
+export async function saveEntityInTransaction(c:PoolClient,kind:string,version:number,data:Entity){
  if(!data||typeof data!=='object'||!Number.isInteger(version)||version<0||!validEntity(kind,data))return {code:400,error:'Invalid fields'}
- const c=await pool.connect()
- try{await c.query('BEGIN');await c.query('SELECT pg_advisory_xact_lock(817340)');const old=(await c.query<Entry>('SELECT kind,version,data FROM planner_entities WHERE id=$1',[data.id])).rows[0]
- if(old&&old.kind!==kind){await c.query('ROLLBACK');return {code:400,error:'Wrong entity type'}}
+ await c.query('SELECT pg_advisory_xact_lock(817340)');const old=(await c.query<Entry>('SELECT kind,version,data FROM planner_entities WHERE id=$1',[data.id])).rows[0]
+ if(old&&old.kind!==kind){return {code:400,error:'Wrong entity type'}}
   // Generated actions can only originate in validated generation. The sole client-created
   // action shape is a dated manual-project record linked to an existing project.
   if(kind==='action'&&!old){
-   if(data.source!=='manual-project'||!(await c.query("SELECT id FROM planner_entities WHERE id=$1 AND kind='project'",[data.projectId])).rows[0]){await c.query('ROLLBACK');return {code:400,error:'Invalid action source'}}
+   if(data.source!=='manual-project'||!(await c.query("SELECT id FROM planner_entities WHERE id=$1 AND kind='project'",[data.projectId])).rows[0]){return {code:400,error:'Invalid action source'}}
   }else if(kind==='action'&&old){
    const manual=old.data.source==='manual-project'
-   if((manual&&(data.source!=='manual-project'||old.data.projectId!==data.projectId))||(!manual&&(old.data.projectId!==data.projectId||old.data.date!==data.date||data.source!==old.data.source))){await c.query('ROLLBACK');return {code:400,error:'Invalid action source'}}
+   if((manual&&(data.source!=='manual-project'||old.data.projectId!==data.projectId))||(!manual&&(old.data.projectId!==data.projectId||old.data.date!==data.date||data.source!==old.data.source))){return {code:400,error:'Invalid action source'}}
   }
  if(kind==='action'&&old&&(old.data.title!==data.title||old.data.notes!==data.notes))data={...data,edited:true}
- if(kind==='preparation'){const cal=(await c.query('SELECT snapshot FROM calendar_sync_state WHERE id=1')).rows[0];const linked=resolveExam(data as unknown as Preparation,cal?.snapshot?.events??[]);if(linked&&String(data.startDate)>=examDay(linked)){await c.query('ROLLBACK');return {code:400,error:'Choose a study start date before the exam'}}if(!linked&&data.status!=='paused'){await c.query('ROLLBACK');return {code:409,error:'Linked event is not in the current calendar; reconnect and review'}}}
+ if(kind==='preparation'){const cal=(await c.query('SELECT snapshot FROM calendar_sync_state WHERE id=1')).rows[0];const linked=resolveExam(data as unknown as Preparation,cal?.snapshot?.events??[]);if(linked&&String(data.startDate)>=examDay(linked)){return {code:400,error:'Choose a study start date before the exam'}}if(!linked&&data.status!=='paused'){return {code:409,error:'Linked event is not in the current calendar; reconnect and review'}}}
  const same=old&&JSON.stringify(Object.entries(old.data).sort())===JSON.stringify(Object.entries(data).sort())
- if((old?.version??0)!==version&&!same){await c.query('ROLLBACK');return {code:409,error:'Changed elsewhere; review your saved draft against the latest version'}}
+ if((old?.version??0)!==version&&!same){return {code:409,error:'Changed elsewhere; review your saved draft against the latest version'}}
  if(!same)await c.query('INSERT INTO planner_entities(id,kind,data) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET data=$3,version=planner_entities.version+1',[data.id,kind,data])
  if((kind==='preparation'||kind==='project')&&!same)await c.query('UPDATE planner_runs SET requested=true,next_attempt=now() WHERE id=1')
- await c.query('COMMIT');return {code:200}
+ const entry=(await c.query<Entry>('SELECT kind,version,data FROM planner_entities WHERE id=$1',[data.id])).rows[0]
+ return {code:200,entry}
+}
+export async function saveEntity(pool:Pool,kind:string,version:number,data:Entity){
+ const c=await pool.connect()
+ try{
+  await c.query('BEGIN')
+  const result=await saveEntityInTransaction(c,kind,version,data)
+  await c.query(result.code===200?'COMMIT':'ROLLBACK')
+  return {code:result.code,...('error' in result?{error:result.error}:{})}
  }catch(e){await c.query('ROLLBACK');throw e}finally{c.release()}
 }
 export async function requestPlan(pool:Pool){await pool.query('UPDATE planner_runs SET requested=true,next_attempt=now() WHERE id=1')}

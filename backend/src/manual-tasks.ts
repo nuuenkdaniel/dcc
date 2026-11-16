@@ -25,7 +25,28 @@ export async function appendHermesTask(c:PoolClient,task:ManualTask){
  if(tasks.length>=10000||tasks.some(t=>t.id===task.id))throw Error('Task collection cannot accept this task')
  await c.query("INSERT INTO planner_entities(id,kind,data) VALUES($1,'manual-tasks',$2) ON CONFLICT(id) DO UPDATE SET data=$2,version=planner_entities.version+1",[COLLECTION,{...old.data,tasks:[...tasks,task]}])
 }
-export async function taskSnapshot(pool:Pool){const r=await pool.query('SELECT version,data FROM planner_entities WHERE id=$1 AND kind=$2',[COLLECTION,'manual-tasks']);return r.rows[0]??{version:0,data:{tasks:[]}}}
+export async function taskSnapshot(pool:Pick<Pool,'query'>){const r=await pool.query('SELECT version,data FROM planner_entities WHERE id=$1 AND kind=$2',[COLLECTION,'manual-tasks']);return r.rows[0]??{version:0,data:{tasks:[]}}}
+function sameTask(a:ManualTask|null,b:ManualTask|null){
+ const normalize=(task:ManualTask|null)=>task?{...task,important:!!task.important,deleted:!!task.deleted}:null
+ return canonical(normalize(a))===canonical(normalize(b))
+}
+
+export async function saveTaskInTransaction(client:PoolClient,expected:ManualTask|null,task:ManualTask){
+ if(!validManualTask(task)||(expected!==null&&(!validManualTask(expected)||task.id!==expected.id)))return {code:400} as const
+ await client.query('SELECT pg_advisory_xact_lock(817342)')
+ const snapshot=await taskSnapshot(client)
+ const tasks:ManualTask[]=snapshot.data.tasks
+ const current=tasks.find(item=>item.id===task.id)??null
+ if(!sameTask(current,expected))return {code:409} as const
+ if(!current&&(tasks.length>=10000||task.deleted))return {code:400} as const
+ const recurrence=current?.recurrence as {kind:string}|undefined
+ const next=task.recurrence as {kind:string}|undefined
+ if(recurrence&&(next?.kind!==recurrence.kind||recurrence.kind==='occurrence'&&canonical(recurrence)!==canonical(next)))return {code:409} as const
+ const saved={...current,...task}
+ const entries=current?tasks.map(item=>item.id===task.id?saved:item):[...tasks,saved]
+ await client.query("INSERT INTO planner_entities(id,kind,data) VALUES($1,'manual-tasks',$2) ON CONFLICT(id) DO UPDATE SET data=$2,version=planner_entities.version+1",[COLLECTION,{...snapshot.data,tasks:entries}])
+ return {code:200,task:saved,version:snapshot.version+1 as number} as const
+}
 const comparable=(tasks:ManualTask[])=>canonical(tasks.map(t=>({...t,important:!!t.important,deleted:!!t.deleted})))
 export async function saveTasks(pool:Pool,version:number,tasks:ManualTask[]){
  if(!Number.isInteger(version)||version<0||!Array.isArray(tasks)||tasks.length>10000||!tasks.every(validManualTask)||new Set(tasks.map(t=>t.id)).size!==tasks.length)return {code:400,error:'Invalid task collection'}
