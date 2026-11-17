@@ -430,7 +430,7 @@ class HermesShellTest {
             openChat();compose.onNodeWithTag("hermes-chat-editor").performTextInput("Synthetic ordinary question")
             compose.onNodeWithTag("hermes-chat-send").performClick()
             compose.waitUntil(5000){calls.size==2&&!controller.state.value.busy}
-            show("Reply delivery interrupted [NETWORK]. Checking for a saved reply…")
+            show("Thinking…")
             compose.onNodeWithTag("hermes-chat-editor").performTextInput("Different editable topic")
             compose.onNodeWithTag("hermes-chat-editor").performTextInputSelection(androidx.compose.ui.text.TextRange(2,7))
             closeChat();assertEquals(before,inboxGeometry("reply-recovery-after-X"))
@@ -1099,7 +1099,7 @@ class HermesShellTest {
             compose.waitUntil(10000){calls.size==5&&controller.state.value.timeline.any{it.kind=="unknown"&&!controller.state.value.busy}}
             assertEquals(listOf("start","read","read","read","read"),calls.map{it.getString("op")})
             val text=controller.state.value.timeline.last{it.kind=="unknown"}.text
-            assertTrue(text.contains("[NETWORK]"));assertTrue(text.contains("Outcome unconfirmed",ignoreCase=true)||text.contains("unconfirmed",ignoreCase=true))
+            assertTrue(text.startsWith("I couldn’t confirm"))
             compose.onNodeWithTag("hermes-chat-editor").performTextInput("Editable after outage")
             compose.onNodeWithTag("hermes-chat-editor").assertTextContains("Editable after outage")
             assertFalse(controller.state.value.busy)

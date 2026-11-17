@@ -18,6 +18,7 @@ const policy={executor:'mcp-action-v1' as const,allowedTools:['list_tasks','crea
 export const PRODUCT_TOOLS=ACTIVE_TOOLS
 const productPolicy={executor:'mcp-action-v1' as const,allowedTools:PRODUCT_TOOLS}
 const digest=(text:string)=>createHash('sha256').update(text).digest('hex')
+const MIN_CHAT_RETRY_TIME_MS=30_000
 export class TaskCallbackError extends Error {constructor(readonly status:number){super('Task callback unavailable')}}
 export type TaskBridgeInput={mode:'task-action'|'product-action';prompt:string;callbackCapability:string;expiresAt:number;replyVersion?:1;chatVersion?:1}
 export type TaskBridge=(input:TaskBridgeInput,signal:AbortSignal)=>Promise<unknown>
@@ -40,6 +41,7 @@ class CallbackSession {
   private ready=false
   private count=0
   private closed=false
+  private toolCallSeen=false
   private queue:Promise<unknown>=Promise.resolve()
   constructor(private readonly run:NativeMcpRun){
     const [wire,serverWire]=InMemoryTransport.createLinkedPair();this.wire=wire
@@ -52,6 +54,7 @@ class CallbackSession {
     this.connected=run.server.connect(serverWire).then(()=>wire.start())
   }
   private connected:Promise<void>
+  get attemptedTool(){return this.toolCallSeen}
   async message(body:unknown):Promise<JSONRPCMessage|undefined>{
     if(this.closed||++this.count>64||!(await this.run.active()))throw new TaskCallbackError(403)
     const parsed=JSONRPCMessageSchema.safeParse(body)
@@ -70,6 +73,7 @@ class CallbackSession {
       this.init=true
     }else if(!this.ready)throw new TaskCallbackError(409)
     if(message.method==='tools/call'){
+      this.toolCallSeen=true
       if(!plainRecord(message.params)||!this.run.allowedTools.includes(message.params.name as ToolName))throw new TaskCallbackError(403)
       // Never accept authority or correlation from model _meta. Stable owner +
       // typed JSON-RPC ID is bound durably by store.reserve before any service call.
@@ -108,26 +112,41 @@ export class TaskActions {
     const store=new SqlIntentStore(options.pool,options.actorId),transport=new ServiceTransport({pool:options.pool,actorId:options.actorId,browserTimer:this.timerBridge,...(options.calendarSnapshot?{calendarSnapshot:options.calendarSnapshot}:{}),...(options.guardedCalendarWriter?{guardedCalendarWriter:options.guardedCalendarWriter}:{})})
     this.controller=new RequestController({store,transport,now:this.now,
       nativeRunner:async run=>{
-        if(this.entries.size>=8)throw new TaskCallbackError(429)
-        // Generated only at invocation time, after authenticated admission/start.
-        const token=(options.issueCapability??(()=>randomBytes(32).toString('hex')))()
-        if(!/^[a-f0-9]{64}$(?![\s\S])/.test(token))throw new TaskCallbackError(503)
-        const key=digest(token)
-        if(this.entries.has(key))throw new TaskCallbackError(503)
-        const session=new CallbackSession(run)
-        this.entries.set(key,{expiresAt:run.expiresAt,session,active:run.active})
-        const revoke=()=>{this.entries.delete(key);void session.close().catch(()=>undefined)}
-        run.signal.addEventListener('abort',revoke,{once:true})
-        try{
-          if(run.signal.aborted)throw new TaskCallbackError(403)
-          const result=await options.bridge({mode:run.allowedTools.length===policy.allowedTools.length?'task-action':'product-action',prompt:run.prompt,callbackCapability:token,expiresAt:run.expiresAt,...(run.replyVersion===1?{replyVersion:1 as const}:{}),...(run.chatVersion===1?{chatVersion:1 as const}:{})},run.signal)
-          if(run.replyVersion===1){
-            if(!validRuntimeCompletion(result)||result.assistantText?.includes(token))throw new TaskCallbackError(502)
-            return result
+        let earlyFailure:CallbackSession|undefined
+        let firstCapability:string|undefined
+        const invoke=async()=>{
+          if(this.entries.size>=8)throw new TaskCallbackError(429)
+          const token=(options.issueCapability??(()=>randomBytes(32).toString('hex')))()
+          if(!/^[a-f0-9]{64}$(?![\s\S])/.test(token))throw new TaskCallbackError(503)
+          const key=digest(token)
+          if(this.entries.has(key)||key===firstCapability)throw new TaskCallbackError(503)
+          firstCapability=key
+          const session=new CallbackSession(run)
+          this.entries.set(key,{expiresAt:run.expiresAt,session,active:run.active})
+          const revoke=()=>{this.entries.delete(key);void session.close().catch(()=>undefined)}
+          run.signal.addEventListener('abort',revoke,{once:true})
+          try{
+            if(run.signal.aborted)throw new TaskCallbackError(403)
+            const result=await options.bridge({mode:run.allowedTools.length===policy.allowedTools.length?'task-action':'product-action',prompt:run.prompt,callbackCapability:token,expiresAt:run.expiresAt,...(run.replyVersion===1?{replyVersion:1 as const}:{}),...(run.chatVersion===1?{chatVersion:1 as const}:{})},run.signal)
+            if(run.replyVersion===1){
+              if(!validRuntimeCompletion(result)||result.assistantText?.includes(token))throw new TaskCallbackError(502)
+              return result
+            }
+            if(!plainRecord(result)||Object.keys(result).join(',')!=='status'||result.status!=='finished')throw new TaskCallbackError(502)
+          }catch(error){
+            earlyFailure=session
+            throw error
+          }finally{
+            run.signal.removeEventListener('abort',revoke)
+            this.entries.delete(key)
+            await session.close()
           }
-          if(!plainRecord(result)||Object.keys(result).join(',')!=='status'||result.status!=='finished')throw new TaskCallbackError(502)
-        }finally{
-          run.signal.removeEventListener('abort',revoke);revoke();await session.close()
+        }
+        try{return await invoke()}catch(error){
+          // Retry the same turn only after the first capability is revoked and
+          // the callback session can rule out all tool dispatch from it.
+          if(run.chatVersion!==1||!earlyFailure||earlyFailure.attemptedTool||run.expiresAt-this.now()<MIN_CHAT_RETRY_TIME_MS||!await run.active())throw error
+          return invoke()
         }
       }})
     const chatPolicy={...productPolicy,allowedTools:PRODUCT_TOOLS.filter(tool=>tool!=='request_clarification')}

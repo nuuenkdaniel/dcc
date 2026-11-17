@@ -7,12 +7,12 @@ internal data class HermesDeliveryFailure(val category:HermesDeliveryCategory,va
 }
 /** Bounded automatic read-only recovery for one failed chat turn. Production defaults must not be weakened. */
 data class HermesChatRecoveryTiming(
-    val delaysMs:List<Long> = listOf(0,5000,10000,15000),
-    val overallWindowMs:Long = 60000,
+    val delaysMs:List<Long> = listOf(0,4000,8000,14000,22000,31000,48000),
+    val overallWindowMs:Long = 140000,
     val perReadTimeoutMs:Long = HERMES_RECEIPT_TIMEOUT_MS
 ){
     init{
-        require(delaysMs.size==4&&delaysMs.all{it>=0}&&overallWindowMs in 1..60000&&perReadTimeoutMs in 1..HERMES_RECEIPT_TIMEOUT_MS)
+        require(delaysMs.size in 1..7&&delaysMs.all{it>=0}&&overallWindowMs in 1..140000&&perReadTimeoutMs in 1..HERMES_RECEIPT_TIMEOUT_MS)
     }
 }
 internal fun hermesDeliveryFailure(error:Exception,storageReady:Boolean=true):HermesDeliveryFailure {

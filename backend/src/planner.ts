@@ -1,6 +1,7 @@
 import {validPreparation,studyCandidates,resolveExam,examDay,type Preparation,type StudyAction} from './study.js'
 import type {Pool,PoolClient} from 'pg'
 import {randomUUID} from 'node:crypto'
+import {setTimeout as wait} from 'node:timers/promises'
 import {budgetForDay,easternDay,easternHour,validatePlan,type CalendarBlock} from './planner-policy.js'
 export type Entity={id:string;[key:string]:unknown}
 export type Entry={kind:'project'|'action'|'preparation';version:number;data:Entity}
@@ -61,16 +62,25 @@ export async function saveEntity(pool:Pool,kind:string,version:number,data:Entit
  }catch(e){await c.query('ROLLBACK');throw e}finally{c.release()}
 }
 export async function requestPlan(pool:Pool){await pool.query('UPDATE planner_runs SET requested=true,next_attempt=now() WHERE id=1')}
-export async function callCurator(input:unknown,options:{signal?:AbortSignal;timeoutMs?:number}={}){
+export async function callCurator(input:unknown,options:{signal?:AbortSignal;timeoutMs?:number;waitForActionSlot?:true}={}){
  const url=process.env.HERMES_CURATOR_URL,token=process.env.HERMES_CURATOR_TOKEN
  if(!url||!token)throw new Error('Curator not configured')
   const timeout=options.timeoutMs??150000
   if(!Number.isInteger(timeout)||timeout<1||timeout>150000)throw new Error('Invalid curator timeout')
   const deadline=AbortSignal.timeout(timeout)
   const signal=options.signal?AbortSignal.any([options.signal,deadline]):deadline
-  const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify(input),signal,redirect:'error'})
- if(!response.ok)throw new Error('Curator unavailable')
- return response.json() as Promise<unknown>
+  const request={method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify(input),signal,redirect:'error' as const}
+  for(let attempt=0;;attempt++){
+    const response=await fetch(url,request)
+    if(response.ok)return response.json() as Promise<unknown>
+    // The authenticated bridge emits this exact marker before it starts a
+    // subprocess. Transport failures, timeouts and every other response can
+    // be ambiguous and must never launch another invocation.
+    if(!options.waitForActionSlot||response.status!==429||attempt>=3)throw new Error('Curator unavailable')
+    const refusal:unknown=await response.json()
+    if(!refusal||typeof refusal!=='object'||Object.keys(refusal).join(',')!=='error'||(refusal as {error:unknown}).error!=='Curator busy')throw new Error('Curator unavailable')
+    await wait(500*2**attempt,undefined,{signal})
+  }
 }
 function validDateWindow(window:DateWindow){return validDate(window.start)&&validDate(window.end)&&window.start<=window.end&&(Date.parse(window.end)-Date.parse(window.start))/86400000<=366}
 export function validateCustomProjectSuggestions(raw:unknown,window?:DateWindow){

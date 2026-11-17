@@ -253,12 +253,17 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         if(s===mutable.value)mutable.value=projected
         return projected
     }
-    fun availability(available:Boolean,contextVersion:Int=0,replyVersion:Int=0,chatVersion:Int=0){mutable.value=mutable.value.copy(available=available,contextVersion=if(available&&contextVersion==1)1 else 0,replyVersion=if(available&&replyVersion==1)1 else 0,chatVersion=if(available&&replyVersion==1&&chatVersion==1)1 else 0)}
+    fun availability(available:Boolean,contextVersion:Int=0,replyVersion:Int=0,chatVersion:Int=0){
+        val previous=mutable.value
+        val supportsChat=available&&replyVersion==1&&chatVersion==1
+        mutable.value=previous.copy(available=available,contextVersion=if(available&&contextVersion==1)1 else 0,replyVersion=if(available&&replyVersion==1)1 else 0,chatVersion=if(supportsChat)1 else 0)
+        if(supportsChat&&previous.chatVersion!=1)recoverSavedChat()
+    }
     fun chatCapabilities(v:JSONObject){
         fun version(name:String)=(v.opt(name) as? Number)?.toDouble()==1.0
         val supported=v.optBoolean("conversation",false)&&version("conversationReplyVersion")&&version("conversationChatVersion")
-        availability(supported,if(version("conversationContextVersion"))1 else 0,if(supported)1 else 0,if(supported)1 else 0)
         mutable.value=mutable.value.copy(displaySyncVersion=if(supported&&version("conversationDisplaySyncVersion"))1 else 0)
+        availability(supported,if(version("conversationContextVersion"))1 else 0,if(supported)1 else 0,if(supported)1 else 0)
     }
     fun edit(text:String){
         val question=answering(mutable.value)
@@ -310,12 +315,12 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
     fun readReceipt(){
         val s=mutable.value
         if(s.receiptChecking)return
+        if(s.busy){checked(HermesReceiptCheck.BUSY);return}
         if(readJob?.isActive==true){operationGeneration++;readJob?.cancel();readJob=null}
         if(!s.storageReady){checked(HermesReceiptCheck.STORAGE);return}
         val boundOwner=owner?:run{checked(HermesReceiptCheck.AUTH);return}
         val root=s.rootKey?:s.submitted?.rootKey?:run{checked(HermesReceiptCheck.NO_REQUEST);return}
         if(!scope.isActive){checked(HermesReceiptCheck.INACTIVE);return}
-        if(s.busy){checked(HermesReceiptCheck.BUSY);return}
         val op=operationGeneration;val sequence=++readSequence
         fun current()=op==operationGeneration&&owner==boundOwner&&sequence==readSequence
         checked(HermesReceiptCheck.CHECKING)
@@ -328,6 +333,11 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
                 val claim=mutable.value.attemptKey
                 if(v.getString("rootKey")!=root||claim!=null&&v.getString("turnKey")!=claim){checked(HermesReceiptCheck.CORRELATION);return@launch}
                 if(!mutable.value.storageReady){checked(HermesReceiptCheck.STORAGE);return@launch}
+                val sent=mutable.value.submitted
+                if(sent?.chat==true&&chatReplyFailure(v,sent)!=null){
+                    checked(if(v.getLong("expiresAt")<=now())HermesReceiptCheck.EXPIRED else HermesReceiptCheck.UNCONFIRMED)
+                    return@launch
+                }
                 accept(v)
                 checked(if(!mutable.value.storageReady)HermesReceiptCheck.STORAGE else if(v.getLong("expiresAt")<=now())HermesReceiptCheck.EXPIRED else when(v.getJSONObject("receipt").getString("outcome")){
                     "uncertain"->HermesReceiptCheck.UNCONFIRMED;"partial"->HermesReceiptCheck.PARTIAL;"failed"->HermesReceiptCheck.FAILED;"question"->HermesReceiptCheck.QUESTION;else->HermesReceiptCheck.CHECKED
@@ -398,18 +408,13 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         val submitted=HermesSubmitted(turn,turn,s.draft,false,expiry,context=context,chat=true)
         val user=HermesChatEntry("chat-user:$turn",turn,turn,"user","user",s.draft,expiry,settled=true)
         val pending=HermesChatEntry("chat-status:$turn",turn,turn,"assistant","pending","Thinking…",expiry,settled=true)
-        val previous=s.timeline.map{if(it.kind=="pending")it.copy(kind="unknown",text="Earlier reply delivery is unconfirmed. Nothing was resent.") else it}
+        val previous=s.timeline.map{if(it.kind=="pending")it.copy(kind="unknown",text="I couldn’t confirm the result of this message.") else it}
         val next=s.copy(draft="",answer="",view=null,receipt=null,rootKey=turn,attemptKey=turn,submitted=submitted,busy=true,notice="",draftContext=null,timeline=previous+user+pending,receiptCheck=HermesReceiptCheck.IDLE)
         val durable=try{persist(next)}catch(_:Exception){expiresAt=previousExpiry;return}
         generation++;val op=++operationGeneration;readSequence++;readJob?.cancel();mutable.value=durable
         val boundClient=clientId
         job=scope.launch{
             fun current()=op==operationGeneration&&owner==boundOwner&&clientId==boundClient&&mutable.value.submitted?.turnKey==turn
-            fun retryable(f:HermesDeliveryFailure)=f.category in setOf(HermesDeliveryCategory.NETWORK,HermesDeliveryCategory.TIMEOUT)||f.category==HermesDeliveryCategory.HTTP&&(f.status?:0) in 500..599
-            fun recoveryStatusText(original:HermesDeliveryFailure,working:Boolean,readAttempt:Int)=when{
-                working->"Reply delivery [${original.code}]. Server is still working; checking for a saved reply…"
-                else->"Reply delivery interrupted [${original.code}]. Checking for a saved reply…"
-            }
             var failure:HermesDeliveryFailure?=null
             try{
                 val response=api(JSONObject().put("op","start").put("clientId",boundClient).put("workspaceOwner",boundOwner).put("key",turn).put("prompt",submitted.text).put("replyVersion",1).put("chatVersion",1).put("context",JSONObject(context)))
@@ -425,94 +430,110 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
                 throw error
             }catch(error:Exception){failure=hermesDeliveryFailure(error,mutable.value.storageReady)}
             val original=failure?:return@launch
-            if(!current())return@launch
-            if(!mutable.value.storageReady||!mutable.value.available||original.category in setOf(HermesDeliveryCategory.AUTH,HermesDeliveryCategory.STORAGE,HermesDeliveryCategory.EXPIRED,HermesDeliveryCategory.CANCELLED)||!scope.isActive||!kotlinx.coroutines.currentCoroutineContext().isActive){
-                chatDeliveryFailed(turn,original);return@launch
-            }
-            if(submitted.expiresAt<=now()){chatDeliveryFailed(turn,original,HermesDeliveryFailure(HermesDeliveryCategory.EXPIRED));return@launch}
-            // Start recovery when server may have processed but client lacks confirmed final reply.
-            // Continue/retry reads only for transient NETWORK/TIMEOUT/HTTP5xx or valid running NO_FINAL.
-            val canStartRecovery = original.category==HermesDeliveryCategory.NO_FINAL || original.category in setOf(HermesDeliveryCategory.NETWORK,HermesDeliveryCategory.TIMEOUT,HermesDeliveryCategory.DECODE,HermesDeliveryCategory.INVALID) || (original.category==HermesDeliveryCategory.HTTP&&(original.status?:0) in 500..599)
-            if(!canStartRecovery){ chatDeliveryFailed(turn,original);return@launch }
-            // Bounded read-only recovery: at most 4 reads / 60s overall, never start/answer/cancel.
-            val lookup=kotlinx.coroutines.currentCoroutineContext()[Job]
-            readJob=lookup
-            val recoveryStart=System.nanoTime()
-            val windowNs=recoveryTiming.overallWindowMs*1_000_000L
-            fun remainingMs()=((windowNs-(System.nanoTime()-recoveryStart))/1_000_000L).coerceAtLeast(0)
-            var recoveryFailure:HermesDeliveryFailure?=null
-            try{
-                for(i in 0 until 4){
-                    if(!current()||!kotlinx.coroutines.currentCoroutineContext().isActive)return@launch
-                    if(submitted.expiresAt<=now()){recoveryFailure=HermesDeliveryFailure(HermesDeliveryCategory.EXPIRED);break}
-                    if(!mutable.value.storageReady||!mutable.value.available){recoveryFailure=if(!mutable.value.storageReady)HermesDeliveryFailure(HermesDeliveryCategory.STORAGE) else original;break}
-                    val delayMs=recoveryTiming.delaysMs[i]
-                    val rem=remainingMs()
-                    if(rem<=0){recoveryFailure=HermesDeliveryFailure(HermesDeliveryCategory.TIMEOUT);break}
-                    // Update feedback before waiting/read so user sees current state; composer remains editable (busy=false).
-                    val working = (if(i==0) original.category==HermesDeliveryCategory.NO_FINAL else recoveryFailure?.category==HermesDeliveryCategory.NO_FINAL)
-                    mutable.value=mutable.value.copy(busy=false,notice="",timeline=mutable.value.timeline.map{
-                        if(it.id==pending.id)it.copy(text=recoveryStatusText(original,working,i)) else it
-                    })
-                    if(delayMs>0){
-                        val wait=minOf(delayMs,remainingMs())
-                        if(wait>0) delay(wait)
-                    }
-                    if(!current()||!kotlinx.coroutines.currentCoroutineContext().isActive)return@launch
-                    if(submitted.expiresAt<=now()){recoveryFailure=HermesDeliveryFailure(HermesDeliveryCategory.EXPIRED);break}
-                    if(!mutable.value.storageReady||!mutable.value.available){recoveryFailure=if(!mutable.value.storageReady)HermesDeliveryFailure(HermesDeliveryCategory.STORAGE) else original;break}
-                    val remForRead=remainingMs()
-                    if(remForRead<=0){recoveryFailure=HermesDeliveryFailure(HermesDeliveryCategory.TIMEOUT);break}
-                    val readTimeout=minOf(receiptTimeoutMillis,recoveryTiming.perReadTimeoutMs,remForRead)
-                    val result:Result<JSONObject> = try{
-                        Result.success(withTimeout(readTimeout){api(JSONObject().put("op","read").put("workspaceOwner",boundOwner).put("clientId",boundClient).put("rootKey",turn))})
-                    }catch(e:TimeoutCancellationException){
-                        if(!current()||!kotlinx.coroutines.currentCoroutineContext().isActive) return@launch
-                        Result.failure(e) // per-read timeout: retryable if budget allows
-                    }catch(e:CancellationException){
-                        if(!current()) return@launch
-                        throw e
-                    }catch(e:Exception){ Result.failure(e) }
-                    if(!current()||!kotlinx.coroutines.currentCoroutineContext().isActive)return@launch
-                    val response=result.getOrNull()
-                    if(response!=null){
-                        if(!mutable.value.available){recoveryFailure=original;break}
-                        val invalid=chatReplyFailure(response,submitted)
-                        if(invalid==null){
-                            if(!mutable.value.storageReady){recoveryFailure=HermesDeliveryFailure(HermesDeliveryCategory.STORAGE);break}
-                            try{
-                                acceptChat(response)
-                                mutable.value=mutable.value.copy(notice="Stored reply recovered after delivery [${original.code}]. Nothing was resent.")
-                                return@launch
-                            }catch(_:Exception){recoveryFailure=HermesDeliveryFailure(HermesDeliveryCategory.STORAGE);break}
-                        }
-                        if(invalid.category==HermesDeliveryCategory.NO_FINAL){
-                            recoveryFailure=invalid // server still working; continue if budget allows
-                            continue
-                        }
-                        recoveryFailure=invalid;break
-                    } else {
-                        val err=result.exceptionOrNull() as? Exception ?: Exception("unknown")
-                        val f=hermesDeliveryFailure(err,mutable.value.storageReady)
-                        if(retryable(f)){
-                            recoveryFailure=f
-                            continue
-                        } else {
-                            recoveryFailure=f;break
-                        }
-                    }
-                }
-                if(!current())return@launch
-                val exhausted = recoveryFailure==null || recoveryFailure.category==HermesDeliveryCategory.NO_FINAL || retryable(recoveryFailure)
-                val rf=if(exhausted) HermesDeliveryFailure(HermesDeliveryCategory.TIMEOUT) else recoveryFailure
-                chatDeliveryFailed(turn,original,rf)
-            }catch(error:CancellationException){
-                if(current())chatDeliveryFailed(turn,original,HermesDeliveryFailure(HermesDeliveryCategory.CANCELLED))
-                throw error
-            }finally{if(readJob===lookup)readJob=null}
+            if(current())recoverChatReply(submitted,boundOwner,boundClient,original,::current)
         }
         scheduleExpiry()
     }
+
+    private fun recoverSavedChat(){
+        val s=mutable.value
+        val submitted=s.submitted?.takeIf{it.chat&&!it.closed&&it.expiresAt>now()}?:return
+        val boundOwner=owner?:return
+        if(!s.storageReady||s.busy||readJob?.isActive==true||job?.isActive==true||!scope.isActive)return
+        val boundClient=clientId
+        val op=operationGeneration
+        fun current()=op==operationGeneration&&owner==boundOwner&&clientId==boundClient&&mutable.value.submitted?.turnKey==submitted.turnKey
+        val lookup=scope.launch(start=CoroutineStart.LAZY){
+            recoverChatReply(submitted,boundOwner,boundClient,HermesDeliveryFailure(HermesDeliveryCategory.NO_FINAL),::current)
+        }
+        readJob=lookup
+        lookup.start()
+    }
+
+    private suspend fun recoverChatReply(submitted:HermesSubmitted,ownerKey:String,clientKey:String,original:HermesDeliveryFailure,current:()->Boolean){
+        val turn=submitted.turnKey
+        fun retryable(f:HermesDeliveryFailure)=f.category in setOf(HermesDeliveryCategory.NETWORK,HermesDeliveryCategory.TIMEOUT)||f.category==HermesDeliveryCategory.HTTP&&(f.status?:0) in 500..599
+        val canCheck=original.category in setOf(HermesDeliveryCategory.NO_FINAL,HermesDeliveryCategory.DECODE,HermesDeliveryCategory.INVALID)||retryable(original)
+        if(!canCheck||!mutable.value.storageReady||!mutable.value.available||!scope.isActive){
+            chatDeliveryFailed(turn,original)
+            return
+        }
+        // Keep the ordinary progress bubble while checking the original turn.
+        // The composer stays editable and a new turn fences this lookup.
+        mutable.value=mutable.value.copy(busy=false,notice="",timeline=mutable.value.timeline.map{
+            if(it.id=="chat-status:$turn")it.copy(kind="pending",text="Thinking…") else it
+        })
+        // Poll the original turn through the server's execution deadline.
+        val lookup=kotlinx.coroutines.currentCoroutineContext()[Job]
+        readJob=lookup
+        val recoveryStart=System.nanoTime()
+        val windowNs=recoveryTiming.overallWindowMs*1_000_000L
+        fun remainingMs()=((windowNs-(System.nanoTime()-recoveryStart))/1_000_000L).coerceAtLeast(0)
+        var recoveryFailure:HermesDeliveryFailure?=null
+        try{
+            for(delayMs in recoveryTiming.delaysMs){
+                if(!current()||!kotlinx.coroutines.currentCoroutineContext().isActive)return
+                if(submitted.expiresAt<=now()){recoveryFailure=HermesDeliveryFailure(HermesDeliveryCategory.EXPIRED);break}
+                if(!mutable.value.storageReady||!mutable.value.available){recoveryFailure=if(!mutable.value.storageReady)HermesDeliveryFailure(HermesDeliveryCategory.STORAGE) else original;break}
+                val rem=remainingMs()
+                if(rem<=0){recoveryFailure=HermesDeliveryFailure(HermesDeliveryCategory.TIMEOUT);break}
+                if(delayMs>0){
+                    val wait=minOf(delayMs,remainingMs())
+                    if(wait>0) delay(wait)
+                }
+                if(!current()||!kotlinx.coroutines.currentCoroutineContext().isActive)return
+                if(submitted.expiresAt<=now()){recoveryFailure=HermesDeliveryFailure(HermesDeliveryCategory.EXPIRED);break}
+                if(!mutable.value.storageReady||!mutable.value.available){recoveryFailure=if(!mutable.value.storageReady)HermesDeliveryFailure(HermesDeliveryCategory.STORAGE) else original;break}
+                val remForRead=remainingMs()
+                if(remForRead<=0){recoveryFailure=HermesDeliveryFailure(HermesDeliveryCategory.TIMEOUT);break}
+                val readTimeout=minOf(receiptTimeoutMillis,recoveryTiming.perReadTimeoutMs,remForRead)
+                val result:Result<JSONObject> = try{
+                    Result.success(withTimeout(readTimeout){api(JSONObject().put("op","read").put("workspaceOwner",ownerKey).put("clientId",clientKey).put("rootKey",turn))})
+                }catch(e:TimeoutCancellationException){
+                    if(!current()||!kotlinx.coroutines.currentCoroutineContext().isActive) return
+                    Result.failure(e) // per-read timeout: retryable if budget allows
+                }catch(e:CancellationException){
+                    if(!current()) return
+                    throw e
+                }catch(e:Exception){ Result.failure(e) }
+                if(!current()||!kotlinx.coroutines.currentCoroutineContext().isActive)return
+                val response=result.getOrNull()
+                if(response!=null){
+                    if(!mutable.value.available){recoveryFailure=original;break}
+                    val invalid=chatReplyFailure(response,submitted)
+                    if(invalid==null){
+                        if(!mutable.value.storageReady){recoveryFailure=HermesDeliveryFailure(HermesDeliveryCategory.STORAGE);break}
+                        try{
+                            acceptChat(response)
+                            return
+                        }catch(_:Exception){recoveryFailure=HermesDeliveryFailure(HermesDeliveryCategory.STORAGE);break}
+                    }
+                    if(invalid.category==HermesDeliveryCategory.NO_FINAL){
+                        recoveryFailure=invalid // server still working; continue if budget allows
+                        continue
+                    }
+                    recoveryFailure=invalid;break
+                } else {
+                    val err=result.exceptionOrNull() as? Exception ?: Exception("unknown")
+                    val f=hermesDeliveryFailure(err,mutable.value.storageReady)
+                    if(retryable(f)){
+                        recoveryFailure=f
+                        continue
+                    } else {
+                        recoveryFailure=f;break
+                    }
+                }
+            }
+            if(!current())return
+            val exhausted = recoveryFailure==null || recoveryFailure.category==HermesDeliveryCategory.NO_FINAL || retryable(recoveryFailure)
+            val rf=if(exhausted) HermesDeliveryFailure(HermesDeliveryCategory.TIMEOUT) else recoveryFailure
+            chatDeliveryFailed(turn,rf)
+        }catch(error:CancellationException){
+            if(current())chatDeliveryFailed(turn,HermesDeliveryFailure(HermesDeliveryCategory.CANCELLED))
+            throw error
+        }finally{if(readJob===lookup)readJob=null}
+    }
+
     private fun chatReplyFailure(v:JSONObject,sent:HermesSubmitted):HermesDeliveryFailure? {
         if(!validHermesView(v,mutable.value.displaySyncVersion==1)||v.optInt("chatVersion")!=1||v.getString("rootKey")!=sent.rootKey||v.getString("turnKey")!=sent.turnKey||v.has("question"))return HermesDeliveryFailure(HermesDeliveryCategory.INVALID)
         if(minOf(sent.expiresAt,v.getLong("expiresAt"))<=now())return HermesDeliveryFailure(HermesDeliveryCategory.EXPIRED)
@@ -521,35 +542,25 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         if(!v.has("assistantReply")&&!v.has("toolSummary"))return HermesDeliveryFailure(HermesDeliveryCategory.NO_FINAL)
         return null
     }
-    private fun chatDeliveryFailed(turn:String,original:HermesDeliveryFailure,recovery:HermesDeliveryFailure?=null){
+    private fun chatDeliveryFailed(turn:String,failure:HermesDeliveryFailure){
         val s=mutable.value
-        val reason=when{
-            original.category==HermesDeliveryCategory.NO_FINAL && recovery==null ->
-                "Reply delivery [${original.code}]. Server is still working."
-            original.category==HermesDeliveryCategory.NO_FINAL ->
-                "Reply delivery [${original.code}]. Server is still working; saved reply check did not recover a final reply [${recovery!!.code}]."
-            recovery!=null ->
-                "Reply delivery was interrupted [${original.code}]. Saved reply check did not recover a final reply [${recovery.code}]."
-            else -> "Reply delivery was interrupted [${original.code}]."
+        val text=when(failure.category){
+            HermesDeliveryCategory.AUTH->"Sign in again to check this reply."
+            HermesDeliveryCategory.EXPIRED->"This reply is no longer available."
+            else->"I couldn’t confirm the result. You can check this message again."
         }
-        val outcome=when{
-            recovery?.category==HermesDeliveryCategory.TIMEOUT || (recovery==null && original.category==HermesDeliveryCategory.EXPIRED) -> "Outcome unconfirmed"
-            recovery!=null -> "Outcome unconfirmed"
-            else -> "Outcome unconfirmed"
-        }
-        val text="$reason $outcome. Any attempted operations may have effects; nothing was resent. You can continue chatting."
-        mutable.value=s.copy(busy=false,notice=if(s.storageReady)"" else s.notice,timeline=s.timeline.map{if(it.id=="chat-status:$turn")it.copy(kind="unknown",text=text) else it})
-        if(s.storageReady)try{persist()}catch(_:Exception){
-            val blocked=mutable.value
-            mutable.value=blocked.copy(timeline=blocked.timeline.map{if(it.id=="chat-status:$turn")it.copy(kind="unknown",text="$reason $outcome. Reply state could not be saved [STORAGE]. Nothing was resent.") else it})
-        }
+        mutable.value=s.copy(busy=false,notice=if(s.storageReady)"" else s.notice,timeline=s.timeline.map{
+            if(it.id=="chat-status:$turn")it.copy(kind="unknown",text=text) else it
+        })
+        if(s.storageReady)try{persist()}catch(_:Exception){/* The storage alert preserves the durable original request. */}
     }
     private fun acceptChat(v:JSONObject){
         val current=mutable.value;val sent=current.submitted?:return
         require(v.optInt("chatVersion")==1&&v.getString("rootKey")==sent.rootKey&&v.getString("turnKey")==sent.turnKey&&!v.has("question"))
         val text=v.optJSONObject("assistantReply")?.getString("text")?:v.optJSONObject("toolSummary")?.getString("text")?:"No reply text was returned. Nothing was automatically resent."
         val expiry=minOf(sent.expiresAt,v.getLong("expiresAt"))
-        val entry=HermesChatEntry("reply:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant","reply",if(expiry>now())text else "",expiry,settled=true)
+        val noWriteFailure=v.getJSONObject("receipt").let{it.optString("outcome")=="failed"&&it.optJSONArray("targets")?.length()==0}
+        val entry=HermesChatEntry("reply:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant",if(noWriteFailure)"unknown" else "reply",if(expiry>now())text else "",expiry,settled=true)
         val sync=v.optJSONObject("displaySync")?.takeIf{current.displaySyncVersion==1&&validHermesDisplaySync(it)&&expiry>now()}
         val summary=v.optJSONObject("toolSummary")?.getString("text")?.takeIf{it!=text}?.let{HermesChatEntry("tools:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant","reply",if(expiry>now())it else "",expiry,settled=true)}
         val replies=listOfNotNull(entry,summary)

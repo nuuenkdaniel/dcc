@@ -11,16 +11,16 @@ import {COLLECTION,type ServiceOptions} from '../../src/mcp/service-transport.js
 import {IntentPool} from './intent-pool.js'
 import {ServicePool} from './service-pool.js'
 import {CalendarHarness,config} from './calendar-harness.js'
-import {createNonRecurringCalendarWriter} from '../../src/calendar-write.js'
+import {createNonRecurringCalendarWriter,type EventChange} from '../../src/calendar-write.js'
 import {SqlIntentStore} from '../../src/mcp/intent-store.js'
 import {validConversationView} from '../../src/mcp/conversation-wire.js'
 import {createHash} from 'node:crypto'
 import {validManualTask} from '../../src/manual-tasks.js'
 const clientId='11111111-1111-4111-a111-111111111111',origin='http://synthetic.invalid',time=Date.parse('2026-12-31T12:00:00-05:00')
 const result=(v:any)=>v.structuredContent.result
-async function fixture(script:(client:Client,input:TaskBridgeInput)=>Promise<string>,db:ServicePool=new IntentPool(),dependencies:Pick<ServiceOptions,'calendarSnapshot'|'guardedCalendarWriter'>={}){
+async function fixture(script:(client:Client,input:TaskBridgeInput)=>Promise<string>,db:ServicePool=new IntentPool(),dependencies:Pick<ServiceOptions,'calendarSnapshot'|'guardedCalendarWriter'>={},now=()=>time){
   const sessions=new Set<string>();let app:ReturnType<typeof buildApp>,calls=0
-  const actions=new TaskActions({pool:db.pool,actorId:'chat-fixture',now:()=>time,...dependencies,bridge:async input=>{
+  const actions=new TaskActions({pool:db.pool,actorId:'chat-fixture',now,...dependencies,bridge:async input=>{
     calls++
     const client=new Client({name:'synthetic-conversation',version:'1.0.0'})
     const wire:Transport={start:async()=>{},close:async()=>{wire.onclose?.()},send:async message=>{
@@ -35,7 +35,7 @@ async function fixture(script:(client:Client,input:TaskBridgeInput)=>Promise<str
   const post=(body:Record<string,unknown>,workspaceOwner=owner,displaySync=false)=>app.inject({method:'POST',url:CONVERSATION_PATH,headers:{origin,...(displaySync?{'x-dcc-display-sync':'1'}:{})},cookies:{daymark_session:cookie},payload:{...body,workspaceOwner}})
   const start=(key:string,prompt:string,entries:{role:string;text:string;at:number}[]=[])=>({op:'start',clientId,key,prompt,replyVersion:1,chatVersion:1,context:{version:1,entries}})
   const capabilities=()=>app.inject({url:'/api/v1/hermes/action-capabilities',cookies:{daymark_session:cookie}})
-  return {app,db,post,start,capabilities,owner,calls:()=>calls,store:new SqlIntentStore(db.pool,'chat-fixture')}
+  return {app,db,post,start,capabilities,owner,cookie,calls:()=>calls,store:new SqlIntentStore(db.pool,'chat-fixture')}
 }
 test('ordinary chat, natural clarification and topic changes have text without tool transactions',async()=>{
   const h=await fixture(async(client,input)=>{
@@ -312,4 +312,149 @@ test('conversation uses actual assignment and calendar schemas with a strictly i
     const journal=await h.store.read(input.key)
     assert.equal(journal.calls.filter(c=>c.command.tool==='create_calendar_event').length,1)
   }finally{await h.app.close()}
+})
+
+
+test('an interrupted calendar follow-up with no journaled write can safely be restored',async()=>{
+  const h=await fixture(async(_client,input)=>{
+    assert.match(input.prompt,/USER|user/)
+    assert.match(input.prompt,/synthetic planning meeting/)
+    throw Error('Synthetic runtime unavailable before tools')
+  })
+  try{
+    const input=h.start('calendar_followup_interrupted','Tonight for an hour on my work calendar',[
+      {role:'user',text:'Schedule a synthetic planning meeting at 20:30',at:time},
+      {role:'assistant',text:'What date, duration and calendar should I use?',at:time},
+    ])
+    const reply=(await h.post(input)).json()
+    assert.ok(validConversationView(reply))
+    assert.equal(reply.receipt.outcome,'failed')
+    assert.deepEqual(reply.receipt.targets,[])
+    assert.match(reply.assistantReply.text,/before attempting any changes/)
+    assert.deepEqual((await h.store.read(input.key)).calls,[])
+    assert.deepEqual((await h.post({op:'read',clientId,rootKey:input.key})).json(),reply)
+    assert.equal(h.calls(),2)
+  }finally{await h.app.close()}
+})
+
+test('a calendar follow-up quietly retries an early bridge failure using a fresh capability',async()=>{
+  const calendar=new CalendarHarness()
+  calendar.snapshot.calendars[0]!.name='Work'
+  calendar.snapshot.coverageEnd='2027-02-01T00:00:00Z'
+  const tokens:string[]=[]
+  const question='What date, duration and calendar should I use?'
+  const h=await fixture(async(client,input)=>{
+    if(!input.prompt.includes('Tonight for an hour')){
+      assert.equal(result(await client.callTool({name:'list_calendars',arguments:{limit:4}})).state,'ok')
+      return question
+    }
+    tokens.push(input.callbackCapability)
+    assert.match(input.prompt,/Schedule a synthetic planning meeting at 20:30/)
+    assert.match(input.prompt,/Tonight for an hour on my work calendar/)
+    if(tokens.length===1)throw Error('Synthetic transient model failure')
+    const old=await h.app.inject({method:'POST',url:TASK_CALLBACK_PATH,headers:{authorization:'Bearer '+tokens[0]},payload:{jsonrpc:'2.0',id:20,method:'ping'}})
+    assert.equal(old.statusCode,403)
+    const list=result(await client.callTool({name:'list_calendars',arguments:{limit:4}}))
+    assert.equal(list.state,'ok')
+    assert.equal(list.data.items[0].name,'Work')
+    const event=result(await client.callTool({name:'create_calendar_event',arguments:{title:'Synthetic planning meeting',calendarId:list.data.items[0].id,scope:'single',start:'2027-01-01T01:30:00Z',end:'2027-01-01T02:30:00Z',allDay:false}}))
+    assert.equal(event.state,'saved')
+    return 'I saved the planning meeting to your work calendar.'
+  },calendar,{calendarSnapshot:async()=>calendar.snapshot,guardedCalendarWriter:createNonRecurringCalendarWriter(calendar.pool,config,calendar.fetch)})
+  try{
+    const firstPrompt='Schedule a synthetic planning meeting at 20:30'
+    const first=(await h.post(h.start('calendar_opening_retry_01',firstPrompt))).json()
+    assert.equal(first.assistantReply.text,question)
+    assert.equal(first.receipt.outcome,'read-only')
+    const input=h.start('calendar_followup_retry_01','Tonight for an hour on my work calendar',[
+      {role:'user',text:firstPrompt,at:time},
+      {role:'assistant',text:first.assistantReply.text,at:time},
+    ])
+    const reply=(await h.post(input)).json()
+    assert.equal(reply.assistantReply.text,'I saved the planning meeting to your work calendar.')
+    assert.deepEqual((await h.store.read(input.key)).calls.map(call=>call.command.tool),['list_calendars','create_calendar_event'])
+    assert.equal(new Set(tokens).size,2)
+    assert.deepEqual((await h.post({op:'read',clientId,rootKey:input.key})).json(),reply)
+    assert.equal(h.calls(),3)
+    assert.equal(calendar.puts,1)
+  }finally{await h.app.close()}
+})
+
+test('checking an abandoned turn waits for its deadline before fencing the journal',async()=>{
+  let now=time,entered!:()=>void,release!:()=>void
+  const started=new Promise<void>(resolve=>{entered=resolve})
+  const complete=new Promise<void>(resolve=>{release=resolve})
+  const h=await fixture(async()=>{entered();await complete;return 'Late synthetic text.'},new IntentPool(),{},()=>now)
+  const input=h.start('chat_abandoned_read_01','Schedule a synthetic meeting')
+  const read={op:'read',clientId,rootKey:input.key}
+  const sending=h.post(input)
+  try{
+    await started
+    const running=(await h.post(read)).json()
+    assert.equal(running.assistantReply,undefined)
+    assert.equal((await h.store.read(input.key)).phase,'active')
+    now+=126000
+    const ended=(await h.post(read)).json()
+    assert.equal(ended.receipt.outcome,'failed')
+    assert.equal((await h.store.read(input.key)).phase,'uncertain')
+    assert.equal(h.calls(),1)
+  }finally{release();await sending;await h.app.close()}
+})
+
+test('checking an interrupted reply picks up a late calendar receipt without contacting the provider',async()=>{
+  const calendar=new CalendarHarness()
+  calendar.losePutResponse=true
+  const writer=createNonRecurringCalendarWriter(calendar.pool,config,calendar.fetch)
+  let change:EventChange|undefined
+  const h=await fixture(async client=>{
+    const event=result(await client.callTool({name:'create_calendar_event',arguments:{title:'Synthetic delayed meeting',calendarId:'Calendar_A',scope:'single',start:'2026-11-01T12:00:00Z',end:'2026-11-01T13:00:00Z',allDay:false}}))
+    assert.equal(event.state,'uncertain')
+    throw Error('The synthetic first response was lost')
+  },calendar,{calendarSnapshot:async()=>calendar.snapshot,guardedCalendarWriter:{...writer,write:async input=>{change=input;return writer.write(input)}}})
+  try{
+    const input=h.start('calendar_late_receipt_01','Schedule a synthetic meeting')
+    const first=(await h.post(input)).json()
+    assert.equal(first.receipt.targets[0].state,'uncertain')
+    assert.match(first.assistantReply.text,/not confirmed/)
+    assert.ok(change)
+    // The same provider mutation is confirmed by its existing marker later.
+    assert.equal((await writer.write(change)).saved,true)
+    const providerRequests=calendar.fetches.length
+    const read=(await h.post({op:'read',clientId,rootKey:input.key})).json()
+    assert.equal(read.receipt.targets[0].state,'saved')
+    assert.equal(read.receipt.targets[0].verification,'snapshot_pending')
+    assert.match(read.assistantReply.text,/Calendar changes were saved/)
+    assert.equal(calendar.fetches.length,providerRequests)
+    assert.equal(calendar.puts,1)
+    assert.equal(h.calls(),1)
+  }finally{await h.app.close()}
+})
+
+test('disconnecting an accepted chat leaves the original server reply recoverable',{timeout:5000},async()=>{
+  let entered!:()=>void,release!:()=>void
+  const started=new Promise<void>(resolve=>{entered=resolve})
+  const complete=new Promise<void>(resolve=>{release=resolve})
+  const h=await fixture(async()=>{entered();await complete;return 'Recovered the original reply.'})
+  const controller=new AbortController()
+  try{
+    const url=await h.app.listen({host:'127.0.0.1',port:0})
+    const input=h.start('chat_disconnected_delivery','Say hello after I disconnect')
+    const sending=fetch(url+CONVERSATION_PATH,{method:'POST',signal:controller.signal,
+      headers:{origin,cookie:'daymark_session='+h.cookie,'Content-Type':'application/json'},
+      body:JSON.stringify({...input,workspaceOwner:h.owner})}).catch(error=>error as Error)
+    await started
+    controller.abort()
+    assert.equal((await sending as Error).name,'AbortError')
+    const reading={op:'read',clientId,rootKey:input.key}
+    const pending=(await h.post(reading)).json()
+    assert.equal(pending.assistantReply,undefined)
+    release()
+    for(let i=0;i<40;i++){
+      if([...h.db.rows.values()].some(row=>row.kind==='dcc-hermes-conversation-v1'&&row.data.assistantReply?.text==='Recovered the original reply.'))break
+      await new Promise(resolve=>setTimeout(resolve,10))
+    }
+    const recovered=(await h.post(reading)).json()
+    assert.equal(recovered.assistantReply?.text,'Recovered the original reply.')
+    assert.equal(h.calls(),1)
+  }finally{release();await h.app.close()}
 })

@@ -150,7 +150,7 @@ class HermesConversationFirstTest {
         val c=HermesConversationController(scope,{saved},{body->calls+=JSONObject(body.toString());if(fail)throw java.io.IOException("Synthetic transport failure") else reply(body,"A different conversation is welcome.")},{now})
         try{
             c.bind(owner);c.availability(true,1,1,1);c.edit("Synthetic operation request");c.send()
-            assertFalse(c.state.value.busy);assertTrue(c.state.value.timeline.last().text.contains("interrupted"))
+            assertFalse(c.state.value.busy);assertEquals("Thinking…",c.state.value.timeline.last().text)
             assertEquals(listOf("start","read"),calls.map{it.getString("op")})
             c.edit("Synthetic operation request");c.send();assertEquals(2,calls.size)
             c.edit("Different topic");fail=false;c.send();assertEquals(3,calls.size)

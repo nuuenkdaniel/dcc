@@ -54,9 +54,11 @@ export function buildApp(options: { taskActions?:TaskActions; workspaceCalendar?
         const {workspaceOwner:_,...input}=request.body
         if(!validConversationInput(input))return reply.code(400).send({message:'Invalid bounded conversation request.'})
         const abort=new AbortController(),stop=()=>abort.abort()
-        request.raw.once('aborted',stop)
+        // A complete, authenticated chat start owns a bounded server turn. A
+        // dropped response is a delivery problem; read can recover it by key.
+        const detached=input.op==='start'&&input.chatVersion===1
         const onClose=()=>{if(!reply.raw.writableEnded)stop()}
-        reply.raw.once('close',onClose)
+        if(!detached){request.raw.once('aborted',stop);reply.raw.once('close',onClose)}
         try{return await options.taskActions!.converse(input,owner,abort.signal,request.headers['x-dcc-display-sync']==='1')}
         catch(error){
           const conflict=error instanceof Error&&['conversation_conflict','active_conversation','closed_question','intent_conflict','executor_conflict'].includes(error.message)

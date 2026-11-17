@@ -13,7 +13,8 @@ from pathlib import Path
 from runpy import run_path
 valid_reply_completion = run_path(str(Path(__file__).with_name('assistant_reply.py')))['valid_completion']
 
-LOCK = threading.Lock()
+BACKGROUND_LOCK = threading.Lock()
+ACTION_LOCK = threading.Lock()
 TOKEN = Path(os.environ['DAYMARK_CURATOR_TOKEN_FILE']).read_text().strip()
 PROMPT = '''You are Daymark's daily-action curator. Return ONLY a JSON object:
 {"actions":[{"projectId":"exact supplied id","title":"specific achievable next step","notes":"brief rationale and definition of done","minutes":30}],"summary":"brief explanation, including any deadline overload"}.
@@ -99,7 +100,10 @@ class Handler(BaseHTTPRequestHandler):
         if data.get('mode') in ('task-action','product-action') and os.environ.get('DAYMARK_TASK_ACTIONS_ENABLED') != '1':
             self.respond(503, {'error':'Task actions are disabled'})
             return
-        if not LOCK.acquire(blocking=False):
+        # Dedicated action lane, still at most one tool-capable invocation.
+        # Read-only background work uses its own isolated subprocess.
+        lock = ACTION_LOCK if data.get('mode') in ('task-action','product-action') else BACKGROUND_LOCK
+        if not lock.acquire(blocking=False):
             self.respond(429, {'error': 'Curator busy'})
             return
         try:
@@ -152,7 +156,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, subprocess.TimeoutExpired, OSError):
             self.respond(502, {'error': 'Curator failed; previous plan is unchanged'})
         finally:
-            LOCK.release()
+            lock.release()
 
 if __name__ == '__main__':
     if len(TOKEN) < 32:
