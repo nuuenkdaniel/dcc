@@ -27,3 +27,24 @@ test('curator default behavior remains JSON/no redirects; explicit deadline and 
     await assert.rejects(callCurator({},{timeoutMs:150001}),/Invalid curator timeout/)
   }finally{globalThis.fetch=fetcher;process.env=environment}
 })
+
+test('chat retries only a bounded explicit pre-launch busy rejection',async()=>{
+  const environment=process.env,fetcher=globalThis.fetch
+  process.env={HERMES_CURATOR_URL:'https://synthetic.invalid/curate',HERMES_CURATOR_TOKEN:'synthetic-only'}
+  const input={mode:'product-action',chatVersion:1}
+  const bodies:unknown[]=[]
+  try{
+    globalThis.fetch=async(_url,options)=>{
+      bodies.push(JSON.parse(String(options?.body)))
+      return bodies.length===1?Response.json({error:'Curator busy'},{status:429}):Response.json({status:'finished'})
+    }
+    assert.deepEqual(await callCurator(input,{waitForActionSlot:true,timeoutMs:2000}),{status:'finished'})
+    assert.deepEqual(bodies,[input,input])
+    for(const [status,error] of [[502,'Curator busy'],[429,'Unknown rate limit']] as const){
+      let attempts=0
+      globalThis.fetch=async()=>{attempts++;return Response.json({error},{status})}
+      await assert.rejects(callCurator(input,{waitForActionSlot:true}),/unavailable/)
+      assert.equal(attempts,1)
+    }
+  }finally{globalThis.fetch=fetcher;process.env=environment}
+})

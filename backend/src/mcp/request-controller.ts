@@ -48,6 +48,16 @@ export function requestTools(record:{allowedTools:readonly ToolName[]}):Tool[]{
     return t
   })
 }
+// Only an interrupted journal may recover frozen writes from existing receipts.
+export async function reconcileInterruptedIntent(record:IntentRecord,store:SqlIntentStore,transport:ServiceTransport):Promise<IntentRecord>{
+  if(record.phase!=='uncertain')return record
+  for(const call of record.calls){
+    if(!TOOLS[call.command.tool].write||call.result&&call.result.state!=='uncertain')continue
+    const result=await transport.reconcile(call.command,requestContext(record))
+    if(result&&result.state!=='uncertain')record=(await store.recovered(record.key,call.id,result)).record
+  }
+  return record
+}
 export class RequestController {
   constructor(private readonly options:{store:SqlIntentStore;transport:ServiceTransport;runner?:ModelRunner;nativeRunner?:NativeMcpRunner;now?:()=>number}){
     if(options.store.actorScope!==options.transport.actorScope)throw new IntentStoreError('actor_mismatch')
@@ -55,13 +65,8 @@ export class RequestController {
   }
   private async recover(key:string):Promise<IntentSummary>{
     const {store,transport}=this.options
-    let record=(await store.interrupt(key)).record
-    if(record.phase==='uncertain')for(const call of record.calls){
-      if(!TOOLS[call.command.tool].write||call.result&&call.result.state!=='uncertain')continue
-      const result=await transport.reconcile(call.command,requestContext(record))
-      if(result)record=(await store.recovered(key,call.id,result)).record
-      // Missing receipt is NOT evidence that the operation never started.
-    }
+    const {record}=await store.interrupt(key)
+    await reconcileInterruptedIntent(record,store,transport)
     return summarizeIntent(await store.read(key))
   }
   async run(input:{key:string;prompt:string;tabId?:string;guard?:ConversationGuard;replyVersion?:1},policy:IntentPolicy,signal?:AbortSignal):Promise<IntentSummary>{

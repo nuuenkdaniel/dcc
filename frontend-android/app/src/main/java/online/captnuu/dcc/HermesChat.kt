@@ -236,14 +236,12 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
                         HermesChatActionsTrigger(openMenu,{menuAnchor=it})
                         IconButton(onClick=closeDialog,modifier=Modifier.size(48.dp).testTag("hermes-chat-close").semantics{contentDescription="Close chat"}){Text("×",fontSize=28.sp)}
                     }
-                    if(state.historyPruned)Text("Older settled messages were removed to keep local chat within 40 messages / 64 KiB.",Modifier.padding(horizontal=16.dp),style=MaterialTheme.typography.bodySmall)
                     }
                     LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("hermes-chat-history"),state=list,contentPadding=PaddingValues(if(shortViewport)4.dp else 12.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
                         if(shortViewport)item(key="chat-heading"){Text("Hermes",style=MaterialTheme.typography.titleLarge)}
-                        if(entries.isEmpty())item{Text("Opening chat sends no message. Type a request and press Send.",style=MaterialTheme.typography.bodyMedium)}
+                        if(entries.isEmpty())item{Text("What can I help with?",style=MaterialTheme.typography.titleMedium)}
                         items(entries,key={it.id}){entry->HermesChatBubble(entry,state)}
                         if(shortViewport){
-                            if(state.historyPruned)item(key="chat-pruned"){Text("Older settled messages were removed to keep local chat within 40 messages / 64 KiB.",style=MaterialTheme.typography.bodySmall)}
                             if(state.notice.isNotBlank()&&state.notice!=state.receiptCheck.message&&entries.lastOrNull()?.text!=state.notice)item(key="chat-status"){Text(state.notice,Modifier.testTag("hermes-chat-status"),style=MaterialTheme.typography.bodySmall)}
                         }
                     }
@@ -253,6 +251,18 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
                     // A status lookup is acknowledged even when the receipt did
                     // not change. Keep this compact feedback above the editor,
                     // not offscreen inside an old chronological message.
+                    val recent=state.submitted?.takeIf{it.chat&&it.text.isNotBlank()}
+                    val recentReceipt=remember(state.receipt,recent?.turnKey){
+                        runCatching{state.receipt?.let(::JSONObject)?.takeIf{it.optString("key")==recent?.turnKey}}.getOrNull()
+                    }
+                    if(recent!=null&&state.storageReady&&!state.busy&&!state.receiptChecking&&entries.none{it.turnKey==recent.turnKey&&it.kind=="pending"}){
+                        when{
+                            recentReceipt?.optString("outcome")=="failed"&&recentReceipt.optJSONArray("targets")?.length()==0&&state.draft.isBlank()->
+                                TextButton(onClick={onEdit(recent.text)},modifier=Modifier.padding(horizontal=8.dp)){Text("Restore message")}
+                            !recent.closed||recentReceipt?.optString("outcome") in setOf("partial","uncertain")->
+                                TextButton(onClick=onRead,enabled=state.available,modifier=Modifier.padding(horizontal=8.dp)){Text("Check reply")}
+                        }
+                    }
                     if(state.receiptCheck!=HermesReceiptCheck.IDLE)Text(state.receiptCheck.message,Modifier.fillMaxWidth().padding(horizontal=8.dp).testTag("hermes-receipt-feedback"),style=MaterialTheme.typography.bodySmall,maxLines=if(shortViewport)1 else 2,overflow=TextOverflow.Ellipsis)
                     Row(Modifier.fillMaxWidth().padding(horizontal=if(shortViewport)4.dp else 8.dp,vertical=if(shortViewport)0.dp else 8.dp).testTag("hermes-chat-composer"),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(4.dp)){
                         val editorModifier=Modifier.weight(1f).heightIn(min=48.dp).focusRequester(focus).onGloballyPositioned{

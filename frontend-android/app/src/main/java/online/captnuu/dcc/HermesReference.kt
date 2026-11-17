@@ -25,9 +25,10 @@ private fun referenceText(text:String,max:Int):String {
 internal fun hermesReference(s:HermesState,now:Long,current:String):String {
     val selected=mutableListOf<JSONObject>();var chars=0
     val budget=(2000-current.length).coerceIn(0,1200)
+    val unresolved=s.timeline.filter{it.kind=="unknown"||it.kind=="pending"}.map{it.turnKey}.toSet()
     for(entry in s.timeline.asReversed()){
         if(selected.size==6)break
-        if(entry.id.startsWith("sync:")||!entry.settled||entry.kind=="pending"||entry.text.isEmpty()||entry.expiresAt<=now||entry.expiresAt>now+HERMES_TTL_MS)continue
+        if(entry.turnKey in unresolved||entry.id.startsWith("sync:")||!entry.settled||entry.kind=="pending"||entry.text.isEmpty()||entry.expiresAt<=now||entry.expiresAt>now+HERMES_TTL_MS)continue
         val titles=entry.receipt?.let{JSONObject(it).getJSONArray("targets").objects().map{t->t.getString("title")}.joinToString("; ")}.orEmpty()
         val text=referenceText(entry.text+if(titles.isEmpty())"" else " · $titles",minOf(320,budget-chars))
         if(text.isEmpty())continue

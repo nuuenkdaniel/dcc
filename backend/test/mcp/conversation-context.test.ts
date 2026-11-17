@@ -16,7 +16,7 @@ for(const [name,instant,today,tomorrow] of [
     const text=chatExecutionContext(Date.parse(instant),{version:1,entries:[]})
     const basis=text.match(/Server date basis: (\{[^\n]+\})\./)
     assert.ok(basis,'Chat must provide its date basis')
-    assert.deepEqual(JSON.parse(basis[1]!),{timezone:'America/New_York',today,tomorrow})
+    assert.deepEqual(JSON.parse(basis[1]!),{timezone:'America/New_York',today,tomorrow,localTime:`${instant.slice(11,16)} GMT${instant.slice(-6)}`})
   })
 }
 test('reference bounds, age and fake tool instructions never become authority',()=>{

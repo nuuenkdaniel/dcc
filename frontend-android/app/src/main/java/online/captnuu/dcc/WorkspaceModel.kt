@@ -108,6 +108,7 @@ class WorkspaceModel internal constructor(application:Application,private val de
     private fun updateConnectivity(){
         val online=connected()&&mutable.value.signedIn
         mutable.value=mutable.value.copy(online=online,pending=if(online)writes.values.filterNot{it.optBoolean("unconfirmed")}.map(JSONObject::toString) else emptyList())
+        if(!online)hermes.availability(false)
     }
     private val cache=stored("workspace.enc")
     private val sessions=PersistentSessionJar(stored("session.enc"),ORIGIN.toHttpUrl())

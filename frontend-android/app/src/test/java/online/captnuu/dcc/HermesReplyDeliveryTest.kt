@@ -43,13 +43,13 @@ class HermesReplyDeliveryTest {
         assertEquals("HTTP",hermesDeliveryFailure(HermesHttpFailure(status=999)).code)
     }
 
-    @Test fun eligibleOriginalFailuresRecoverOnceAndRetainTheirOwnCategory(){
-        for((error,code) in listOf(
-            HermesHttpFailure(status=503) to "HTTP 503",
-            java.net.SocketTimeoutException("private detail") to "TIMEOUT",
-            java.io.IOException("private detail") to "NETWORK",
-            org.json.JSONException("private detail") to "DECODE",
-            IllegalArgumentException("private detail") to "INVALID"
+    @Test fun eligibleOriginalFailuresRecoverQuietly(){
+        for(error in listOf(
+            HermesHttpFailure(status=503),
+            java.net.SocketTimeoutException("private detail"),
+            java.io.IOException("private detail"),
+            org.json.JSONException("private detail"),
+            IllegalArgumentException("private detail")
         )){
             val scope=CoroutineScope(Dispatchers.Unconfined);val calls=mutableListOf<String>();var start:JSONObject?=null
             val c=HermesConversationController(scope,{Memory()},{body->
@@ -61,7 +61,7 @@ class HermesReplyDeliveryTest {
                 begin(c)
                 assertEquals(listOf("start","read"),calls)
                 assertEquals("Stored synthetic reply",c.state.value.timeline.last().text)
-                assertTrue(c.state.value.notice.contains("[$code]"));assertFalse(c.state.value.notice.contains("private detail"))
+                assertEquals("",c.state.value.notice)
             }finally{scope.cancel()}
         }
     }
@@ -73,10 +73,30 @@ class HermesReplyDeliveryTest {
             try{
                 begin(c);assertEquals(listOf("start"),calls);assertFalse(c.state.value.busy)
                 val text=c.state.value.timeline.last().text
-                assertTrue(text.contains(if(error is HermesHttpFailure)"[AUTH" else "[CANCELLED]"))
+                assertTrue(text.startsWith(if(error is HermesHttpFailure)"Sign in again" else "I couldn’t confirm"))
                 assertFalse(text.contains("private detail"));assertNotNull(c.state.value.attemptKey)
             }finally{scope.cancel()}
         }
+    }
+
+    @Test fun aPendingReplyIsRecoveredQuietlyFromSavedChatAfterRestart(){
+        val scope=CoroutineScope(Dispatchers.Unconfined);val saved=Memory();val calls=mutableListOf<JSONObject>()
+        val first=HermesConversationController(scope,{saved},{body->calls+=body;awaitCancellation()},{now})
+        val reopened=HermesConversationController(scope,{saved},{body->calls+=body;finalReply(calls.first())},{now})
+        try{
+            begin(first)
+            first.edit("Keep my next draft")
+            first.unbind()
+            reopened.bind(owner)
+            assertEquals(1,calls.size)
+            reopened.availability(true,1,1,1)
+            assertEquals(listOf("start","read"),calls.map{it.getString("op")})
+            assertEquals(calls[0].getString("key"),calls[1].getString("rootKey"))
+            assertEquals(calls[0].getString("clientId"),calls[1].getString("clientId"))
+            assertEquals("Stored synthetic reply",reopened.state.value.timeline.last().text)
+            assertEquals("Keep my next draft",reopened.state.value.draft)
+            assertEquals("",reopened.state.value.notice)
+        }finally{scope.cancel()}
     }
 
     @Test fun rejectedRecoveryNeverPublishesFinalTextOrLoops(){
@@ -102,9 +122,8 @@ class HermesReplyDeliveryTest {
                 val expectedCalls=if(kind=="running"||kind=="http") listOf("start","read","read","read","read") else listOf("start","read")
                 assertEquals(expectedCalls,calls);assertFalse(c.state.value.busy)
                 assertTrue(c.state.value.timeline.none{it.kind=="reply"});assertNotNull(c.state.value.attemptKey)
-                val recoveryCode=when(kind){"running"->"TIMEOUT";"expired"->"EXPIRED";"decode"->"DECODE";"http"->"TIMEOUT";else->"INVALID"}
                 val text=c.state.value.timeline.last().text
-                assertTrue(text.contains("[NETWORK]"));assertTrue(text.contains("[$recoveryCode]"));assertFalse(text.contains("private"))
+                assertTrue(text.startsWith(if(kind=="expired")"This reply is no longer available" else "I couldn’t confirm"));assertFalse(text.contains("private"))
                 val reopened=HermesConversationController(scope,{saved},{error("No replay")},{now});reopened.bind(owner)
                 assertEquals(expectedCalls,calls)
                 c.edit("A genuinely new topic");assertEquals("A genuinely new topic",c.state.value.draft)
@@ -118,7 +137,7 @@ class HermesReplyDeliveryTest {
         try{
             begin(c);assertEquals(listOf("start"),calls);assertFalse(c.state.value.storageReady)
             assertNotNull(c.state.value.attemptKey);assertFalse(c.state.value.submitted!!.closed)
-            assertTrue(c.state.value.timeline.last().text.contains("[STORAGE]"))
+            assertTrue(c.state.value.notice.contains("Saved chat could not be written."))
             assertTrue(c.state.value.timeline.none{it.kind=="reply"})
             assertTrue(JSONObject(saved.raw!!).has("attemptKey"))
         }finally{scope.cancel()}
@@ -162,7 +181,7 @@ class HermesReplyDeliveryTest {
             assertEquals(4,readEntered.get())
             assertEquals(4,cancels.get())
             assertFalse(c.state.value.busy)
-            assertTrue(c.state.value.timeline.last().text.contains("[TIMEOUT]"))
+            assertTrue(c.state.value.timeline.last().text.startsWith("I couldn’t confirm"))
         }finally{scope.cancel()}
     }
 
@@ -239,9 +258,8 @@ class HermesReplyDeliveryTest {
             assertNotNull(c.state.value.attemptKey)
             assertFalse(c.state.value.submitted!!.closed)
             assertTrue(c.state.value.timeline.none{it.kind=="reply"})
-            val text=c.state.value.timeline.last().text
-            assertTrue(text.contains("[NETWORK]"))
-            assertTrue(text.contains("[STORAGE]"))
+            assertTrue(c.state.value.timeline.last().text.startsWith("I couldn’t confirm"))
+            assertTrue(c.state.value.notice.contains("Saved chat could not be written."))
             assertTrue(JSONObject(saved.raw!!).has("attemptKey"))
         }finally{scope.cancel()}
     }
@@ -271,7 +289,7 @@ class HermesReplyDeliveryTest {
             assertNotNull(c.state.value.receipt)
             val r=JSONObject(c.state.value.receipt!!)
             assertEquals("complete",r.getString("outcome"));assertEquals(3,r.getInt("verified"));assertEquals(3,r.getJSONArray("targets").length())
-            assertTrue(c.state.value.notice.contains("recovered",ignoreCase=true))
+            assertEquals("",c.state.value.notice)
             assertFalse(c.state.value.timeline.any{it.text.contains("private")})
         }finally{scope.cancel()}
     }
@@ -303,7 +321,7 @@ class HermesReplyDeliveryTest {
             assertEquals(listOf("start","read","read","read","read"),calls)
             assertFalse(c.state.value.busy)
             val text=c.state.value.timeline.last().text
-            assertTrue(text.contains("[NETWORK]"));assertTrue(text.contains("Outcome unconfirmed",ignoreCase=true)||text.contains("unconfirmed",ignoreCase=true))
+            assertTrue(text.startsWith("I couldn’t confirm"))
             assertNotNull(c.state.value.attemptKey)
             c.edit("A genuinely different message");assertEquals("A genuinely different message",c.state.value.draft)
             assertFalse(c.state.value.notice.contains("private detail"))
@@ -329,5 +347,45 @@ class HermesReplyDeliveryTest {
             assertTrue(c.state.value.timeline.none{it.id=="reply:${first!!.getString("key")}"})
             assertEquals(listOf("start","read","start"),calls)
         }finally{gate.complete(Unit);scope.cancel()}
+    }
+    @Test fun aRunningReceiptStaysOpenAndAProvenNoWriteFailureCanBeSentManually(){
+        val scope=CoroutineScope(Dispatchers.Unconfined)
+        val calls=mutableListOf<JSONObject>()
+        lateinit var start:JSONObject
+        val failure="Hermes stopped before attempting any changes."
+        val c=HermesConversationController(scope,{Memory()},{body->
+            calls+=body
+            when(calls.size){
+                1->{
+                    start=body
+                    finalReply(start).apply{
+                        getJSONObject("receipt").put("outcome","uncertain")
+                        getJSONObject("assistantReply").put("text","The reply was interrupted.")
+                    }
+                }
+                2->finalReply(start).apply{
+                    remove("assistantReply")
+                    getJSONObject("receipt").put("outcome","uncertain")
+                }
+                3->finalReply(start).apply{
+                    getJSONObject("receipt").put("outcome","failed")
+                    getJSONObject("assistantReply").put("text",failure)
+                }
+                else->finalReply(body)
+            }
+        },{now})
+        try{
+            begin(c)
+            c.readReceipt()
+            assertEquals(HermesReceiptCheck.UNCONFIRMED,c.state.value.receiptCheck)
+            assertEquals("The reply was interrupted.",c.state.value.timeline.last().text)
+            c.readReceipt()
+            assertEquals(failure,c.state.value.timeline.last().text)
+            assertEquals(listOf("start","read","read"),calls.map{it.getString("op")})
+            c.edit("Synthetic question")
+            c.send()
+            assertEquals("start",calls.last().getString("op"))
+            assertNotEquals(start.getString("key"),calls.last().getString("key"))
+        }finally{scope.cancel()}
     }
 }

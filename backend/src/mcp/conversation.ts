@@ -7,9 +7,10 @@ import {CONVERSATION_LIMITS,conversationTextFits,interpretTasks,nyDate,type Chec
 import {validActionReceipt,type ActionReceipt} from './action-receipt.js'
 import {validGuard} from './conversation-validation.js'
 import {SqlIntentStore,IntentStoreError} from './intent-store.js'
-import {type IntentRecord,type ConversationGuard} from './request-intent.js'
+import {requestLimits,type IntentRecord,type ConversationGuard} from './request-intent.js'
 import {type ServiceTransport,type DisplaySync,canonicalJson} from './service-transport.js'
 import {validAssistantReply,type AssistantReply} from './assistant-reply.js'
+import {reconcileInterruptedIntent} from './request-controller.js'
 
 export const CONVERSATION_PATH='/api/v1/hermes/conversation'
 const KIND='dcc-hermes-conversation-v1',SLOT='dcc-hermes-client-v1'
@@ -38,7 +39,7 @@ export function validConversationInput(v:unknown):v is ConversationInput{
   return (v.op==='read'||v.op==='cancel')&&exact(['op','clientId','rootKey'])&&key(v.rootKey)
 }
 function blank(key:string,line:string,outcome:ActionReceipt['outcome']='uncertain'):ActionReceipt{return {version:1,key,outcome,line,verified:0,expected:null,targets:[]}}
-export function replyOf(p:Pending):ConversationReply{return {version:1,rootKey:p.rootKey,turnKey:p.turnKey,expiresAt:p.expiresAt,questions:p.questions,...(p.original?{original:p.original}:{}),...(p.question?{question:p.question}:{}),receipt:p.receipt,...(p.contextual?{continuable:p.continuable===true}:{}),...(p.replyVersion===1&&p.assistantReply?{assistantReply:p.assistantReply}:{}),...(p.replyVersion===1&&p.replyUnavailable?{replyUnavailable:true as const}:{}),...(p.chatVersion===1?{chatVersion:1 as const,...(p.toolSummary?{toolSummary:p.toolSummary}:{})}:{})}}
+export function replyOf(p:Pending):ConversationReply{return {version:1,rootKey:p.rootKey,turnKey:p.turnKey,expiresAt:p.expiresAt,questions:p.questions,...(p.original?{original:p.original}:{}),...(p.question?{question:p.question}:{}),receipt:p.receipt,...(p.contextual?{continuable:p.continuable===true}:{}),...(p.replyVersion===1&&p.assistantReply?{assistantReply:p.assistantReply}:p.chatVersion===1&&p.status==='closed'&&p.receipt.outcome==='failed'&&!p.replyUnavailable?{assistantReply:{version:1 as const,text:p.receipt.line}}:{}),...(p.replyVersion===1&&p.replyUnavailable?{replyUnavailable:true as const}:{}),...(p.chatVersion===1?{chatVersion:1 as const,...(p.toolSummary?{toolSummary:p.toolSummary}:{})}:{})}}
 function discardText(p:Pending,keepReply=false){delete p.original;delete p.prompt;delete p.guard;delete p.question;delete p.context;if(!keepReply){delete p.assistantReply;delete p.replyUnavailable;delete p.toolSummary}p.answers=[];p.status='closed'}
 const startFingerprint=(input:Extract<ConversationInput,{op:'start'}>)=>hash(input.chatVersion===1?canonicalJson([input.prompt,input.context??null,1,'chat-v1']):input.replyVersion===1?canonicalJson([input.prompt,input.context??null,1]):input.context===undefined?input.prompt:canonicalJson([input.prompt,input.context]))
 function writesKnown(record:IntentRecord,receipt:ActionReceipt){
@@ -64,6 +65,11 @@ function candidateQuestion(record:IntentRecord):Clarification {
 }
 export async function projectConversationReceipt(record:IntentRecord,transport:ServiceTransport,replyEnabled=false):Promise<ActionReceipt>{
   const writes=record.calls.filter(c=>TOOLS[c.command.tool].write)
+  // An interrupted journal is fenced against new reservations. With no
+  // reserved writes, that journal can rule out changes from this exact turn.
+  if(record.guard?.chatVersion===1&&record.phase==='uncertain'&&writes.length===0){
+    return blank(record.key,'Hermes stopped before attempting any changes. You can send your message again.','failed')
+  }
   const targets=await Promise.all(writes.map((c,i)=>transport.inspect(c.command,c.result??{state:'uncertain',operationKey:String(c.command.args.operationKey)},!writes.slice(i+1).some(next=>(next.command.args.id??next.command.args.eventId)===(c.command.args.id??c.command.args.eventId)))))
   const checklist=record.guard?.checklist,expected=checklist?.tasks.length??null
   const verified=new Set(targets.filter(t=>t.verification==='verified'&&t.state==='applied').map(t=>t.kind+'\0'+t.id)).size
@@ -71,7 +77,8 @@ export async function projectConversationReceipt(record:IntentRecord,transport:S
   const complete=record.phase==='completed'&&expected!==null&&matched===expected&&writes.length===expected&&targets.every(t=>t.verification==='verified'&&t.state==='applied')
   const uncertain=record.phase!=='completed'||targets.some(t=>t.state==='uncertain'||t.verification!=='verified'&&t.state==='applied'||t.verification==='snapshot_pending')
   const noAction=replyEnabled&&record.phase==='completed'&&record.calls.length===0
-  const readOnly=noAction||(record.guard?.readOnly||record.guard?.contextual)&&record.phase==='completed'&&!writes.length&&record.calls.some(c=>c.command.tool!=='request_clarification'&&c.result?.state==='ok')
+  const chatReadOnly=record.guard?.chatVersion===1&&record.phase==='completed'&&writes.length===0
+  const readOnly=noAction||chatReadOnly||(record.guard?.readOnly||record.guard?.contextual)&&record.phase==='completed'&&!writes.length&&record.calls.some(c=>c.command.tool!=='request_clarification'&&c.result?.state==='ok')
   if(readOnly){
     for(const call of record.calls){
       if(call.result?.state!=='ok'||!plainRecord(call.result.data)||!Array.isArray(call.result.data.items))continue
@@ -85,7 +92,7 @@ export async function projectConversationReceipt(record:IntentRecord,transport:S
   }
   const outcome:ActionReceipt['outcome']=complete?'complete':uncertain?'uncertain':readOnly?'read-only':verified?'partial':writes.length||expected!==null?'failed':'uncertain'
   const pending=targets.some(t=>t.verification==='snapshot_pending')?' Calendar saved; snapshot confirmation pending.':''
-  const readLine=noAction?'No actions performed.':record.guard?.contextual
+  const readLine=noAction?'No actions performed.':chatReadOnly?'No changes made.':record.guard?.contextual
     ?targets.length?`Showing ${targets.length} returned record${targets.length===1?'':'s'} (limit 4). No changes made.`:'Read finished. No changes made.'
     :'Read-only effects checked; no writes. Full requested scope is not certified. View shows at most four record titles.'
   const line=complete?`Added ${verified}/${expected} tasks · ${checklist!.tasks[0]!.date}`:expected!==null?`${outcome==='uncertain'?'Uncertain':'Incomplete'}: ${matched}/${expected} tasks verified. Edit or clear; do not repeat saved work.`:readOnly?readLine:verified?record.guard?.contextual&&record.phase==='completed'&&targets.every(t=>t.kind==='task'&&t.action==='updated'&&t.state==='applied'&&t.verification==='verified')?`Updated ${verified} task${verified===1?'':'s'}.`:`${verified} record${verified===1?'':'s'} verified; full requested scope is unresolved.`:writes.length?'No confirmed completion. Review details before repeating.':'No mutation effects verified; requested scope remains unresolved.'
@@ -115,7 +122,15 @@ export class Conversations {
     const time=(this.options.now??Date.now)()
     if(p.chatVersion===1){
       p.guard={version:1,binding:hash(canonicalJson([p.owner,p.clientId,p.rootKey])),chatVersion:1}
-      p.prompt=chatExecutionContext(time,p.context??{version:1,entries:[]})+p.original!
+      const reference=p.context??{version:1,entries:[]}
+      let entries=reference.entries
+      p.prompt=chatExecutionContext(time,reference)+p.original!
+      // Old context yields before the current message. Keep the newest
+      // exchange together when trimming the host execution envelope.
+      while(entries.length&&!conversationTextFits([p.prompt])){
+        entries=entries.slice(entries[0]?.role==='user'&&entries[1]?.role==='assistant'?2:1)
+        p.prompt=chatExecutionContext(time,{version:1,entries})+p.original!
+      }
       if(!conversationTextFits([p.prompt])){p.receipt=blank(p.turnKey,'Message and history exceed the request limit. Shorten the message.','failed');discardText(p);return false}
       p.status='running';p.receipt=blank(p.turnKey,'Reply pending. Nothing is automatically resent.')
       return true
@@ -213,6 +228,14 @@ export class Conversations {
       let record:IntentRecord|undefined
       try{record=await store.read(pending.turnKey)}catch{/* A lost admission ACK is not permission to retry. */}
       if(record?.guard?.binding!==hash(canonicalJson([owner,input.clientId,rootKey])))record=undefined
+      if(input.op==='read'&&pending.chatVersion===1&&record){
+        const beyondDeadline=now>=(record.startedAt??pending.createdAt)+requestLimits(record).timeoutMs+5000
+        // The live executor may still be publishing its text after finishing
+        // the tool journal. An abandoned journal can be fenced past its lease.
+        if(pending.status==='running'&&record.phase==='completed'&&!beyondDeadline)return replyOf(pending)
+        if(beyondDeadline&&(record.phase==='active'||record.phase==='admitted'))record=(await store.fence(record.key,now)).record
+        record=await reconcileInterruptedIntent(record,store,transport)
+      }
       const receipt=record?await projectConversationReceipt(record,transport,pending.replyVersion===1):blank(pending.turnKey,'Execution not confirmed. Edit or clear; no automatic resend.')
       const questions=record?.calls.filter(call=>call.command.tool==='request_clarification'&&call.result?.state==='ok').map(call=>(call.result as {state:'ok';data:unknown}).data).filter(validClarification)??[]
       const noWrites=record?.phase==='completed'&&record.calls.every(call=>!TOOLS[call.command.tool].write)
@@ -224,7 +247,11 @@ export class Conversations {
         await finish.query('BEGIN');await finish.query('SELECT pg_advisory_xact_lock(hashtextextended($1,817350))',[slotId])
         const row=(await finish.query<Row>('SELECT id,kind,version,data FROM planner_entities WHERE id=$1 FOR UPDATE',[id])).rows[0]
         const current=this.decode(row,owner,input.clientId,rootKey)
-        if((current.status==='running'||input.op==='read'&&current.status==='closed')&&current.turnKey===pending.turnKey){
+        const terminal=record?.phase==='completed'||record?.phase==='uncertain'
+        // A read that observed an active turn cannot replace a receipt published
+        // by a newer completion while the read was gathering tool evidence.
+        if((current.status==='running'&&(execute||terminal)||
+          input.op==='read'&&pending.status==='closed'&&current.status==='closed'&&terminal)&&current.turnKey===pending.turnKey){
           current.receipt=receipt
           if(current.contextual)current.continuable=record?.phase==='completed'&&writesKnown(record,receipt)
           if(current.chatVersion!==1&&current.status==='running'&&noWrites&&questions.length===1&&current.questions<3&&current.expiresAt>now&&current.original){
@@ -234,6 +261,7 @@ export class Conversations {
           }else if(execute||record?.phase==='completed'||record?.phase==='uncertain'){discardText(current,true)}
           if(current.chatVersion===1&&current.status==='closed'&&current.expiresAt>(this.options.now??Date.now)()){
             delete current.replyUnavailable
+            const usedToolSummary=record?.phase==='uncertain'&&current.assistantReply?.text===current.toolSummary?.text
             const writes=record?.calls.filter(call=>TOOLS[call.command.tool].write)??[]
             if(writes.length){
               const applied=writes.filter(call=>call.result?.state==='applied')
@@ -253,7 +281,8 @@ export class Conversations {
               current.toolSummary={version:1,text:lines.join(' ')||'No changes were confirmed.'}
             }
             if(execute&&record?.phase==='completed'&&plainRecord(runResult)&&validAssistantReply(runResult.assistantReply))current.assistantReply=runResult.assistantReply
-            else if(!current.assistantReply)current.assistantReply=current.toolSummary??{version:1,text:record?.phase==='completed'?'No reply text was returned. Nothing was automatically resent.':'The reply was interrupted. Nothing was automatically resent; you can continue chatting.'}
+            else if(receipt.outcome==='failed'&&record?.phase==='uncertain'&&!writes.length)current.assistantReply={version:1,text:receipt.line}
+            else if(!current.assistantReply||usedToolSummary)current.assistantReply={version:1,text:current.toolSummary?.text??(record?.phase==='completed'?'I couldn’t finish my reply. Could you ask again?':'I couldn’t confirm the result. You can check this message again.')}
           }else if(execute&&current.replyVersion===1&&current.status==='closed'&&current.expiresAt>(this.options.now??Date.now)()&&plainRecord(runResult)&&runResult.phase==='completed'&&record?.phase==='completed'){
             const currentSlot=(await finish.query<Row>('SELECT id,kind,version,data FROM planner_entities WHERE id=$1 FOR UPDATE',[slotId])).rows[0]
             if(currentSlot?.kind===SLOT&&plainRecord(currentSlot.data)&&currentSlot.data.rootKey===rootKey){

@@ -1,6 +1,8 @@
 import {useServerTasks} from './useServerTasks'
 import {useWorkspaceSession} from './workspaceSession'
 import {TellHermes} from './TellHermes'
+import {HermesChat,type HermesScope} from './HermesChat'
+import {useHermesChatAccess} from './useHermesChatAccess'
 import {useMail} from './useMail'
 import {EmailSummary} from './EmailSummary'
 import {usePlanner,studyCardCount,visibleActionGroups,visiblePlanGroups} from './usePlanner'
@@ -21,10 +23,11 @@ import {AccessibleDialog} from './AccessibleDialog'
 import {equalSharedTask,validSharedTask} from './sharedTasks'
 
 type Task = { id: string; title: string; date: string; notes: string; completed: boolean; sample?: boolean; important?: boolean; deleted?: boolean }
-type PreviewView = 'home' | 'inbox' | 'pomodoro' | 'login' | 'settings' | 'projects' | 'prices'
+type PreviewView = 'home' | 'today' | 'inbox' | 'pomodoro' | 'login' | 'settings' | 'projects' | 'prices'
 
 const VIEW_PATHS: Record<PreviewView, string> = {
   home: '/',
+  today: '/today',
   projects: '/projects',
   prices: '/prices',
   inbox: '/inbox',
@@ -264,8 +267,11 @@ export function PomodoroView() {
 
 export function Workspace() {
   const [previewView, setPreviewView] = useState<PreviewView>(() => viewFromPath(window.location.pathname))
-  const offlineSession=useWorkspaceSession()?.offline===true
-  const mail=useMail(!offlineSession&&(previewView==='home'||previewView==='inbox'))
+  const session=useWorkspaceSession()
+  const offlineSession=session?.offline===true
+  const chat=useHermesChatAccess(offlineSession?null:session?.owner??null)
+  const chatVisible=!!chat&&previewView==='home'
+  const mail=useMail(!offlineSession&&(previewView==='today'||previewView==='home'&&!chat||previewView==='inbox'))
   const preferencesState = usePreferences()
   const planner = usePlanner()
   const serverTasks=useServerTasks()
@@ -324,10 +330,16 @@ export function Workspace() {
     return !!task&&!readError&&serverTasks.save({...task,...update})
   }
 
+  const onHermesCreated=(scope?:HermesScope)=>{
+    if(scope!=='calendar')void planner.sync(true)
+    window.dispatchEvent(new Event(scope==='tasks'?'dcc-task-actions-applied':scope==='projects'?'dcc-project-actions-applied':scope==='calendar'?'dcc-calendar-actions-saved':'dcc-hermes-created'))
+  }
+
   const sidebar = (
     <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
       <nav aria-label="Main navigation">
-        <button type="button" aria-label="Home" title={sidebarCollapsed ? 'Home' : undefined} className={`nav-item ${previewView === 'home' ? 'active' : ''}`} onClick={() => navigate('home')}><span className="nav-icon">⌂</span><span className="nav-label">Home</span></button>
+        <button type="button" aria-label={chat?'Hermes':'Home'} title={sidebarCollapsed?(chat?'Hermes':'Home'):undefined} aria-current={previewView==='home'?'page':undefined} className={`nav-item ${previewView === 'home' ? 'active' : ''}`} onClick={() => navigate('home')}><span className="nav-icon" aria-hidden="true">{chat?'✦':'⌂'}</span><span className="nav-label">{chat?'Hermes':'Home'}</span></button>
+        {(chat||previewView==='today')&&<button type="button" aria-label="Today" title="Today" aria-current={previewView==='today'?'page':undefined} className={`nav-item ${previewView==='today'?'active':''}`} onClick={()=>navigate('today')}><span className="nav-icon" aria-hidden="true">☷</span><span className="nav-label">Today</span></button>}
         <button type="button" aria-label="Inbox" title={sidebarCollapsed ? 'Inbox' : undefined} className={`nav-item ${previewView === 'inbox' ? 'active' : ''}`} onClick={() => navigate('inbox')}><span className="nav-icon">▣</span><span className="nav-label">Inbox</span></button>
         <button type="button" aria-label="Focus" title={sidebarCollapsed ? 'Focus' : undefined} className={`nav-item ${previewView === 'pomodoro' ? 'active' : ''}`} onClick={() => navigate('pomodoro')}><span className="nav-icon">◷</span><span className="nav-label">Focus</span></button>
         <button type="button" aria-label="Projects" title="Projects" className={`nav-item ${previewView === 'projects' ? 'active' : ''}`} onClick={()=>navigate('projects')}><span className="nav-icon">◫</span><span className="nav-label">Projects</span></button>
@@ -343,16 +355,17 @@ export function Workspace() {
   return (
     <>
       {import.meta.env.DEV && <DevToolbar view={previewView} sampleData={showSampleData} onViewChange={navigate} onSampleDataChange={setShowSampleData} />}
-         <main className="app-shell">
+         <main className={`app-shell ${chatVisible?'chat-shell':''} ${chat||previewView==='today'?'chat-navigation':''}`}>
           {sidebar}
-          {previewView === 'prices' ? <section className="content"><h1>Feature retired</h1><p>Price tracking is no longer available. Stored history is preserved; no checks are scheduled.</p></section> : previewView === 'projects' ? <Projects planner={planner}/> : previewView === 'settings' ? <Settings {...preferencesState} /> : previewView === 'inbox' ? (
+          {chat&&<div className="chat-route" hidden={!chatVisible}><HermesChat key={chat.owner} access={chat} visible={chatVisible} onCreated={onHermesCreated} legacy={<TellHermes onCreated={onHermesCreated}/>}/></div>}
+          {chatVisible?null:previewView === 'prices' ? <section className="content"><h1>Feature retired</h1><p>Price tracking is no longer available. Stored history is preserved; no checks are scheduled.</p></section> : previewView === 'projects' ? <Projects planner={planner}/> : previewView === 'settings' ? <Settings {...preferencesState} /> : previewView === 'inbox' ? (
             offlineSession?<section className="content"><h1>Inbox</h1><p>Connect to open Inbox.</p></section>:<Inbox mail={mail} />
           ) : previewView === 'pomodoro' ? (
             <PomodoroView />
           ) : (
             <section className="content" id="home">
               <header className="topbar"><div><p className="eyebrow">Personal workspace</p><h1>{preferencesState.preferences.name.trim() ? `${preferencesState.preferences.name.trim()}’s day` : 'Your day, at a glance.'}</h1></div><div className="date-chip">{formatDay(selectedDate)}</div></header>
-              <TellHermes onCreated={scope=>{if(scope!=='calendar')void planner.sync(true);window.dispatchEvent(new Event(scope==='tasks'?'dcc-task-actions-applied':scope==='projects'?'dcc-project-actions-applied':scope==='calendar'?'dcc-calendar-actions-saved':'dcc-hermes-created'))}}/>
+              {previewView==='home'&&<TellHermes onCreated={onHermesCreated}/>}
               <div className="layout-grid">
                 <section className="card calendar-card" aria-labelledby="calendar-heading">
                   <div className="section-heading"><div><p className="eyebrow">Planning</p><h2 id="calendar-heading">{formatMonth(month)}</h2></div><div className="calendar-actions"><button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} aria-label="Previous month">←</button><button className="today-button" onClick={() => { const now = new Date(); now.setDate(1); setMonth(now); setFollowingToday(true);setSelectedDate(today()) }}>Today</button><button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} aria-label="Next month">→</button></div></div>

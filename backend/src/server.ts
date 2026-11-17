@@ -26,7 +26,7 @@ const taskActions=configuredTaskActions({enabled:config.taskActionsEnabled,pool,
     return row.snapshot
   }}:{}),
   bridgeConfigured:!!process.env.HERMES_CURATOR_URL&&!!process.env.HERMES_CURATOR_TOKEN,
-  bridge:(input,signal)=>callCurator(input,{signal,timeoutMs:105000})})
+  bridge:(input,signal)=>callCurator(input,{signal,timeoutMs:114000,...(input.chatVersion===1?{waitForActionSlot:true as const}:{})})})
 const workspaceCalendar=pool&&calendar?{
  write:createScopedCalendarWriter(pool,calendar).write,
  refresh:()=>runSync(pool,calendar.interval,sourceHash(calendar),()=>fetchSnapshot(calendar),true),
