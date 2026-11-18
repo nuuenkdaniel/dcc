@@ -3,6 +3,8 @@ import type {Pool} from 'pg'
 import type {EventChange} from './calendar-write.js'
 import {callCurator,validDate,type Entity} from './planner.js'
 import {appendHermesTask} from './manual-tasks.js'
+import {easternInstant,easternMinuteFormatter} from './eastern-time.js'
+export {easternInstant} from './eastern-time.js'
 
 type ProjectCommand={action:'create-project-or-assignment';kind:'project'|'assignment';title:string;description:string;deadline:string|null;remainingMinutes:number|null}
 type TaskCommand={action:'create-manual-task';title:string;date:string;notes:string}
@@ -12,15 +14,6 @@ type Result={code:number;message:string;id?:string;kind?:string;origin?:'hermes'
 type Receipt={id:string;fingerprint:string;command:Command;targetId:string;change?:EventChange;result?:Result}
 export type TellOptions={pool:Pool;curator?:((input:unknown)=>Promise<unknown>)|undefined;calendarChange?:((change:EventChange)=>Promise<{code:number;error?:string;saved?:boolean}>)|undefined;now?:()=>Date}
 const fields=['title','date','time','duration','calendar','deadline','kind']
-const formatter=new Intl.DateTimeFormat('sv-SE',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'})
-export function easternInstant(local:string){
- if(typeof local!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(local)||!validDate(local.slice(0,10)))throw Error('Invalid local time')
- const base=Date.parse(local+'Z'),matches:string[]=[]
- // Check both Eastern offsets by round-trip; reject DST gaps and ambiguity.
- for(const offset of [4,5]){const date=new Date(base+offset*3600000);if(Number.isFinite(date.getTime())&&formatter.format(date).replace(' ','T')===local)matches.push(date.toISOString())}
- if(matches.length!==1)throw Error('Specify an unambiguous New York time')
- return matches[0]!
-}
 export function validateCommand(raw:unknown):Command{
  if(!raw||typeof raw!=='object'||Array.isArray(raw))throw Error('Invalid command')
  const d=raw as Record<string,unknown>
@@ -61,7 +54,7 @@ export async function tellHermes(input:{key:string;prompt:string},options:TellOp
     const calendars=boundedCalendars(state?.snapshot?.calendars)
     const calendarNames=calendars.map(calendar=>calendar.name)
     let command:Command
-    try{command=validateCommand(await (options.curator??callCurator)({mode:'tell-hermes',prompt:input.prompt,timezone:'America/New_York',referenceTime:formatter.format((options.now??(()=>new Date()))()).replace(' ','T'),calendarNames}))}
+    try{command=validateCommand(await (options.curator??callCurator)({mode:'tell-hermes',prompt:input.prompt,timezone:'America/New_York',referenceTime:easternMinuteFormatter.format((options.now??(()=>new Date()))()).replace(' ','T'),calendarNames}))}
    catch{return {code:502,message:'Hermes could not parse a safe command. Nothing was created; retry or add required details.'}}
    receipt={id,fingerprint,command,targetId:stableId('tell-target:'+input.key)}
    if(command.action==='create-calendar-event'){

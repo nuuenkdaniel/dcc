@@ -151,7 +151,7 @@ test('sixteen task updates project only native task display fields while preserv
 test('saved calendar projection carries exact cache identity without provider URLs or another PUT',async()=>{
   const calendar=new CalendarHarness()
   const h=await fixture(async client=>{
-    assert.equal(result(await client.callTool({name:'create_calendar_event',arguments:{title:'Synthetic event',calendarId:'Calendar_A',scope:'single',start:'2026-11-01T12:00:00Z',end:'2026-11-01T13:00:00Z',allDay:false}})).state,'saved')
+    assert.equal(result(await client.callTool({name:'create_calendar_event',arguments:{title:'Synthetic event',calendarId:'Calendar_A',scope:'single',start:'2026-11-01T07:00',end:'2026-11-01T08:00',allDay:false}})).state,'saved')
     return 'Saved; snapshot pending.'
   },calendar,{calendarSnapshot:async()=>calendar.snapshot,guardedCalendarWriter:createNonRecurringCalendarWriter(calendar.pool,config,calendar.fetch)})
   try{
@@ -295,7 +295,7 @@ test('conversation uses actual assignment and calendar schemas with a strictly i
     }
     const calendars=result(await client.callTool({name:'list_calendars',arguments:{limit:4}}))
     assert.equal(calendars.data.items[0].id,'Calendar_A')
-    const saved=result(await client.callTool({name:'create_calendar_event',arguments:{title:'Synthetic event',calendarId:'Calendar_A',scope:'single',start:'2026-11-01T12:00:00Z',end:'2026-11-01T13:00:00Z',allDay:false}}))
+    const saved=result(await client.callTool({name:'create_calendar_event',arguments:{title:'Synthetic event',calendarId:'Calendar_A',scope:'single',start:'2026-11-01T07:00',end:'2026-11-01T08:00',allDay:false}}))
     assert.equal(saved.state,'saved');return 'The calendar change was saved; snapshot confirmation is still pending.'
   },calendar,{calendarSnapshot:async()=>calendar.snapshot,guardedCalendarWriter:createNonRecurringCalendarWriter(calendar.pool,config,calendar.fetch)})
   try{
@@ -357,7 +357,11 @@ test('a calendar follow-up quietly retries an early bridge failure using a fresh
     const list=result(await client.callTool({name:'list_calendars',arguments:{limit:4}}))
     assert.equal(list.state,'ok')
     assert.equal(list.data.items[0].name,'Work')
-    const event=result(await client.callTool({name:'create_calendar_event',arguments:{title:'Synthetic planning meeting',calendarId:list.data.items[0].id,scope:'single',start:'2027-01-01T01:30:00Z',end:'2027-01-01T02:30:00Z',allDay:false}}))
+    for(const [start,end] of [['2026-12-31T20:30:00Z','2026-12-31T21:30:00Z'],['2026-11-01T01:30','2026-11-01T02:30'],['2026-03-08T02:30','2026-03-08T03:30']]){
+      const invalid=await client.callTool({name:'create_calendar_event',arguments:{title:'Synthetic planning meeting',calendarId:list.data.items[0].id,scope:'single',start,end,allDay:false}})
+      assert.ok(invalid.isError||result(invalid)?.state==='rejected')
+    }
+    const event=result(await client.callTool({name:'create_calendar_event',arguments:{title:'Synthetic planning meeting',calendarId:list.data.items[0].id,scope:'single',start:'2026-12-31T20:30',end:'2026-12-31T21:30',allDay:false}}))
     assert.equal(event.state,'saved')
     return 'I saved the planning meeting to your work calendar.'
   },calendar,{calendarSnapshot:async()=>calendar.snapshot,guardedCalendarWriter:createNonRecurringCalendarWriter(calendar.pool,config,calendar.fetch)})
@@ -372,7 +376,10 @@ test('a calendar follow-up quietly retries an early bridge failure using a fresh
     ])
     const reply=(await h.post(input)).json()
     assert.equal(reply.assistantReply.text,'I saved the planning meeting to your work calendar.')
-    assert.deepEqual((await h.store.read(input.key)).calls.map(call=>call.command.tool),['list_calendars','create_calendar_event'])
+    const journal=await h.store.read(input.key)
+    assert.deepEqual(journal.calls.map(call=>call.command.tool),['list_calendars','create_calendar_event'])
+    assert.equal(journal.calls[1]?.command.args.start,'2027-01-01T01:30:00Z')
+    assert.equal(journal.calls[1]?.command.args.end,'2027-01-01T02:30:00Z')
     assert.equal(new Set(tokens).size,2)
     assert.deepEqual((await h.post({op:'read',clientId,rootKey:input.key})).json(),reply)
     assert.equal(h.calls(),3)
@@ -407,7 +414,7 @@ test('checking an interrupted reply picks up a late calendar receipt without con
   const writer=createNonRecurringCalendarWriter(calendar.pool,config,calendar.fetch)
   let change:EventChange|undefined
   const h=await fixture(async client=>{
-    const event=result(await client.callTool({name:'create_calendar_event',arguments:{title:'Synthetic delayed meeting',calendarId:'Calendar_A',scope:'single',start:'2026-11-01T12:00:00Z',end:'2026-11-01T13:00:00Z',allDay:false}}))
+    const event=result(await client.callTool({name:'create_calendar_event',arguments:{title:'Synthetic delayed meeting',calendarId:'Calendar_A',scope:'single',start:'2026-11-01T07:00',end:'2026-11-01T08:00',allDay:false}}))
     assert.equal(event.state,'uncertain')
     throw Error('The synthetic first response was lost')
   },calendar,{calendarSnapshot:async()=>calendar.snapshot,guardedCalendarWriter:{...writer,write:async input=>{change=input;return writer.write(input)}}})

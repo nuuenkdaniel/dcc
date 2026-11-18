@@ -38,7 +38,12 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.SemanticsPropertyKey
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
@@ -347,6 +352,18 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
     }
 }
 
+private val replyBold = Regex("""(?<![\\*])\*\*(?![\s*])((?:[^*\r\n]|\*(?!\*))+?)(?<![\\\s])\*\*(?!\*)""")
+
+internal fun formatHermesReply(text: String): AnnotatedString = buildAnnotatedString {
+    var end = 0
+    for (match in replyBold.findAll(text)) {
+        append(text.substring(end, match.range.first))
+        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(match.groupValues[1]) }
+        end = match.range.last + 1
+    }
+    append(text.substring(end))
+}
+
 @Composable private fun HermesChatBubble(entry:HermesChatEntry,state:HermesState){
     var details by rememberSaveable(entry.id){mutableStateOf(false)}
     val receipt=state.receipt?.let{JSONObject(it)}?.takeIf{it.optString("key")==entry.turnKey}?:entry.receipt?.let{JSONObject(it)}
@@ -356,7 +373,9 @@ internal val LocalHermesModalVisibility=staticCompositionLocalOf<(Boolean)->Unit
                 Text(if(entry.role=="user")"You" else if(entry.id.startsWith("sync:"))"Visibility" else if(entry.id.startsWith("tools:")){
                     if(state.timeline.any{it.id=="sync:${entry.turnKey}"})"Earlier tool results" else "Tool results"
                 } else if(entry.id.startsWith("reply:")&&state.timeline.any{it.id=="sync:${entry.turnKey}"})"Hermes · earlier reply" else "Hermes",style=MaterialTheme.typography.labelSmall)
-                SelectionContainer{Text(entry.text.ifEmpty{if(entry.kind=="receipt"&&receipt!=null)receipt.getString("line") else "Message text expired."},fontSize=16.sp,lineHeight=24.sp,color=MaterialTheme.colorScheme.onSurface)}
+                val body=entry.text.ifEmpty{if(entry.kind=="receipt"&&receipt!=null)receipt.getString("line") else "Message text expired."}
+                val display=remember(entry.id,body){if(entry.id.startsWith("reply:"))formatHermesReply(body) else AnnotatedString(body)}
+                SelectionContainer{Text(display,fontSize=16.sp,lineHeight=24.sp,color=MaterialTheme.colorScheme.onSurface)}
                 if(entry.kind=="receipt"){
                     TextButton(onClick={details=!details}){Text(if(details)"Hide details" else "View")}
                     if(details){
