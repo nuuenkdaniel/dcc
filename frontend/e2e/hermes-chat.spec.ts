@@ -18,10 +18,11 @@ test('Hermes home shows replies first, carries context, and preserves the thread
  await page.setViewportSize({width:1280,height:800})
  await configure(page)
  const requests:Record<string,unknown>[]=[]
+ const firstReply='You have **two tasks** today. Start with the **reading**, then review your notes.'
  await page.route('**/api/v1/hermes/conversation',route=>{
   const body=route.request().postDataJSON()
   requests.push(body)
-  return route.fulfill({json:requests.length===1?reply(body.key,'You have two tasks today. Start with the reading, then review your notes.'):reply(body.key,'I added “Send the outline” to your list.',true)})
+  return route.fulfill({json:requests.length===1?reply(body.key,firstReply):reply(body.key,'I added **“Send the outline”** to your list.',true)})
  })
  await page.goto('/')
  const box=page.getByRole('textbox',{name:'Message Hermes'})
@@ -32,6 +33,7 @@ test('Hermes home shows replies first, carries context, and preserves the thread
  expect(requests).toHaveLength(0)
  await box.press('Enter')
  await expect(page.getByText('You have two tasks today. Start with the reading, then review your notes.')).toBeVisible()
+ await expect(page.locator('.chat-reply strong')).toHaveText(['two tasks','reading'])
  await expect(box).toHaveValue('')
  expect(requests[0]).toMatchObject({op:'start',prompt:opening,chatVersion:1,replyVersion:1,workspaceOwner:owner})
  await expect(page.getByText('Read-only effects checked; no writes.')).toHaveCount(0)
@@ -39,7 +41,7 @@ test('Hermes home shows replies first, carries context, and preserves the thread
  await page.getByRole('button',{name:'Send message'}).click()
  await expect(page.getByText('I added “Send the outline” to your list.')).toBeVisible()
  expect(requests[1]).toMatchObject({chatVersion:1,replyVersion:1,context:{version:1,entries:[
-  {role:'user',text:opening},{role:'assistant',text:expect.stringContaining('You have two tasks today')},
+  {role:'user',text:opening},{role:'assistant',text:firstReply},
  ]}})
  await expect(page.getByText('Created 1 task.')).toBeVisible()
  await expect(page.getByText('A task was added.',{exact:true})).toBeHidden()
@@ -55,6 +57,7 @@ test('Hermes home shows replies first, carries context, and preserves the thread
  await expect(page.getByText('I added “Send the outline” to your list.')).toBeVisible()
  await page.reload()
  await expect(page.getByText('I added “Send the outline” to your list.')).toBeVisible()
+ await expect(page.locator('.chat-reply strong').last()).toHaveText('“Send the outline”')
  expect(requests).toHaveLength(2)
  await page.setViewportSize({width:360,height:690})
  await expect(box).toBeInViewport()

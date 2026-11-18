@@ -10,6 +10,7 @@ import {ServiceTransport} from './service-transport.js'
 import {serviceToolDefinitions} from './service-contracts.js'
 import {composeSdkServer} from './sdk-server.js'
 import {requestLimits,requestContext,type IntentRecord,type IntentPolicy,type ConversationGuard} from './request-intent.js'
+import {easternInstant} from '../eastern-time.js'
 import {validClarification,type Clarification} from './clarification.js'
 import {validGuard} from './conversation-validation.js'
 import {validRuntimeCompletion,type RuntimeCompletion,type AssistantReply} from './assistant-reply.js'
@@ -36,9 +37,14 @@ export function summarizeIntent(record:IntentRecord):IntentSummary {
   }),pending:record.calls.filter(c=>!c.result||c.result.state==='uncertain').length,
     ...(record.allowedTools.length>3?{reads,...(reads.length<allReads.length?{readsTruncated:true as const}:{})}:{})}
 }
-export function requestTools(record:{allowedTools:readonly ToolName[]}):Tool[]{
+const usesChatCalendarTime=(tool:unknown)=>tool==='create_calendar_event'||tool==='update_calendar_event'
+export function requestTools(record:{allowedTools:readonly ToolName[];guard?:ConversationGuard}):Tool[]{
   return serviceToolDefinitions().filter(t=>record.allowedTools.includes(t.name as IntentRecord['allowedTools'][number])).map(tool=>{
     const t=structuredClone(tool),properties=t.inputSchema.properties??{}
+    if(record.guard?.chatVersion===1&&usesChatCalendarTime(t.name)){
+      for(const name of ['start','end'])properties[name]={type:'string',pattern:'^\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2})?$',
+        description:'For timed events, use local America/New_York YYYY-MM-DDTHH:mm without an offset or Z. DCC converts to UTC. For all-day events, use YYYY-MM-DD.'}
+    }
     if(TOOLS[t.name as keyof typeof TOOLS].write){
       delete properties.operationKey
       if(isCreation(t.name as ToolName))delete properties.id
@@ -100,6 +106,11 @@ export class RequestController {
     // Only the SDK adapter below accepts transport correlation metadata.
     const dispatch=async(id:string,tool:unknown,args:unknown):Promise<Result>=>{
       check()
+      if(claim.record.guard?.chatVersion===1&&usesChatCalendarTime(tool)&&plainRecord(args)&&args.allDay===false){
+        try{
+          args={...args,start:easternInstant(args.start as string).replace('.000Z','Z'),end:easternInstant(args.end as string).replace('.000Z','Z')}
+        }catch{return {state:'rejected',code:'invalid_arguments'}}
+      }
       const reserved=await store.reserve(input.key,owner,id,tool,args,now())
       if(reserved.directive==='replay')return reserved.result!
       if(reserved.directive==='reconcile'){

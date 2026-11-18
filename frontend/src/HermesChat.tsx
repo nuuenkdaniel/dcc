@@ -1,4 +1,4 @@
-import {useEffect,useRef,useState,type FormEvent} from 'react'
+import {useEffect,useRef,useState,type FormEvent,type ReactNode} from 'react'
 import {protectedFetch} from './auth'
 import {useOptionalBrowserTimer} from './timerContext'
 import {useWorkspaceSession} from './workspaceSession'
@@ -22,6 +22,16 @@ export type HermesScope='tasks'|'projects'|'calendar'
 type Turn={id:string;at:number;expires:number;prompt:string;reply?:string;summary?:string;receipt?:ActionReceipt}
 type Thread={clientId:string;turns:Turn[]}
 type ConversationReference={version:1;entries:{role:'user'|'assistant';text:string;at:number}[]}
+
+function formatReply(text:string){
+ const parts:ReactNode[]=[]
+ let end=0
+ for(const match of text.matchAll(/(?<![\\*])\*\*(?![\s*])((?:[^*\r\n]|\*(?!\*))+?)(?<![\\\s])\*\*(?!\*)/g)){
+  parts.push(text.slice(end,match.index),<strong key={match.index}>{match[1]}</strong>)
+  end=match.index+match[0].length
+ }
+ return [...parts,text.slice(end)]
+}
 
 function waitForReplyCheck(ms:number,signal:AbortSignal){
  return new Promise<void>((resolve,reject)=>{
@@ -276,7 +286,7 @@ export function HermesChat({access,onCreated,legacy,visible}:{access:HermesChatA
       <div className="chat-agent"><span aria-hidden="true" className="chat-avatar">✦</span>
        <div className="chat-agent-content">
         <strong className="chat-speaker">Hermes</strong>
-        {turn.reply?<><p className="chat-reply">{turn.reply}</p>{turn.summary&&<p className="chat-summary">{turn.summary}</p>}{turn.receipt&&(turn.receipt.targets.length>0||turn.receipt.outcome!=='read-only')&&<Details receipt={turn.receipt} summary={turn.summary}/>}
+        {turn.reply?<><p className="chat-reply">{formatReply(turn.reply)}</p>{turn.summary&&<p className="chat-summary">{turn.summary}</p>}{turn.receipt&&(turn.receipt.targets.length>0||turn.receipt.outcome!=='read-only')&&<Details receipt={turn.receipt} summary={turn.summary}/>}
          {turn.receipt?.outcome==='failed'&&turn.receipt.targets.length===0&&<button type="button" className="chat-secondary" disabled={!!text.trim()} onClick={()=>{setText(turn.prompt);editor.current?.focus()}}>Restore message</button>}
          {turn.receipt&&['uncertain','partial'].includes(turn.receipt.outcome)&&<button type="button" className="chat-secondary" disabled={!enabled||!!active} onClick={()=>void perform(turn)}>{active===turn.id?'Checking…':'Check result'}</button>}</>:
          active===turn.id?<p className="chat-wait" role="status">Thinking…</p>:<><p className="chat-wait">I couldn’t confirm the result. You can check this message again.</p><button type="button" className="chat-secondary" disabled={!enabled||!!active} onClick={()=>void perform(turn)}>Check reply</button></>}
