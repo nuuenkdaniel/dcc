@@ -8,6 +8,23 @@ import org.junit.Test
 class HermesReferenceTest {
     private class Memory:SessionStorage{var raw:String?=null;override fun read()=raw;override fun write(value:String){raw=value};override fun clear(){raw=null}}
     private val time=1794016800000L
+    @Test fun visibleReplyAndItsUserRemainContextEvenWhenActionIsUnresolved(){
+        val turn="synthetic_turn_001"
+        for(outcome in listOf("uncertain","partial","failed")){
+            val receipt=JSONObject(hermesWireFixtures().getJSONObject("complete").getJSONObject("receipt").toString()).put("key",turn).put("outcome",outcome)
+            val entries=listOf(
+                HermesChatEntry("user:$turn",turn,turn,"user","user","Move unfinished tasks to tomorrow",time+HERMES_TTL_MS),
+                HermesChatEntry("reply:$turn",turn,turn,"assistant","reply","I moved one task.",time+HERMES_TTL_MS),
+                HermesChatEntry("receipt:$turn",turn,turn,"assistant","receipt","Unconfirmed scope",time+HERMES_TTL_MS,receipt=receipt.toString()))
+            val state=HermesState(timeline=entries)
+            val reference=JSONObject(hermesReference(state,time,"Was that all?"))
+            assertTrue(validHermesReference(reference))
+            val texts=reference.getJSONArray("entries").objects().map{it.getString("text")}
+            assertTrue(texts.any{it=="Move unfinished tasks to tomorrow"})
+            assertTrue(texts.any{it.contains("I moved one task.")&&it.contains("Action status: $outcome")})
+            assertEquals(entries,state.timeline) // Context must not settle/rewrite receipts.
+        }
+    }
     @Test fun boundedReferenceExcludesPendingExpiredAndFutureEntries(){
         fun entry(i:Int,text:String,settled:Boolean=true,expiry:Long=time+HERMES_TTL_MS)=HermesChatEntry("user:$i","synthetic_root_01","synthetic_turn_$i","user","user",text,expiry,settled)
         val history=(0..20).map{entry(it,"界".repeat(300))}+entry(21,"Pending secret",false)+entry(22,"Expired secret",expiry=time)+entry(23,"Future secret",expiry=time+HERMES_TTL_MS+1)

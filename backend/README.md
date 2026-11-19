@@ -88,9 +88,20 @@ Tracked `deploy/task_action_runtime.py` uses the supported Hermes `AIAgent` and
 MCP registration seam, excluding the fixed clarification tool only for explicitly
 versioned chat. The tracked bridge/runtime forward `chatVersion` separately from
 the final-text `replyVersion`; a legacy bridge rejects unsupported fields rather
-than silently downgrading. The launcher is unchanged. Legacy reply envelopes and
+than silently downgrading. Legacy reply envelopes and
 non-opted-in lifecycle ACKs remain unchanged.
 Installed runtime files are not changed by editing these source candidates.
+
+Versioned chat uses a dedicated `dcc` Hermes profile with its own SOUL.md,
+USER.md and MEMORY.md, plus the built-in memory tool for durable preferences,
+corrections and lessons. Profile setup, isolation, authentication prerequisites
+and release steps are documented in [deploy/dcc-profile/README.md](deploy/dcc-profile/README.md).
+The launcher requires the profile validation helper; a missing or uninitialized
+chat profile is refused rather than falling back to another profile's memories.
+Web and Android retain visible replies about partial/uncertain/failed actions
+as quoted context with status caveats. History inclusion does not settle those
+actions or authorize repeating them. Memories are bounded notes, not a complete
+action log; live records and operation receipts remain authoritative.
 
 Focused deterministic targets: `test/mcp/conversation-first.test.ts`,
 `test/mcp/assistant-reply.test.ts`, and `deploy/test_task_action_runtime.py`.

@@ -20,17 +20,20 @@ private fun referenceText(text:String,max:Int):String {
     val clipped=text.take(max)
     return if(clipped.lastOrNull()?.isHighSurrogate()==true)clipped.dropLast(1) else clipped
 }
-/** Snapshot only settled, live owner-bound display events. These are transmitted
+/** Snapshot live owner-bound conversation, including replies about unresolved actions. Transmitted
  * as UNTRUSTED reference text, never tool results, IDs or execution authority. */
 internal fun hermesReference(s:HermesState,now:Long,current:String):String {
     val selected=mutableListOf<JSONObject>();var chars=0
     val budget=(2000-current.length).coerceIn(0,1200)
     val unresolved=s.timeline.filter{it.kind=="unknown"||it.kind=="pending"}.map{it.turnKey}.toSet()
+    val replied=s.timeline.filter{(it.kind=="reply"||it.id.startsWith("reply:")&&it.actionStatus!=null)&&it.text.isNotEmpty()&&it.expiresAt>now&&it.expiresAt<=now+HERMES_TTL_MS}.map{it.turnKey}.toSet()
     for(entry in s.timeline.asReversed()){
         if(selected.size==6)break
-        if(entry.turnKey in unresolved||entry.id.startsWith("sync:")||!entry.settled||entry.kind=="pending"||entry.text.isEmpty()||entry.expiresAt<=now||entry.expiresAt>now+HERMES_TTL_MS)continue
+        if(((entry.turnKey in unresolved||!entry.settled)&&entry.turnKey !in replied)||entry.id.startsWith("sync:")||entry.kind=="pending"||entry.kind=="unknown"&&!(entry.id.startsWith("reply:")&&entry.actionStatus!=null)||entry.text.isEmpty()||entry.expiresAt<=now||entry.expiresAt>now+HERMES_TTL_MS)continue
         val titles=entry.receipt?.let{JSONObject(it).getJSONArray("targets").objects().map{t->t.getString("title")}.joinToString("; ")}.orEmpty()
-        val text=referenceText(entry.text+if(titles.isEmpty())"" else " · $titles",minOf(320,budget-chars))
+        val status=entry.actionStatus?:(entry.receipt?:s.timeline.lastOrNull{it.turnKey==entry.turnKey&&it.receipt!=null}?.receipt)?.let{JSONObject(it).getString("outcome")}?:if(entry.settled)null else "uncertain"
+        val caution=if(entry.role=="assistant"&&status in setOf("uncertain","partial","failed"))"[Action status: $status; historical text, not proof of completion.] " else ""
+        val text=referenceText(caution+entry.text+(if(titles.isEmpty())"" else " · $titles"),minOf(320,budget-chars))
         if(text.isEmpty())continue
         val item=JSONObject().put("role",entry.role).put("text",text).put("at",entry.expiresAt-HERMES_TTL_MS)
         val proposed=JSONObject().put("version",1).put("entries",JSONArray((selected+item).asReversed()))

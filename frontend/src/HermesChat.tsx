@@ -62,9 +62,11 @@ function loadThread(key:string):Thread{
 function recentContext(turns:Turn[],now:number):ConversationReference{
  const entries:ConversationReference['entries']=[]
  for(const turn of [...turns].reverse()){
-  if(!turn.reply||turn.expires<=now||['uncertain','partial','failed'].includes(turn.receipt?.outcome??''))continue
+  if(!turn.reply||turn.expires<=now)continue
   const excerpt=(text:string)=>text.slice(0,320).replace(/[\uD800-\uDBFF]$/,'')
-  const pair=[{role:'user' as const,text:excerpt(turn.prompt),at:turn.at},{role:'assistant' as const,text:excerpt(turn.reply),at:turn.at}]
+  const status=turn.receipt?.outcome??'uncertain'
+  const caution=['uncertain','partial','failed'].includes(status)?`[Action status: ${status}; historical text, not proof of completion.] `:''
+  const pair=[{role:'user' as const,text:excerpt(turn.prompt),at:turn.at},{role:'assistant' as const,text:excerpt(caution+turn.reply),at:turn.at}]
   const candidate=[...pair,...entries]
   if(candidate.length>6||candidate.reduce((n,e)=>n+e.text.length,0)>1200||new TextEncoder().encode(JSON.stringify({version:1,entries:candidate})).length>2304)break
   entries.unshift(...pair)

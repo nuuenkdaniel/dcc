@@ -24,6 +24,9 @@ class CuratorAdmissionTest(unittest.TestCase):
 
                 def simulated_run(*args, **kwargs):
                     invocation = json.loads(kwargs['input'])
+                    expected_home='/root/.hermes/profiles/dcc' if invocation.get('chatVersion')==1 else '/root/.hermes/profiles/daymark-curator'
+                    self.assertEqual(kwargs['env']['HERMES_HOME'],expected_home)
+                    self.assertEqual(kwargs['cwd'],expected_home)
                     signal = chat_entered if invocation.get('chatVersion') == 1 else background_entered
                     signal.set()
                     if not release.wait(5):

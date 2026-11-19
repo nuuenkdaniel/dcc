@@ -107,6 +107,28 @@ class HermesConversationFirstTest {
         }finally{scope.cancel()}
     }
 
+    @Test fun unresolvedReplyStatusSurvivesRestoreAndRemainsAvailableToFollowUp(){
+        for(outcome in listOf("uncertain","partial","failed")){
+            val scope=CoroutineScope(Dispatchers.Unconfined);val saved=Memory();val calls=mutableListOf<JSONObject>()
+            val c=HermesConversationController(scope,{saved},{body->
+                calls+=JSONObject(body.toString())
+                reply(body,"I moved one task to tomorrow.").also{it.getJSONObject("receipt").put("outcome",outcome)}
+            },{now})
+            try{
+                c.bind(owner);c.availability(true,1,1,1);c.edit("Move unfinished tasks to tomorrow");c.send()
+                val restored=HermesConversationController(scope,{saved},{body->calls+=JSONObject(body.toString());reply(body,"I will check the task list.")},{now})
+                restored.bind(owner);restored.availability(true,1,1,1)
+                val entries=restored.state.value.timeline
+                assertEquals(outcome,entries.single{it.id.startsWith("reply:")}.actionStatus)
+                restored.edit("Was that my only task?");restored.send()
+                assertEquals(listOf("start","start"),calls.map{it.getString("op")})
+                val history=calls.last().getJSONObject("context").getJSONArray("entries").objects()
+                assertTrue(history.any{it.getString("text")=="Move unfinished tasks to tomorrow"})
+                assertTrue(history.any{it.getString("text").contains("I moved one task")&&it.getString("text").contains("Action status: $outcome")})
+            }finally{scope.cancel()}
+        }
+    }
+
     @Test fun ordinaryRepliesAndNaturalQuestionsUseIndependentStartsAndBoundedHistoryWithoutCards(){
         val scope=CoroutineScope(Dispatchers.Unconfined);val saved=Memory();val calls=mutableListOf<JSONObject>()
         val c=HermesConversationController(scope,{saved},{body->calls+=JSONObject(body.toString());reply(body,if(calls.size==1)"What do you mean by a study chunk?" else "We can change the topic to music.")},{now})
