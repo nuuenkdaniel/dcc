@@ -149,3 +149,24 @@ query/lock fake is not PostgreSQL concurrency proof, and scripted runners are
 not provider/model acceptance. Actual PostgreSQL HTTP, typecheck, full tests and
 build verification remain separate checks; no live integrations are needed for
 these unit fixtures.
+
+### Hermes reply delivery diagnostics
+
+On the app host, inspect the API journal after an incident:
+
+```sh
+journalctl -u dcc-api --since '30 minutes ago' -o cat --no-pager | rg '"component":"hermes-conversation"'
+```
+
+Use `reqId` to follow one HTTP attempt and `turnRef` to correlate a validated
+start with later **Check reply** reads for the same conversation. The events
+show arrival, validation, receipt outcome and reply fields present, HTTP status,
+response size and time, or a connection closing before the server finishes.
+A detached chat can log a prepared reply after the connection closes.
+`response_finished` means the server finished writing the response. It does
+not establish that the phone received or accepted it. An auth or validation
+rejection can have a status without an admission event.
+
+These events use the existing API journal and its retention settings. They
+record only diagnostic metadata. They omit prompts, history, reply text,
+task records, raw turn and client IDs, workspace owner, and credentials.

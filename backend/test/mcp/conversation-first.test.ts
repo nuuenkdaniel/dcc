@@ -18,7 +18,7 @@ import {createHash} from 'node:crypto'
 import {validManualTask} from '../../src/manual-tasks.js'
 const clientId='11111111-1111-4111-a111-111111111111',origin='http://synthetic.invalid',time=Date.parse('2026-12-31T12:00:00-05:00')
 const result=(v:any)=>v.structuredContent.result
-async function fixture(script:(client:Client,input:TaskBridgeInput)=>Promise<string>,db:ServicePool=new IntentPool(),dependencies:Pick<ServiceOptions,'calendarSnapshot'|'guardedCalendarWriter'>={},now=()=>time){
+async function fixture(script:(client:Client,input:TaskBridgeInput)=>Promise<string>,db:ServicePool=new IntentPool(),dependencies:Pick<ServiceOptions,'calendarSnapshot'|'guardedCalendarWriter'>={},now=()=>time,logger?:NonNullable<Parameters<typeof buildApp>[0]>['logger']){
   const sessions=new Set<string>();let app:ReturnType<typeof buildApp>,calls=0
   const actions=new TaskActions({pool:db.pool,actorId:'chat-fixture',now,...dependencies,bridge:async input=>{
     calls++
@@ -29,7 +29,7 @@ async function fixture(script:(client:Client,input:TaskBridgeInput)=>Promise<str
     }}
     try{await client.connect(wire);return {status:'finished',replyVersion:1,assistantText:await script(client,input)}}finally{await client.close()}
   }})
-  app=buildApp({plannerPool:db.pool,taskActions:actions,auth:{username:'synthetic',password:'synthetic-only',origin,store:{put:async id=>{sessions.add(id)},has:async id=>sessions.has(id),remove:async id=>{sessions.delete(id)}}}})
+  app=buildApp({plannerPool:db.pool,taskActions:actions,...(logger?{logger}:{}),auth:{username:'synthetic',password:'synthetic-only',origin,store:{put:async id=>{sessions.add(id)},has:async id=>sessions.has(id),remove:async id=>{sessions.delete(id)}}}})
   const login=await app.inject({method:'POST',url:'/api/v1/auth/login',headers:{origin},payload:{username:'synthetic',password:'synthetic-only'}})
   const cookie=login.cookies.find(c=>c.name==='daymark_session')!.value,owner=login.json().workspaceOwner
   const post=(body:Record<string,unknown>,workspaceOwner=owner,displaySync=false)=>app.inject({method:'POST',url:CONVERSATION_PATH,headers:{origin,...(displaySync?{'x-dcc-display-sync':'1'}:{})},cookies:{daymark_session:cookie},payload:{...body,workspaceOwner}})
@@ -37,6 +37,37 @@ async function fixture(script:(client:Client,input:TaskBridgeInput)=>Promise<str
   const capabilities=()=>app.inject({url:'/api/v1/hermes/action-capabilities',cookies:{daymark_session:cookie}})
   return {app,db,post,start,capabilities,owner,cookie,calls:()=>calls,store:new SqlIntentStore(db.pool,'chat-fixture')}
 }
+test('Hermes diagnostics correlate start and recovery without recording content or credentials',async()=>{
+  const lines:string[]=[]
+  const h=await fixture(async()=> 'Private reply marker',new IntentPool(),{},()=>time,{
+    level:'warn',stream:{write(line:string){lines.push(line)}},
+  })
+  try{
+    const key='private_turn_marker_123'
+    const input=h.start(key,'Private prompt marker',[{role:'user',text:'Private context marker',at:time}])
+    assert.equal((await h.post(input)).statusCode,200)
+    assert.equal((await h.post({op:'read',clientId,rootKey:key})).statusCode,200)
+    assert.equal((await h.app.inject({method:'POST',url:CONVERSATION_PATH,headers:{origin},payload:{...input,workspaceOwner:h.owner}})).statusCode,401)
+    const entries=lines.map(line=>JSON.parse(line)).filter(line=>line.component==='hermes-conversation')
+    const admitted=entries.filter(entry=>entry.event==='admitted')
+    assert.deepEqual(admitted.map(entry=>entry.operation),['start','read'])
+    assert.equal(admitted[0].turnRef,admitted[1].turnRef)
+    assert.equal(admitted[0].promptBytes,Buffer.byteLength(input.prompt))
+    assert.equal(admitted[0].contextEntries,1)
+    for(const entry of admitted){
+      const events=entries.filter(log=>log.reqId===entry.reqId)
+      assert.deepEqual(events.map(log=>log.event),['received','admitted','reply_ready','response_finished'])
+      assert.equal(events[2].assistantReply,true)
+      assert.equal(events[2].outcome,'read-only')
+      assert.ok(events[3].responseBytes>0)
+    }
+    assert.deepEqual(entries.filter(entry=>entry.event==='response_finished').map(entry=>entry.status),[200,200,401])
+    assert.equal(h.calls(),1)
+    for(const privateValue of [key,h.owner,h.cookie,clientId,'Private prompt marker','Private context marker','Private reply marker']){
+      assert.ok(!lines.join('').includes(privateValue),'Private value was logged')
+    }
+  }finally{await h.app.close()}
+})
 test('ordinary chat, natural clarification and topic changes have text without tool transactions',async()=>{
   const h=await fixture(async(client,input)=>{
     assert.equal((await client.listTools()).tools.some(t=>t.name==='request_clarification'),false)

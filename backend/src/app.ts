@@ -7,16 +7,18 @@ import {extractMaterial} from './study-material.js'
 import {validateOutline} from './study.js'
 import type {Pool} from 'pg'
 import {plannerSnapshot,saveEntity,requestPlan,callCurator,previewCustomProjectTasks,type Entity} from './planner.js'
-import Fastify from 'fastify'
+import Fastify, {type FastifyServerOptions} from 'fastify'
 import type { EventChange } from './calendar-write.js'
 import { registerAuth, type AuthConfig } from './auth.js'
 import {ACTION_PATH,TASK_ACTION_PATH,TASK_CALLBACK_PATH,TaskActions,TaskCallbackError} from './mcp/task-actions.js'
 import {CONVERSATION_PATH,validConversationInput} from './mcp/conversation.js'
 import {plainRecord} from './mcp/contracts.js'
+import {conversationDiagnostics} from './mcp/conversation-diagnostics.js'
 
 // Construction is separate from listening so tests require no network port.
-export function buildApp(options: { taskActions?:TaskActions; workspaceCalendar?:CalendarOperations; calendarRefresh?:()=>Promise<string>; plannerPool?:Pool; curator?:(input:unknown)=>Promise<unknown>; logger?: boolean | { level: string }; auth?: AuthConfig; calendarSnapshot?:()=>Promise<unknown>; calendarChange?:(change:EventChange)=>Promise<{code:number;error?:string;saved?:boolean}> } = {}) {
+export function buildApp(options: { taskActions?:TaskActions; workspaceCalendar?:CalendarOperations; calendarRefresh?:()=>Promise<string>; plannerPool?:Pool; curator?:(input:unknown)=>Promise<unknown>; logger?: FastifyServerOptions['logger']; auth?: AuthConfig; calendarSnapshot?:()=>Promise<unknown>; calendarChange?:(change:EventChange)=>Promise<{code:number;error?:string;saved?:boolean}> } = {}) {
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 1048576 })
+  const diagnostics=options.taskActions?conversationDiagnostics(app):undefined
   if(options.taskActions){
     let timer:ReturnType<typeof setInterval>|undefined,working=false
     const expire=async()=>{
@@ -53,15 +55,22 @@ export function buildApp(options: { taskActions?:TaskActions; workspaceCalendar?
         if(request.body.workspaceOwner!==owner)return reply.code(409).send({message:'Workspace changed. This turn was not admitted.'})
         const {workspaceOwner:_,...input}=request.body
         if(!validConversationInput(input))return reply.code(400).send({message:'Invalid bounded conversation request.'})
+        const displaySync=request.headers['x-dcc-display-sync']==='1'
+        const trace=diagnostics?.admit(request,input,displaySync)
         const abort=new AbortController(),stop=()=>abort.abort()
         // A complete, authenticated chat start owns a bounded server turn. A
         // dropped response is a delivery problem; read can recover it by key.
         const detached=input.op==='start'&&input.chatVersion===1
         const onClose=()=>{if(!reply.raw.writableEnded)stop()}
         if(!detached){request.raw.once('aborted',stop);reply.raw.once('close',onClose)}
-        try{return await options.taskActions!.converse(input,owner,abort.signal,request.headers['x-dcc-display-sync']==='1')}
+        try{
+          const result=await options.taskActions!.converse(input,owner,abort.signal,displaySync)
+          trace?.result(result)
+          return result
+        }
         catch(error){
           const conflict=error instanceof Error&&['conversation_conflict','active_conversation','closed_question','intent_conflict','executor_conflict'].includes(error.message)
+          trace?.failure(conflict?409:502)
           return reply.code(conflict?409:502).send({message:conflict?'This conversation is closed, already answered, or another request is active. No automatic resend.':'Request not confirmed. Effects may have saved. No automatic resend.'})
         }finally{request.raw.off('aborted',stop);reply.raw.off('close',onClose)}
       })
