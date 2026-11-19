@@ -28,6 +28,24 @@ class ProfileTests(unittest.TestCase):
             run.assert_not_called()
             self.assertEqual(user.read_text(),'Synthetic preference: concise replies.')
 
+    def test_legacy_discovery_config_migrates_once_without_changing_memories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home=Path(directory)
+            templates=Path(setup.__file__).with_name('dcc-profile')
+            setup.initialize(home,templates)
+            modern=(home/'config.yaml').read_text()
+            legacy=modern.replace('tools:\n  tool_search:\n    enabled: "off"\n','agent:\n  tool_search: false\n')
+            (home/'config.yaml').write_text(legacy)
+            user=home/'memories/USER.md';user.write_text('Synthetic learned preference')
+            self.assertTrue(setup.migrate_tool_discovery(home,templates))
+            self.assertEqual((home/'config.yaml').read_text(),modern)
+            self.assertEqual((home/'dcc-setup-seeds/config.before-tool-discovery-fix.yaml').read_text(),legacy)
+            self.assertEqual(user.read_text(),'Synthetic learned preference')
+            self.assertFalse(setup.migrate_tool_discovery(home,templates))
+            (home/'config.yaml').write_text(modern+'# User customization\n')
+            self.assertFalse(setup.migrate_tool_discovery(home,templates))
+            self.assertTrue((home/'config.yaml').read_text().endswith('# User customization\n'))
+
     def test_missing_or_other_profile_and_symlinked_memory_are_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             home=Path(directory)

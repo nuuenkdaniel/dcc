@@ -1,8 +1,9 @@
 model:
   default: gpt-6-luna
   provider: openai-codex
-agent:
-  tool_search: false
+tools:
+  tool_search:
+    enabled: "off"
 memory:
   memory_enabled: true
   user_profile_enabled: true
