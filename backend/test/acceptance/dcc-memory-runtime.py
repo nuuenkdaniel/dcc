@@ -12,6 +12,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'deploy'))
 from task_action_launcher import resolve_runtime, runtime_command
+from setup_dcc_profile import initialize
 
 CHILD = r'''
 import json, os, socket, sys
@@ -32,6 +33,41 @@ def change(**args):
 if phase=='write':
     change(action='add',target='user',content='Synthetic preference: meetings last 30 minutes.')
     change(action='add',target='memory',content='Synthetic lesson: check all pages before claiming task completeness.')
+elif phase=='catalog':
+    import json,os,sys,time
+    from pathlib import Path
+    from unittest.mock import patch
+    sys.path.insert(0,sys.argv[2])
+    from dcc_profile import validate_profile
+    import task_action_runtime as runtime
+    from run_agent import AIAgent
+    from tools.registry import registry
+    from tools import mcp_tool_discovery,mcp_tool_lifecycle
+    selected=runtime.PRODUCT_TOOLS-{'request_clarification'}
+    def register(config):
+        names=[]
+        for short in sorted(selected):
+            name='mcp__dcc_task__'+short
+            properties={'operationKey':{'type':'string'}} if short=='get_operation_status' else {}
+            params={'type':'object','properties':properties,'additionalProperties':False}
+            if short=='get_operation_status':params['required']=['operationKey']
+            registry.register(name=name,toolset='mcp-dcc_task',schema={'name':name,'description':'Synthetic DCC tool '+short,'parameters':params},handler=lambda args,**kwargs: (_ for _ in ()).throw(AssertionError('No tool calls permitted')))
+            names.append(name)
+        registry.register_toolset_alias('dcc_task','mcp-dcc_task')
+        return names
+    called=[]
+    def model_stub(self,**kwargs):
+        called.append(True)
+        return {'completed':True,'final_response':'Synthetic initialization passed.'}
+    policy=lambda:{'provider':'openai','requested_provider':'openai','model':'synthetic-memory-test','api_key':'synthetic-not-a-credential','base_url':'http://127.0.0.1:1/v1'}
+    with patch.object(runtime,'require_dcc_profile',side_effect=lambda: validate_profile(Path(os.environ['HERMES_HOME']),Path(os.environ['HERMES_HOME']))),patch.object(mcp_tool_discovery,'register_mcp_servers',side_effect=register),patch.object(mcp_tool_lifecycle,'shutdown_mcp_servers'),patch.object(runtime,'agent_policy',side_effect=policy),patch.object(AIAgent,'run_conversation',model_stub):
+        try:
+            evidence=runtime.run_action('a'*64,int(time.time()*1000)+60000,'Synthetic startup, do not execute tools.',True,reply_version=1,chat_version=1)
+            assert evidence['schemaCount']==35 and called
+            print(json.dumps({'startup':'passed','schemaCount':evidence['schemaCount'],'inferenceStubReached':bool(called)}))
+        except ValueError as error:
+            print(json.dumps({'startup':'rejected','reason':str(error),'inferenceStubReached':bool(called)}))
+            raise SystemExit(1)
 elif phase=='correct':
     # Real constructor, explicit synthetic provider: no credential lookup or model invocation.
     profile=Path(os.environ['HERMES_HOME'])
@@ -79,17 +115,19 @@ def main():
         root=Path(directory)
         script=root/'task_action_runtime.py';script.write_text(CHILD)
         profile=Path(first);other=Path(second)
+        deploy=Path(__file__).resolve().parents[2]/'deploy'
+        for home in (profile,other):initialize(home,deploy/'dcc-profile')
         # Resolve official interpreter/bootstrap, not a guessed venv or system-Python import.
         command=runtime_command(resolve_runtime(),script)
-        for home,phase in [(profile,'write'),(profile,'correct'),(other,'empty'),(profile,'forget'),(profile,'empty')]:
+        for home,phase in [(profile,'catalog'),(profile,'write'),(profile,'correct'),(other,'empty'),(profile,'forget'),(profile,'empty')]:
             env={**os.environ,'HERMES_HOME':str(home)}
-            result=subprocess.run([*command,phase],env=env,text=True,capture_output=True,timeout=30)
+            result=subprocess.run([*command,phase,str(deploy)],env=env,text=True,capture_output=True,timeout=30)
             if result.returncode:
                 # Fixture errors are safe; no model/provider/auth was invoked.
                 raise AssertionError(result.stderr[-4000:])
             assert '"success": true' in result.stdout, result.stdout[-1000:]
             print(json.dumps({'phase':phase,'isolated_profile':home.name,'success':True}))
-    print('PASS: cross-process remember/correct/forget and profile isolation; no model calls.')
+    print('PASS: full DCC+memory startup, cross-process remember/correct/forget and profile isolation; no model calls.')
 
 
 if __name__=='__main__':main()

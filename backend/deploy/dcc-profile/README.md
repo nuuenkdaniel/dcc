@@ -31,6 +31,11 @@ source-owned identity/configuration and starts empty memory files. It does not
 clone credentials, personal facts, chat history, integrations or another
 profile's memories. Rerunning preserves learned memories and identity files.
 An existing unmanaged `dcc` profile is refused rather than overwritten.
+For the exact legacy source-owned config that used `agent.tool_search`, rerunning
+setup backs it up and migrates to `tools.tool_search.enabled: "off"`. Customized
+configs and learned memories are not overwritten. The supported key matters:
+automatic discovery replaces the direct MCP schemas with search tools, which the
+DCC runtime correctly refuses as an unexpected tool scope.
 
 Hermes named profiles support the runtime's existing global-root authentication
 fallback. Setup does not copy, read or change authentication files. Before
@@ -64,7 +69,9 @@ python3 backend/test/acceptance/dcc-memory-runtime.py
 
 That acceptance uses two temporary named-profile directories under the real
 Hermes profiles root so the existing installed dependency environment is reused.
-It exercises the real memory tool across separate processes: remember, reload,
+It first exercises the complete production `run_action` startup with real Hermes
+assembly of all 34 DCC tools plus memory. DCC handlers are synthetic and inference
+is stubbed; no task tool can execute. It then exercises the real memory tool across separate processes: remember, reload,
 correct, isolate another profile, forget, reload empty. It invokes no model,
 reads no credentials and blocks child network connections. It does not modify
 DCC's actual memories. Never use an arbitrary temporary HERMES_HOME: Hermes may
