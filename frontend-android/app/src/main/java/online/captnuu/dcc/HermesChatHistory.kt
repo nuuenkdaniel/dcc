@@ -6,9 +6,9 @@ import org.json.JSONObject
 const val HERMES_CHAT_MAX_ENTRIES=40
 const val HERMES_CHAT_MAX_BYTES=65536
 private const val REPLY_RESERVE=18432 // Receipt plus separately bounded assistant text.
-data class HermesChatEntry(val id:String,val rootKey:String?,val turnKey:String,val role:String,val kind:String,val text:String,val expiresAt:Long,val settled:Boolean=false,val questionId:String?=null,val receipt:String?=null)
+data class HermesChatEntry(val id:String,val rootKey:String?,val turnKey:String,val role:String,val kind:String,val text:String,val expiresAt:Long,val settled:Boolean=false,val questionId:String?=null,val receipt:String?=null,val actionStatus:String?=null)
 class HermesHistoryLimit:IllegalStateException("Local chat history is full of unresolved work. Check receipts before sending more. Nothing sent.")
-internal fun HermesChatEntry.json()=JSONObject().put("id",id).put("rootKey",rootKey).put("turnKey",turnKey).put("role",role).put("kind",kind).put("text",text).put("expiresAt",expiresAt).put("settled",settled).also{v->questionId?.let{v.put("questionId",it)};receipt?.let{v.put("receipt",JSONObject(it))}}
+internal fun HermesChatEntry.json()=JSONObject().put("id",id).put("rootKey",rootKey).put("turnKey",turnKey).put("role",role).put("kind",kind).put("text",text).put("expiresAt",expiresAt).put("settled",settled).also{v->questionId?.let{v.put("questionId",it)};receipt?.let{v.put("receipt",JSONObject(it))};actionStatus?.let{v.put("actionStatus",it)}}
 internal fun chatJson(entries:List<HermesChatEntry>)=JSONArray(entries.map{it.json()})
 internal fun readChat(array:JSONArray):List<HermesChatEntry>{
     require(array.length()<=HERMES_CHAT_MAX_ENTRIES&&array.toString().toByteArray(Charsets.UTF_8).size<=HERMES_CHAT_MAX_BYTES)
@@ -21,8 +21,9 @@ internal fun readChat(array:JSONArray):List<HermesChatEntry>{
         require(text.length<=4000&&text.toByteArray(Charsets.UTF_8).size<=8192)
         if(kind=="reply")require(role=="assistant"&&(text.isEmpty()||validHermesAssistantReply(JSONObject().put("version",1).put("text",text))))
         val receipt=v.optJSONObject("receipt")?.also{require(validHermesReceipt(it)&&it.getString("key")==turn)}?.toString()
+        val actionStatus=if(v.has("actionStatus"))v.getString("actionStatus").also{require(it in setOf("complete","read-only","partial","uncertain","failed"))} else null
         val expiry=v.getLong("expiresAt");require(expiry in 0..9007199254740991L)
-        HermesChatEntry(v.getString("id"),root,turn,role,kind,text,expiry,v.getBoolean("settled"),v.optString("questionId").takeIf{it.isNotEmpty()},receipt)
+        HermesChatEntry(v.getString("id"),root,turn,role,kind,text,expiry,v.getBoolean("settled"),v.optString("questionId").takeIf{it.isNotEmpty()},receipt,actionStatus)
     }
     require(entries.size==array.length()&&entries.map{it.id}.toSet().size==entries.size)
     return entries

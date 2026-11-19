@@ -560,9 +560,10 @@ class HermesConversationController(private val scope:CoroutineScope,private val 
         val text=v.optJSONObject("assistantReply")?.getString("text")?:v.optJSONObject("toolSummary")?.getString("text")?:"No reply text was returned. Nothing was automatically resent."
         val expiry=minOf(sent.expiresAt,v.getLong("expiresAt"))
         val noWriteFailure=v.getJSONObject("receipt").let{it.optString("outcome")=="failed"&&it.optJSONArray("targets")?.length()==0}
-        val entry=HermesChatEntry("reply:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant",if(noWriteFailure)"unknown" else "reply",if(expiry>now())text else "",expiry,settled=true)
+        val actionStatus=v.getJSONObject("receipt").getString("outcome")
+        val entry=HermesChatEntry("reply:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant",if(noWriteFailure)"unknown" else "reply",if(expiry>now())text else "",expiry,settled=true,actionStatus=actionStatus)
         val sync=v.optJSONObject("displaySync")?.takeIf{current.displaySyncVersion==1&&validHermesDisplaySync(it)&&expiry>now()}
-        val summary=v.optJSONObject("toolSummary")?.getString("text")?.takeIf{it!=text}?.let{HermesChatEntry("tools:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant","reply",if(expiry>now())it else "",expiry,settled=true)}
+        val summary=v.optJSONObject("toolSummary")?.getString("text")?.takeIf{it!=text}?.let{HermesChatEntry("tools:${sent.turnKey}",sent.rootKey,sent.turnKey,"assistant","reply",if(expiry>now())it else "",expiry,settled=true,actionStatus=actionStatus)}
         val replies=listOfNotNull(entry,summary)
         val timeline=current.timeline.filterNot{it.id in replies.map{e->e.id}}.flatMap{if(it.id=="chat-status:${sent.turnKey}")replies else listOf(it)}.let{if(it.any{e->e.id==entry.id})it else it+replies}
         val syncId="sync:${sent.turnKey}";val freshSync=sync!=null&&current.timeline.none{it.id==syncId}

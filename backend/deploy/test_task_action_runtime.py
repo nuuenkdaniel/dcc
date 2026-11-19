@@ -100,16 +100,43 @@ class RuntimeTests(unittest.TestCase):
                    'tools.registry':types.SimpleNamespace(registry=types.SimpleNamespace(get_toolset_for_tool=lambda _n:'mcp-dcc_task')),
                    'run_agent':types.SimpleNamespace(AIAgent=Mock(return_value=agent))}
         modules['tools'].__path__=[]
-        with patch.dict(sys.modules,modules),patch.object(runtime.time,'time',return_value=1000):
+        memory_schema={'type':'function','function':{'name':'memory','parameters':{'type':'object','properties':{name:{'type':'string'} for name in ('action','target','content','old_text')}}}}
+        def build_agent(**options):
+            agent.tools=[s for s in agent.tools if s['function']['name']!='memory']
+            agent.valid_tool_names.discard('memory')
+            if 'memory' in options['enabled_toolsets']:
+                agent.tools=agent.tools+[memory_schema];agent.valid_tool_names=agent.valid_tool_names|{'memory'}
+                agent._memory_store=object();agent._memory_enabled=True;agent._user_profile_enabled=True
+            return agent
+        modules['run_agent'].AIAgent.side_effect=build_agent
+        modules['tools.registry'].registry.get_toolset_for_tool=lambda name:'memory' if name=='memory' else 'mcp-dcc_task'
+        with patch.dict(sys.modules,modules),patch.object(runtime.time,'time',return_value=1000),patch.object(runtime,'require_dcc_profile'):
             agent.run_conversation.return_value={'completed':True,'final_response':'Actual synthetic café reply 🙂','messages':[{'secret':'never project'}]}
             evidence=runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1,chat_version=1)
+            self.assertEqual(evidence['schemaCount'],len(names)+1)
             self.assertEqual(evidence['completion'],{'status':'finished','replyVersion':1,'assistantText':'Actual synthetic café reply 🙂'})
             self.assertNotIn('messages',repr(evidence))
             options=modules['run_agent'].AIAgent.call_args.kwargs
+            self.assertEqual(options['enabled_toolsets'],['mcp-dcc_task','memory'])
+            self.assertTrue(options['load_soul_identity'])
+            self.assertTrue(options['skip_context_files'])
+            self.assertTrue(options['skip_memory']) # Built-in store only; external providers remain disabled.
+            self.assertIn('honor requests to correct or forget',options['ephemeral_system_prompt'])
             self.assertIn('conversational assistant',options['ephemeral_system_prompt'])
             self.assertNotIn('task_topics',options['ephemeral_system_prompt'])
             self.assertNotIn('Maximum twelve tool calls and four writes',options['ephemeral_system_prompt'])
             self.assertGreaterEqual(options['max_iterations'],16)
+            # Refuse a configured profile whose memory store failed to initialize.
+            factory=modules['run_agent'].AIAgent.side_effect
+            def missing_memory(**kwargs):
+                value=factory(**kwargs);value._memory_store=None;return value
+            modules['run_agent'].AIAgent.side_effect=missing_memory
+            agent.run_conversation.reset_mock()
+            with self.assertRaisesRegex(ValueError,'DCC memory unavailable'):
+                runtime.run_action(TOKEN,EXPIRY,'Synthetic',True,reply_version=1,chat_version=1)
+            agent.run_conversation.assert_not_called()
+            modules['run_agent'].AIAgent.side_effect=factory
+            agent.run_conversation.return_value={'completed':True,'final_response':'Actual synthetic café reply 🙂'}
             # Legacy invocations still use their original catalog and ACK lane.
             legacy_name='mcp__dcc_task__request_clarification'
             legacy_schema={'type':'function','function':{'name':legacy_name,'parameters':{'type':'object','properties':{}}}}

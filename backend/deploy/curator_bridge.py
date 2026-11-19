@@ -124,14 +124,15 @@ class Handler(BaseHTTPRequestHandler):
                         or type(prompt) is not str or not 0 < len(prompt) <= 4000):
                     raise ValueError('Invalid task invocation')
                 env = os.environ.copy()
-                env['HERMES_HOME'] = '/root/.hermes/profiles/daymark-curator'
+                profile = '/root/.hermes/profiles/dcc' if chat_version == 1 else '/root/.hermes/profiles/daymark-curator'
+                env['HERMES_HOME'] = profile
                 env['DCC_TASK_CALLBACK_CAPABILITY'] = capability
                 env['DCC_TASK_CALLBACK_EXPIRES_AT'] = str(expiry)
                 # System Python runs ONLY the stdlib wrapper. Hermes's official
                 # launcher supplies the isolated bootstrap/dependencies for action.
                 result = subprocess.run(['/usr/bin/python3', str(Path(__file__).with_name('task_action_launcher.py'))],
                     input=json.dumps({'prompt':prompt, 'catalog':'product-v1' if data['mode']=='product-action' else 'tasks-v1', **({'replyVersion':1} if reply_version == 1 else {}), **({'chatVersion':1} if chat_version == 1 else {})}), text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                    env=env, timeout=105, cwd='/root/.hermes/profiles/daymark-curator')
+                    env=env, timeout=105, cwd=profile)
                 parsed = json.loads(result.stdout) if not result.returncode and len(result.stdout.encode('utf-8')) <= 16384 else None
                 if not (valid_reply_completion(parsed) and capability not in parsed.get('assistantText', '') and TOKEN not in parsed.get('assistantText', '') if reply_version == 1 else parsed == {'status':'finished'}):
                     raise ValueError('Task invocation unconfirmed')

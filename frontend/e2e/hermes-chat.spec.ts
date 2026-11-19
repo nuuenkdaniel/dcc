@@ -155,3 +155,30 @@ test('a verified no-write failure offers the original message for a manual retry
  await expect(page.getByText('Reply delivered.')).toBeVisible()
  expect(new Set(ids).size).toBe(2)
 })
+
+for(const outcome of ['uncertain','partial','failed'] as const){
+ test(`a follow-up retains the previous ${outcome} reply without treating it as verified`,async({page})=>{
+  await configure(page)
+  const requests:Record<string,unknown>[]=[]
+  const previous='I moved the unfinished task to tomorrow.'
+  await page.route('**/api/v1/hermes/conversation',route=>{
+   const body=route.request().postDataJSON();requests.push(body)
+   const response=reply(body.key,requests.length===1?previous:'I will check the current task list.')
+   if(requests.length===1){response.receipt.outcome=outcome;response.receipt.line='Requested scope remains unresolved.'}
+   return route.fulfill({json:response})
+  })
+  await page.goto('/')
+  const box=page.getByRole('textbox',{name:'Message Hermes'})
+  await box.fill('Move unfinished tasks to tomorrow');await box.press('Enter')
+  await expect(page.getByText(previous,{exact:true})).toBeVisible()
+  await page.reload()
+  await box.fill('Was that my only task?');await box.press('Enter')
+  await expect.poll(()=>requests.length).toBe(2)
+  const context=requests[1].context as {entries:{role:string;text:string}[]}
+  expect(context.entries).toHaveLength(2)
+  expect(context.entries[0].text).toBe('Move unfinished tasks to tomorrow')
+  expect(context.entries[1].text).toContain(previous)
+  expect(context.entries[1].text).toContain(`Action status: ${outcome}`)
+  expect(requests.map(r=>r.op)).toEqual(['start','start'])
+ })
+}
