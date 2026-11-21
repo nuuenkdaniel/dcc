@@ -12,7 +12,7 @@ for(const width of [320,375,768,1024,1920]){
    await pending
     await route.fulfill({json:{message:`Untrusted synthetic prose: ${'x'.repeat(500)}`,summary:{phase:'completed',outcome:'effects_recorded',effects:[{tool:'create_task',state:'applied',id:'synthetic-layout-task',version:1}],pending:0,reads:[]}}})
   })
-  await page.goto('/')
+  await page.goto('/hermes')
    const input=page.getByRole('textbox',{name:'Ask Hermes about tasks, projects, or calendar'})
    await expect(input).toBeVisible()
    await expect(input).toBeEnabled()

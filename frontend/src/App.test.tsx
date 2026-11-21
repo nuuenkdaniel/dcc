@@ -104,6 +104,7 @@ it('a manual reorder persistence failure cannot publish a successful move notice
 })
 
 it('places the sole Hermes command below the Home header, never in the sidebar',()=>{
+ window.history.replaceState({}, '', '/hermes')
  const {container}=render(<App/>)
  const input=screen.getByPlaceholderText('Hermes'),form=input.closest('form')!
  expect(input).toBeVisible()
@@ -180,7 +181,7 @@ it('moves between months and returns to today', () => {
   const initial = month.textContent
   fireEvent.click(screen.getByRole('button', { name: 'Next month' }))
   expect(month.textContent).not.toBe(initial)
-  fireEvent.click(screen.getByRole('button', { name: 'Today' }))
+  fireEvent.click(within(screen.getByRole('button', { name: 'Next month' }).parentElement!).getByRole('button', { name: 'Today' }))
   expect(month.textContent).toBe(new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(new Date()))
 })
 
@@ -196,7 +197,7 @@ it('switches between development page previews', () => {
   fireEvent.click(screen.getByRole('button', { name: 'Inbox view' }))
   expect(screen.getByRole('heading', { name: 'Inbox' })).toBeInTheDocument()
   expect(screen.queryByRole('heading', { name: 'Daily plan' })).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: 'Home view' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Today view' }))
   expect(screen.getByRole('heading', { name: 'Daily plan' })).toBeInTheDocument()
 })
 
