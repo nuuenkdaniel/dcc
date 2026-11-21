@@ -10,7 +10,8 @@ createRoot(document.getElementById('root')!).render(
 )
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
-  void navigator.serviceWorker.register('/workspace-offline.js')
+  // Bump the URL when the worker changes so a cached script cannot delay rollout.
+  void navigator.serviceWorker.register('/workspace-offline.js?v=2')
     .then(() => navigator.serviceWorker.ready)
     .then(registration => registration.active?.postMessage('retain-workspace-shell'))
     .catch(() => {})
