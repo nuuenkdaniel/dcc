@@ -26,7 +26,7 @@ type Task = { id: string; title: string; date: string; notes: string; completed:
 type PreviewView = 'home' | 'today' | 'inbox' | 'pomodoro' | 'login' | 'settings' | 'projects' | 'prices'
 
 const VIEW_PATHS: Record<PreviewView, string> = {
-  home: '/',
+  home: '/hermes',
   today: '/today',
   projects: '/projects',
   prices: '/prices',
@@ -37,7 +37,7 @@ const VIEW_PATHS: Record<PreviewView, string> = {
 }
 const viewFromPath = (path: string): PreviewView => {
   const match = (Object.entries(VIEW_PATHS) as [PreviewView, string][]).find(([, route]) => route === path)
-  return match?.[0] ?? 'home'
+  return match?.[0] ?? 'today'
 }
 
 const STORAGE_KEY = 'productivity-app.tasks.v1'
@@ -86,7 +86,7 @@ function DevToolbar({ view, sampleData, onViewChange, onSampleDataChange }: {
       <div className="dev-toolbar-inner">
         <strong><span aria-hidden="true">◇</span> Development</strong>
         <div className="dev-view-switcher" aria-label="Preview view">
-          {(['home', 'inbox', 'pomodoro'] as const).map((option) => (
+          {(['today', 'inbox', 'pomodoro'] as const).map((option) => (
             <button key={option} type="button" aria-label={`${option[0].toUpperCase()}${option.slice(1)} view`} aria-pressed={view === option} onClick={() => onViewChange(option)}>
               {option[0].toUpperCase()}{option.slice(1)}
             </button>
@@ -338,8 +338,8 @@ export function Workspace() {
   const sidebar = (
     <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
       <nav aria-label="Main navigation">
+        <button type="button" aria-label="Today" title="Today" aria-current={previewView==='today'?'page':undefined} className={`nav-item ${previewView==='today'?'active':''}`} onClick={()=>navigate('today')}><span className="nav-icon" aria-hidden="true">☷</span><span className="nav-label">Today</span></button>
         <button type="button" aria-label={chat?'Hermes':'Home'} title={sidebarCollapsed?(chat?'Hermes':'Home'):undefined} aria-current={previewView==='home'?'page':undefined} className={`nav-item ${previewView === 'home' ? 'active' : ''}`} onClick={() => navigate('home')}><span className="nav-icon" aria-hidden="true">{chat?'✦':'⌂'}</span><span className="nav-label">{chat?'Hermes':'Home'}</span></button>
-        {(chat||previewView==='today')&&<button type="button" aria-label="Today" title="Today" aria-current={previewView==='today'?'page':undefined} className={`nav-item ${previewView==='today'?'active':''}`} onClick={()=>navigate('today')}><span className="nav-icon" aria-hidden="true">☷</span><span className="nav-label">Today</span></button>}
         <button type="button" aria-label="Inbox" title={sidebarCollapsed ? 'Inbox' : undefined} className={`nav-item ${previewView === 'inbox' ? 'active' : ''}`} onClick={() => navigate('inbox')}><span className="nav-icon">▣</span><span className="nav-label">Inbox</span></button>
         <button type="button" aria-label="Focus" title={sidebarCollapsed ? 'Focus' : undefined} className={`nav-item ${previewView === 'pomodoro' ? 'active' : ''}`} onClick={() => navigate('pomodoro')}><span className="nav-icon">◷</span><span className="nav-label">Focus</span></button>
         <button type="button" aria-label="Projects" title="Projects" className={`nav-item ${previewView === 'projects' ? 'active' : ''}`} onClick={()=>navigate('projects')}><span className="nav-icon">◫</span><span className="nav-label">Projects</span></button>
@@ -355,7 +355,7 @@ export function Workspace() {
   return (
     <>
       {import.meta.env.DEV && <DevToolbar view={previewView} sampleData={showSampleData} onViewChange={navigate} onSampleDataChange={setShowSampleData} />}
-         <main className={`app-shell ${chatVisible?'chat-shell':''} ${chat||previewView==='today'?'chat-navigation':''}`}>
+         <main className={`app-shell chat-navigation ${chatVisible?'chat-shell':''}`}>
           {sidebar}
           {chat&&<div className="chat-route" hidden={!chatVisible}><HermesChat key={chat.owner} access={chat} visible={chatVisible} onCreated={onHermesCreated} legacy={<TellHermes onCreated={onHermesCreated}/>}/></div>}
           {chatVisible?null:previewView === 'prices' ? <section className="content"><h1>Feature retired</h1><p>Price tracking is no longer available. Stored history is preserved; no checks are scheduled.</p></section> : previewView === 'projects' ? <Projects planner={planner}/> : previewView === 'settings' ? <Settings {...preferencesState} /> : previewView === 'inbox' ? (

@@ -14,7 +14,7 @@ function reply(key:string,text:string,withAction=false):ConversationView{
    targets:withAction?[{kind:'task',id:'synthetic-task',action:'added',title:'Send the outline',state:'applied',verification:'verified'}]:[]}}
 }
 
-test('Hermes home shows replies first, carries context, and preserves the thread across Today and reload',async({page},testInfo)=>{
+test('Today opens by default and Hermes shows replies first, carries context, and preserves the thread across Today and reload',async({page},testInfo)=>{
  await page.setViewportSize({width:1280,height:800})
  await configure(page)
  const requests:Record<string,unknown>[]=[]
@@ -24,7 +24,12 @@ test('Hermes home shows replies first, carries context, and preserves the thread
   requests.push(body)
   return route.fulfill({json:requests.length===1?reply(body.key,firstReply):reply(body.key,'I added **“Send the outline”** to your list.',true)})
  })
+ const navigation=page.getByRole('navigation',{name:'Main navigation'})
  await page.goto('/')
+ await expect(navigation.getByRole('button',{name:'Today',exact:true})).toHaveAttribute('aria-current','page')
+ await expect(page.getByRole('heading',{name:'Daily plan'})).toBeVisible()
+ await navigation.getByRole('button',{name:'Hermes',exact:true}).click()
+ await expect(page).toHaveURL(/\/hermes$/)
  const box=page.getByRole('textbox',{name:'Message Hermes'})
  await expect(box).toBeVisible()
  await expect(page.getByRole('heading',{name:'Daily plan'})).toHaveCount(0)
@@ -49,7 +54,6 @@ test('Hermes home shows replies first, carries context, and preserves the thread
  await expect(page.getByText('A task was added.',{exact:true})).toBeVisible()
  await page.getByText('Action details',{exact:true}).click()
  if(process.env.DCC_CHAT_CAPTURE)await page.screenshot({path:testInfo.outputPath('hermes-desktop.png')})
- const navigation=page.getByRole('navigation',{name:'Main navigation'})
  await navigation.getByRole('button',{name:'Today',exact:true}).click()
  await expect(page).toHaveURL(/\/today$/)
  await expect(page.getByRole('heading',{name:'Daily plan'})).toBeVisible()
@@ -87,7 +91,7 @@ test('an interrupted reply is recovered after reload by reading the original req
   expect(body.rootKey).toBe(root)
   return route.fulfill({json:reply(root,'Your saved reply is back.')})
  })
- await page.goto('/')
+ await page.goto('/hermes')
  const box=page.getByRole('textbox',{name:'Message Hermes'})
  await box.fill(opening)
  await box.press('Enter')
@@ -118,7 +122,7 @@ test('a dropped reply is checked quietly until the original turn finishes',async
   }
   return route.fulfill({json:response})
  })
- await page.goto('/')
+ await page.goto('/hermes')
  const box=page.getByRole('textbox',{name:'Message Hermes'})
  await box.fill(opening)
  await box.press('Enter')
@@ -144,7 +148,7 @@ test('a verified no-write failure offers the original message for a manual retry
   response.receipt.line='Hermes stopped before attempting any changes.'
   return route.fulfill({json:response})
  })
- await page.goto('/')
+ await page.goto('/hermes')
  const box=page.getByRole('textbox',{name:'Message Hermes'})
  await box.fill(opening)
  await box.press('Enter')
@@ -167,7 +171,7 @@ for(const outcome of ['uncertain','partial','failed'] as const){
    if(requests.length===1){response.receipt.outcome=outcome;response.receipt.line='Requested scope remains unresolved.'}
    return route.fulfill({json:response})
   })
-  await page.goto('/')
+  await page.goto('/hermes')
   const box=page.getByRole('textbox',{name:'Message Hermes'})
   await box.fill('Move unfinished tasks to tomorrow');await box.press('Enter')
   await expect(page.getByText(previous,{exact:true})).toBeVisible()

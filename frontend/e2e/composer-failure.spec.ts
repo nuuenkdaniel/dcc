@@ -23,7 +23,7 @@ for(const failure of ['http500','rejected','uncertain','network','timeout'] as c
   }
   return route.fulfill({json:{message:'Synthetic receipt',summary:{phase:'completed',outcome:'no_effects_recorded',effects:[],pending:0,reads:[]}}})
  })
- await page.goto('/')
+ await page.goto('/hermes')
  const input=page.getByRole('textbox',{name:'Ask Hermes about tasks, projects, or calendar'})
  await expect(page.locator('#tell-hermes-status')).not.toContainText('MCP actions are unavailable')
  await input.fill('Original failed synthetic request');await input.press('Enter')
@@ -63,7 +63,7 @@ for(const mode of ['legacy','tasks','actions'] as const)test(`old ${mode} receip
  const requests:{key:string;prompt:string}[]=[]
  await page.route('**/api/v1/hermes/action-capabilities',route=>route.fulfill({json:{productActions:available}}))
  await page.route('**/api/v1/hermes/actions',route=>{requests.push(route.request().postDataJSON());return route.fulfill({json:{message:'Synthetic receipt',summary:{phase:'completed',outcome:'no_effects_recorded',effects:[],pending:0,reads:[]}}})})
- await page.goto('/')
+ await page.goto('/hermes')
  const input=page.getByRole('textbox',{name:'Ask Hermes about tasks, projects, or calendar'})
  await expect(page.locator('#tell-hermes-status')).toContainText('MCP actions are unavailable')
  await expect(input).toBeEditable();await input.press('Control+A');await input.press('Backspace');await expect(input).toHaveValue('')

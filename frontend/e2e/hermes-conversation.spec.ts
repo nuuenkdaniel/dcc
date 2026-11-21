@@ -64,7 +64,7 @@ for(const viewport of [{width:1280,height:800},{width:360,height:480},{width:390
       expect(validConversationView(reply)).toBe(true);return route.fulfill({json:reply})
     })
     try{
-    await page.goto('/')
+    await page.goto('/hermes')
     const box=page.getByRole('textbox',{name:'Ask Hermes about tasks, projects, or calendar'})
     await expect(box).toHaveAttribute('id','hermes-conversation-input');await expect(box).toBeEnabled();await box.fill('I have an exam coming up for CSE354 I need to study 3 chunks today can you put that in my tasks using specific topics');await box.press('Enter')
     await expect(page.getByText(clarification('task_topics').question)).toBeVisible()

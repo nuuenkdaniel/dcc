@@ -139,7 +139,7 @@ test('mocked typed clarification renders a question, unchanged retry reuses key,
     const questions=requests.length<3?{clarifications:[{reason:'missing_duration',question:'How many minutes should this take?'}]}:{}
     return route.fulfill({json:{message:'Synthetic clarification/read-only answer fixture.',summary:{phase:'completed',outcome:'no_effects_recorded',effects:[],pending:0,reads:[],...questions}}})
   })
-  await page.goto('/')
+  await page.goto('/hermes')
   const prompt=page.getByRole('textbox',{name:'Ask Hermes about tasks, projects, or calendar'})
   await expect(prompt).toBeEnabled()
   await prompt.fill('Create a synthetic event without a duration');await prompt.press('Enter')

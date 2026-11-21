@@ -28,7 +28,7 @@ self.addEventListener('message', event => {
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url)
   if (url.origin !== self.location.origin || event.request.method !== 'GET') return
-  if (event.request.mode === 'navigate' && ['/', '/today', '/projects', '/inbox', '/pomodoro', '/settings', '/prices', '/login'].includes(url.pathname)) {
+  if (event.request.mode === 'navigate' && ['/', '/today', '/hermes', '/projects', '/inbox', '/pomodoro', '/settings', '/prices', '/login'].includes(url.pathname)) {
     event.respondWith(fetch(event.request).catch(async error => {
       const cache = await caches.open(SHELL)
       const response = await cache.match(new URL('/', self.location.origin).href)
