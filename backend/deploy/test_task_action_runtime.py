@@ -123,6 +123,9 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(options['skip_memory']) # Built-in store only; external providers remain disabled.
             self.assertIn('honor requests to correct or forget',options['ephemeral_system_prompt'])
             self.assertIn('conversational assistant',options['ephemeral_system_prompt'])
+            self.assertIn('read both list_tasks (standalone manual tasks) and list_daily_actions',options['ephemeral_system_prompt'])
+            self.assertIn('version returned by each applied update',options['ephemeral_system_prompt'])
+            self.assertIn('Leave generated action dates and parent projects alone',options['ephemeral_system_prompt'])
             self.assertNotIn('task_topics',options['ephemeral_system_prompt'])
             self.assertNotIn('Maximum twelve tool calls and four writes',options['ephemeral_system_prompt'])
             self.assertGreaterEqual(options['max_iterations'],16)
